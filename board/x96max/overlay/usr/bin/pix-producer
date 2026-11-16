@@ -1,0 +1,40 @@
+#!/bin/sh
+#
+# pix-producer - チューナーから受け取ったTSを $PIX_LIVE_FILE へ書く
+#
+# PIX-DT295 は内蔵カードスロットのB-CASで復号したクリアTSを出力する
+# （実測: 10秒・124,971パケットすべて scrambling=0、mpeg2video 1920x1080）。
+# そのため外部リーダーも torne-b25 も要らない。
+#
+# 地デジのPXS1UDなど、クリア出力でないチューナーを使う場合は
+# PIX_DECRYPT=1 にして復号段を挟む。
+. /etc/default/pix-stream-linux 2>/dev/null || true
+: "${PIX_CAPTURE_SECONDS:=300}"
+: "${PIX_LIVE_FILE:=/dev/shm/pix/live.ts}"
+: "${PIX_DECRYPT:=0}"
+: "${PIX_TUNER:=dt295}"
+: "${PIX_SYSTEM:=bs}"
+: "${PIX_CHANNEL:=9}"
+: "${PIX_SAT_SLOT:=0}"
+: "${PIX_PIDS:=0 17 18 257 273 289 320 321}"
+
+extra=""
+[ -n "$PIX_SAT_SLOT" ] && extra="$extra --slot $PIX_SAT_SLOT"
+for pid in $PIX_PIDS; do extra="$extra -p $pid"; done
+
+if [ "$PIX_DECRYPT" = "1" ]; then
+    # 前回のトレースが残っていると torne-b25 は即終了する（O_EXCL）。
+    rm -f /dev/shm/pix/b25.trace
+    # shellcheck disable=SC2086
+    pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
+        2>/tmp/pix-ts.log \
+      | torne-b25 --card-socket /dev/shm/torne/card.sock --trace /dev/shm/pix/b25.trace \
+            2>/tmp/pix-b25.log > "$PIX_LIVE_FILE"
+else
+    # チューナーがクリアTSを出すのでそのまま保存する。
+    # shellcheck disable=SC2086
+    pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
+        -o "$PIX_LIVE_FILE" 2>/tmp/pix-ts.log
+fi

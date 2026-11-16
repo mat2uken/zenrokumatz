@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// X96Max_P variant with an external Ethernet PHY (RTL8211F on RGMII).
+// Same board as meson-g12a-x96-max-p.dts otherwise.
+#include "meson-g12a-x96-max-p.dts"
+
+/ {
+	model = "X96Max_P (G12A, 2 GiB, external Ethernet PHY)";
+};
+
+&ethmac {
+	/*
+	 * The -p DTS assumes the SoC's internal PHY in RMII mode. Boards that
+	 * carry an external RTL8211F instead never see a link that way: the
+	 * internal PHY is not wired to the jack. Use RGMII and the external
+	 * PHY node from the common dtsi.
+	 */
+	phy-mode = "rgmii";
+	phy-handle = <&external_phy>;
+};
+
+&ext_mdio {
+	status = "okay";
+};

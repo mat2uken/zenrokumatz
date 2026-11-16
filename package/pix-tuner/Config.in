@@ -1,0 +1,6 @@
+config BR2_PACKAGE_PIX_TUNER
+	bool "pix-ts-legacy (PIX-DT295)"
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_LIBUSB
+	help
+	  dtv_android's PIX-DT295 CLI and transcoder hooks, rebuilt for Linux.

@@ -1,0 +1,28 @@
+#!/bin/sh
+# 復号済みのライブファイルを読み、変換して stb_streamer へ流す。
+. /etc/default/pix-stream-linux 2>/dev/null || true
+: "${PIX_BITRATE:=6000k}"
+: "${PIX_GOP:=60}"
+: "${PIX_PORT:=40774}"
+: "${PIX_ALLOWED_IP:=192.168.99.80}"
+: "${PIX_SPOOL_MB:=192}"
+: "${PIX_DISPLAY:=X96Max}"
+: "${PIX_LIVE_FILE:=/dev/shm/pix/live.ts}"
+
+# EIT を読んで番組名と番組境界を program.txt へ書く。録画側はこの名前で
+# ファイルを作るので、EPG サービスに問い合わせなくても題名が決まる。
+# eit_watch はバイト列をそのまま通すだけなので、映像の経路は変えない。
+tail -f -c +1 "$PIX_LIVE_FILE" 2>/dev/null \
+  | eit_watch --state /dev/shm/pix/program.txt 2>/tmp/pix-eit.log \
+  | ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
+        -f mpegts -i pipe:0 \
+        -c:v mpeg2_v4l2m2m -vf "bwdif=mode=send_frame,format=nv12,scale=1440:1080,setsar=4/3" \
+        -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
+        -map 0:v:0 -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
+        2>/tmp/pix-ff1.log \
+  | ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
+        -f mpegts -i pipe:0 -map 0:v -map 0:a -c copy -bsf:a aac_adtstoasc \
+        -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 pipe:1 2>/tmp/pix-ff2.log \
+  | stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
+        --spool-mb "$PIX_SPOOL_MB" --channel "$PIX_CHANNEL" --display "$PIX_DISPLAY" \
+        --program-file /dev/shm/pix/program.txt 2>/tmp/pix-stb.log

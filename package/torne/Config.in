@@ -1,0 +1,7 @@
+config BR2_PACKAGE_TORNE
+	bool "torne-c and torne-b25"
+	depends on BR2_INSTALL_LIBSTDCPP
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_LIBUSB
+	help
+	  Existing dtv_android tuner implementation, rebuilt for Linux.

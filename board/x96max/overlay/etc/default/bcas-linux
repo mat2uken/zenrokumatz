@@ -1,0 +1,19 @@
+# B-CAS カードの取得元
+#
+#   local  ... この端末の USB カードリーダー（pcscd + bcasd を起動する）
+#   remote ... ネットワーク越しの bcasd（カードリーダーは別ホスト）
+#
+BCAS_MODE=local
+
+# remote のときの接続先。BCAS_REMOTE_TOKEN は接続先の /etc/bcas/tokens に
+# 登録されているものと同じ 64 桁 hex を入れる。
+BCAS_REMOTE_HOST=192.168.99.10
+BCAS_REMOTE_PORT=40790
+BCAS_REMOTE_TOKEN=
+
+# cardrelay が torne-b25 に提供するソケット
+BCAS_SOCKET=/dev/shm/torne/card.sock
+
+# bcasd の待ち受け（local のとき）
+BCAS_BIND=127.0.0.1
+BCAS_PORT=40790

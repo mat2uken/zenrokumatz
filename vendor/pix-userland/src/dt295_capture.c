@@ -1,0 +1,834 @@
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE
+#endif
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+#include "dt295_capture.h"
+#include "control.h"
+#include "dt295.h"
+#include "dt295_live_policy.h"
+#include "dt295_routes.h"
+#include "dt295_stream.h"
+#include "os.h"
+#include "pixy.h"
+#include "transport.h"
+#include "ts_output.h"
+#include "usb_backend.h"
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
+
+#if defined(__APPLE__) || defined(DT295_CAPTURE_TESTING)
+static int allow_ecm_conflict(void);
+
+static int allow_ecm_conflict(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("DT295_ALLOW_ECM_CONFLICT");
+        cached = v && *v && *v != '0';
+    }
+    return cached;
+}
+
+typedef struct {
+    usb_backend *usb;
+    dt295_stream *stream;
+    uint64_t last_sequence, last_completed_ns;
+} capture_usb;
+static uint64_t capture_now(void *p) {
+    (void)p;
+    return now_ms();
+}
+static void capture_sleep(void *p, unsigned ms) {
+    (void)p;
+    sleep_ms(ms);
+}
+static int capture_control(void *p, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
+                           uint8_t *data, size_t length, unsigned ms, size_t *actual) {
+    capture_usb *u = p;
+    if (length > UINT16_MAX)
+        return LIBUSB_ERROR_INVALID_PARAM;
+    int r = libusb_control_transfer(usb_native_handle(u->usb), rt, req, value, index, data,
+                                    (uint16_t)length, ms);
+    *actual = r < 0 ? 0 : (size_t)r;
+    return r < 0 ? r : 0;
+}
+static int capture_bulk(void *p, uint8_t ep, uint8_t *data, size_t length, unsigned ms,
+                        size_t *actual) {
+    capture_usb *u = p;
+    *actual = 0;
+    if (ep == 0x81 && u->stream) {
+        int r = dt295_stream_read(u->stream, data, length, &u->last_sequence, &u->last_completed_ns,
+                                  ms);
+        if (r > 0) {
+            *actual = (size_t)r;
+            return 0;
+        }
+        return r == 0 ? LIBUSB_ERROR_TIMEOUT : r;
+    }
+    if (length > INT_MAX)
+        return LIBUSB_ERROR_INVALID_PARAM;
+    int n = 0;
+    int r = libusb_bulk_transfer(usb_native_handle(u->usb), ep, data, (int)length, &n, ms);
+    if (n > 0)
+        *actual = (size_t)n;
+    return r;
+}
+static int capture_interrupt(void *p, uint8_t ep, uint8_t *data, size_t length, unsigned ms,
+                             size_t *actual) {
+    capture_usb *u = p;
+    if (length > INT_MAX)
+        return LIBUSB_ERROR_INVALID_PARAM;
+    int n = 0;
+    int r = libusb_interrupt_transfer(usb_native_handle(u->usb), ep, data, (int)length, &n, ms);
+    *actual = n > 0 ? (size_t)n : 0;
+    return r;
+}
+static int output_exit(int error) {
+    return error == ENOBUFS || error == EAGAIN || error == ETIMEDOUT ? 8 : 70;
+}
+static int apply_plan(dt295 *d, dt295_route_plan *current, const dt295_route_plan *desired,
+                      int recording, dt295_route_op *committed_ops, size_t *committed_count,
+                      char *error, size_t error_size) {
+    if (committed_count)
+        *committed_count = 0;
+    dt295_route_plan effective = *desired;
+    dt295_route_op ops[DT295_ROUTE_OP_LIMIT];
+    size_t count = 0;
+    char route_error[DT295_ROUTE_ERROR] = {0};
+    if (dt295_routes_plan_ops(current, &effective, ops, &count, route_error)) {
+        snprintf(error, error_size, "%s", route_error);
+        return -1;
+    }
+    if (recording && live_additions_only(current, &effective, ops, count, error, error_size))
+        return -1;
+    dt295_route_plan candidate;
+    if (dt295_routes_guard(current, ops, count, &candidate, route_error)) {
+        snprintf(error, error_size, "%s", route_error);
+        return -1;
+    }
+    for (size_t i = 0; i < count; ++i)
+        if (dt295_route_write(d, &ops[i], error, error_size))
+            return -1;
+    /* The hardware may be partially changed on failure; never commit that path. */
+    candidate.ready = effective.ready;
+    candidate.cat_received = effective.cat_received;
+    candidate.missing_pmts = effective.missing_pmts;
+    candidate.primary_program = effective.primary_program;
+    candidate.has_primary = effective.has_primary;
+    candidate.video_stream_type = effective.video_stream_type;
+    candidate.audio_stream_type = effective.audio_stream_type;
+    memcpy(candidate.dedicated_pid, effective.dedicated_pid, sizeof(candidate.dedicated_pid));
+    dt295_routes_commit(current, &candidate);
+    if (committed_ops && committed_count && count) {
+        memcpy(committed_ops, ops, count * sizeof(*ops));
+        *committed_count = count;
+    }
+    return 0;
+}
+static int capture_live_add_events(ts_output *diag, const dt295_route_plan *committed,
+                                   const dt295_route_op *ops, size_t count, uint64_t after_packets) {
+    char line[256];
+    for (size_t i = 0; i < count; ++i) {
+        const dt295_route_op *op = &ops[i];
+        uint16_t ecm_pid = op->ecm_slot < 64 ? committed->ecm_pid[op->ecm_slot] : 0;
+        int n = snprintf(line, sizeof(line),
+                         "{\"event\":\"dt295_live_pid_add\",\"phase\":2,"
+                         "\"after_packets\":%llu,\"pid\":%u,\"slot\":%u,"
+                         "\"ecm_slot\":%u,\"ecm_pid\":%u,\"previously_present\":0,"
+                         "\"existing_routes_and_ecms_preserved\":1}\n",
+                         (unsigned long long)after_packets, (unsigned)op->pid,
+                         (unsigned)op->slot, (unsigned)op->ecm_slot, (unsigned)ecm_pid);
+        if (n < 0 || (size_t)n >= sizeof(line))
+            return EOVERFLOW;
+        int e = ts_output_submit(diag, line, (size_t)n, NULL);
+        if (e)
+            return e;
+    }
+    return 0;
+}
+static int capture_live_add_summary(ts_output *diag, uint64_t total_additions) {
+    char line[128];
+    int n = snprintf(line, sizeof(line),
+                     "{\"event\":\"dt295_live_add_summary\",\"phase\":3,"
+                     "\"live_add_count\":%llu}\n",
+                     (unsigned long long)total_additions);
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return EOVERFLOW;
+    return ts_output_submit(diag, line, (size_t)n, NULL);
+}
+static void capture_message(ts_output *diag, const char *text) {
+    char line[1024];
+    size_t used = 0;
+    const char *prefix = "{\"event\":\"detail\",\"message\":\"";
+    memcpy(line, prefix, strlen(prefix));
+    used = strlen(prefix);
+    for (const unsigned char *p = (const unsigned char *)text; *p && used + 8 < sizeof(line); p++) {
+        if (*p == '"' || *p == '\\') {
+            line[used++] = '\\';
+            line[used++] = (char)*p;
+        } else if (*p < 32)
+            line[used++] = ' ';
+        else
+            line[used++] = (char)*p;
+    }
+    memcpy(line + used, "\"}\n", 3);
+    used += 3;
+    ts_output_submit(diag, line, used, NULL);
+}
+static int capture_status(ts_output *diag, unsigned phase, uint64_t packets, uint64_t elapsed,
+                          uint64_t renewals, dt295_stream *stream, ts_output *output,
+                          const dt295_stream_stats *final, const dt295_routes *tables) {
+    dt295_stream_stats usb = {0};
+    ts_output_stats writer = {0};
+    dt295_routes_snapshot routes = {0};
+    if (stream)
+        dt295_stream_snapshot(stream, &usb);
+    else if (final)
+        usb = *final;
+    ts_output_snapshot(output, &writer);
+    if (tables)
+        dt295_routes_snapshot_get(tables, &routes);
+    char line[4096];
+    int n = snprintf(
+        line, sizeof(line),
+        "{\"model\":\"DT295\",\"phase\":%u,\"packets\":%llu,\"elapsed_ms\":%llu,"
+        "\"renewals\":%llu,\"usb_bytes\":%llu,\"usb_delivered_bytes\":%llu,"
+        "\"usb_late_actual_bytes\":%llu,\"usb_pending_blocks\":%llu,\"usb_active_transfers\":%llu,"
+        "\"usb_peak_pending_blocks\":%llu,\"usb_cancellations\":%llu,"
+        "\"usb_last_error_status\":%llu,\"usb_last_error_actual\":%llu,"
+        "\"usb_error\":%d,\"usb_timeouts\":%llu,\"confirmed_bytes\":%llu,"
+        "\"pending_bytes\":%llu,\"rejected_bytes\":%llu,\"uncertain_bytes\":%llu,"
+        "\"have_pat\":%u,\"have_cat\":%u,\"program_count\":%u,\"missing_pmts\":%u,"
+        "\"tables_ready\":%u,\"invalid_sections\":%u,\"continuity_errors\":%u,"
+        "\"unsupported_tables\":%u,"
+        "\"usb_max_gap_ns\":%llu,\"queue_peak_bytes\":%llu,\"writer_child_pid\":%lld,"
+        "\"writer_warning\":%d,\"writer_stalled\":%d,\"writer_error\":%d,"
+        "\"writer_write_ns_total\":%llu,\"writer_write_ns_max\":%llu,"
+        "\"writer_write_records\":%llu,\"max_pending_age_ns\":%llu,"
+        "\"oldest_pending_age_ns\":%llu,\"max_parent_poll_gap_ns\":%llu,"
+        "\"max_parent_ack_gap_ns\":%llu,\"send_eagain_count\":%llu,"
+        "\"ack_eagain_count\":%llu,\"zero_poll_budget_exhaustions\":%llu}\n",
+        phase, (unsigned long long)packets, (unsigned long long)elapsed,
+        (unsigned long long)renewals, (unsigned long long)usb.completed_bytes,
+        (unsigned long long)usb.delivered_bytes, (unsigned long long)usb.late_actual_bytes,
+        (unsigned long long)usb.pending_blocks, (unsigned long long)usb.active_transfers,
+        (unsigned long long)usb.peak_pending_blocks, (unsigned long long)usb.cancellations,
+        (unsigned long long)usb.last_error_status, (unsigned long long)usb.last_error_actual,
+        usb.first_error, (unsigned long long)usb.timeouts,
+        (unsigned long long)writer.confirmed_bytes, (unsigned long long)writer.pending_bytes,
+        (unsigned long long)writer.rejected_bytes, (unsigned long long)writer.uncertain_bytes,
+        (unsigned)routes.have_pat, (unsigned)routes.have_cat, (unsigned)routes.program_count,
+        (unsigned)routes.missing_pmts, (unsigned)routes.ready, (unsigned)routes.invalid_sections,
+        (unsigned)routes.continuity_errors, (unsigned)routes.unsupported_tables,
+        (unsigned long long)usb.max_completion_gap_ns,
+        (unsigned long long)writer.peak_pending_bytes, (long long)writer.child_pid, writer.warning,
+        writer.stalled, writer.first_error,
+        (unsigned long long)writer.writer_write_ns_total,
+        (unsigned long long)writer.writer_write_ns_max,
+        (unsigned long long)writer.writer_write_records,
+        (unsigned long long)writer.max_pending_age_ns,
+        (unsigned long long)writer.oldest_pending_age_ns,
+        (unsigned long long)writer.max_parent_poll_gap_ns,
+        (unsigned long long)writer.max_parent_ack_gap_ns,
+        (unsigned long long)writer.send_eagain_count,
+        (unsigned long long)writer.ack_eagain_count,
+        (unsigned long long)writer.zero_poll_budget_exhaustions);
+    return n < 0 || (size_t)n >= sizeof(line) ? EOVERFLOW
+                                              : ts_output_submit(diag, line, (size_t)n, NULL);
+}
+
+static uint8_t capture_endpoint(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("DT295_CAPTURE_EP");
+        unsigned long ep = (v && *v) ? strtoul(v, NULL, 0) : 0x81u;
+        cached = (ep >= 0x01u && ep <= 0x8fu) ? (int)ep : 0x81;
+    }
+    return (uint8_t)cached;
+}
+
+typedef struct {
+    int synced;
+    uint64_t desyncs;
+    uint64_t dropped;
+} ts_align;
+
+/* Start offset of the next whole TS packet at or after pos. Two consecutive
+ * 0x47 bytes are required to lock, so a payload byte that happens to be 0x47
+ * does not anchor the stream. When the remaining bytes cannot be aligned yet,
+ * the offset of the pending tail is returned and the caller keeps it for the
+ * next read. */
+static size_t ts_align_next(ts_align *a, const uint8_t *data, size_t total, size_t pos) {
+    while (pos + 188 <= total) {
+        if (!a->synced) {
+            size_t off = pos;
+            while (off + 188 < total &&
+                   !(data[off] == 0x47 && data[off + 188] == 0x47))
+                off++;
+            if (off + 188 >= total) {
+                a->dropped += off - pos;
+                return off;
+            }
+            a->dropped += off - pos;
+            pos = off;
+            a->synced = 1;
+        }
+        if (data[pos] != 0x47) {
+            a->desyncs++;
+            a->dropped++;
+            pos++;
+            a->synced = 0;
+            continue;
+        }
+        return pos;
+    }
+    return pos;
+}
+
+#endif
+int dt295_capture_run(const dt295_capture_config *cfg) {
+#if !defined(__APPLE__) && !defined(DT295_CAPTURE_TESTING)
+    (void)cfg;
+    fprintf(stderr, "DT295 capture currently supports macOS terrestrial target 0 only\n");
+    return 2;
+#else
+    if (!cfg || !cfg->assets || !cfg->output)
+        return 2;
+    if (cfg->system == PIXY_TERRESTRIAL) {
+        if (cfg->channel < 13 || cfg->channel > 62)
+            return 2;
+    } else if (cfg->system == PIXY_BS || cfg->system == PIXY_CS) {
+        if (cfg->if_hz < 950000000u || cfg->if_hz > 2150000000u || cfg->tsid < -1 ||
+            cfg->tsid > 65535 || cfg->slot < -1 || cfg->slot > 7 ||
+            ((cfg->tsid >= 0) == (cfg->slot >= 0)))
+            return 2;
+    } else {
+        return 2;
+    }
+    char error[256] = {0}, stop_error[256] = {0}, shutdown_error[256] = {0},
+         diag_path[4096];
+    int rc = 0, recording = 0, native_abandoned = 0, lock_fd = -1;
+    dt295_stream_stats final_usb = {0};
+    uint64_t packets = 0, renewals = 0, record_start = 0, elapsed = 0, live_add_count = 0;
+    size_t remainder = 0, drained = 0;
+    ts_align align = {0};
+    dt295_assets *assets = NULL;
+    dt295 *d = NULL;
+    dt295_routes *tables = NULL;
+    ts_output *output = NULL, *diag = NULL;
+    capture_usb u = {0};
+    ts_check *check = calloc(1, sizeof(*check));
+    if (!check)
+        return 70;
+    ts_check_init(check);
+    char asset_path[4096];
+    int path_size = snprintf(asset_path, sizeof(asset_path), "%s/dt295.assets", cfg->assets);
+    if (path_size < 0 || (size_t)path_size >= sizeof(asset_path)) {
+        rc = 10;
+        goto done;
+    }
+    if (dt295_assets_load(asset_path, &assets, error, sizeof(error))) {
+        rc = 10;
+        goto done;
+    }
+    char lock_path[160];
+    snprintf(lock_path, sizeof(lock_path), "/tmp/pix-userland-dt295-%lu.lock",
+             (unsigned long)getuid());
+    lock_fd = open(lock_path, O_WRONLY | O_CREAT | O_NOFOLLOW, 0600);
+    struct stat lock_info;
+    struct flock lock_request = {0};
+    lock_request.l_type = F_WRLCK;
+    lock_request.l_whence = SEEK_SET;
+    if (lock_fd < 0 || fstat(lock_fd, &lock_info) || !S_ISREG(lock_info.st_mode) ||
+        lock_info.st_uid != getuid() || fcntl(lock_fd, F_SETLK, &lock_request)) {
+        rc = 4;
+        snprintf(error, sizeof(error), "DT295 recording lock is busy or unavailable");
+        goto done;
+    }
+    tables = dt295_routes_create();
+    if (!tables) {
+        rc = 70;
+        goto done;
+    }
+    dt295_routes_set_satellite(tables, cfg->system != PIXY_TERRESTRIAL);
+    /* Both helpers must be created before libusb can create internal threads. */
+    int e = ts_output_open(cfg->output, STDOUT_FILENO, NULL, &output);
+    if (e) {
+        rc = output_exit(e);
+        snprintf(error, sizeof(error), "TS output: %s", strerror(e));
+        goto done;
+    }
+    const char *diag_name = "-";
+    if (cfg->diagnostic) {
+        if (mkdir(cfg->diagnostic, 0700)) {
+            rc = 70;
+            snprintf(error, sizeof(error), "diagnostic directory: %s", strerror(errno));
+            goto done;
+        }
+        int n = snprintf(diag_path, sizeof(diag_path), "%s/status.jsonl", cfg->diagnostic);
+        if (n < 0 || (size_t)n >= sizeof(diag_path)) {
+            rc = 70;
+            goto done;
+        }
+        diag_name = diag_path;
+    }
+    ts_output_config diag_config = {0};
+    diag_config.capacity_bytes = 8 * 1024 * 1024;
+    e = ts_output_open(diag_name, STDERR_FILENO, &diag_config, &diag);
+    if (e) {
+        rc = 70;
+        goto done;
+    }
+    rc = usb_open_model(&u.usb, &cfg->selector, cfg->fd, cfg->detach, USB_MODEL_DT295);
+    if (rc)
+        goto done;
+    dt295_io io = {&u,          capture_control, capture_bulk, capture_interrupt,
+                   capture_now, capture_sleep};
+    if (dt295_create(&d, &io, assets, error, sizeof(error))) {
+        rc = 70;
+        goto done;
+    }
+    if (dt295_boot(d, error, sizeof(error)) || dt295_open_session(d, error, sizeof(error))) {
+        rc = 7;
+        goto done;
+    }
+    if (dt295_card_initialize(d, error, sizeof(error)) ||
+        dt295_card_activate(d, 2000, error, sizeof(error))) {
+        rc = 9;
+        goto done;
+    }
+    int tuned = cfg->system == PIXY_TERRESTRIAL
+                    ? dt295_tune_terrestrial(d, cfg->channel, error, sizeof(error))
+                    : dt295_tune_satellite(d, cfg->if_hz, cfg->tsid, error, sizeof(error));
+    if (!tuned && cfg->system != PIXY_TERRESTRIAL && cfg->slot >= 0)
+        tuned = dt295_select_satellite_slot(d, (unsigned)cfg->slot, error, sizeof(error));
+    if (tuned) {
+        rc = 5;
+        goto done;
+    }
+    dt295_satellite_state sat_state = {0};
+    if (cfg->system != PIXY_TERRESTRIAL &&
+        dt295_satellite_status(d, &sat_state, error, sizeof(error))) {
+        rc = 7;
+        goto done;
+    }
+    dt295_route_plan live = {0}, bootstrap;
+    char route_error[DT295_ROUTE_ERROR] = {0};
+    dt295_route_op initial[DT295_ROUTE_OP_LIMIT];
+    size_t initial_count = 0;
+    if (dt295_routes_initial_plan(tables, &bootstrap, route_error) ||
+        dt295_routes_initial_ops(&bootstrap, initial, &initial_count, route_error)) {
+        snprintf(error, sizeof(error), "%s", route_error);
+        rc = 8;
+        goto done;
+    }
+    if (dt295_prepare_plan(d, &bootstrap, error, sizeof(error))) {
+        rc = 7;
+        goto done;
+    }
+    live = bootstrap;
+    if (dt295_start(d, error, sizeof(error))) {
+        rc = 7;
+        goto done;
+    }
+    e = dt295_stream_start(usb_native_context(u.usb), usb_native_handle(u.usb), &u.stream);
+    if (e) {
+        rc = 7;
+        snprintf(error, sizeof(error), "native USB start error %d", e);
+        goto done;
+    }
+    uint64_t preparation_start = now_ms(), last_input = preparation_start,
+             next_status = preparation_start, next_signal = preparation_start;
+    uint64_t retune_t0 = 0;
+    uint8_t data[65536 + 188], out[65536 + 188];
+    /* DT295_CONTROL=1 のとき、標準入力から選局指示 ("T21" / "BS01_0" / "quit") を
+     * 受け付ける。切替は「セッションを維持したまま stop -> tune -> prepare ->
+     * start」で行う (認証をやり直さないので 0xffff に落ちない)。 */
+    pix_control control = {0};
+    const char *control_env = getenv("DT295_CONTROL");
+    int control_on = control_env && *control_env && *control_env != '0';
+    unsigned cur_channel = cfg->channel;
+    int cur_slot = cfg->slot;
+    pixy_system cur_system = cfg->system;
+
+    while (!cfg->interrupted || !*cfg->interrupted) {
+        if (control_on) {
+            pix_command cmd = {0};
+            int pr = pix_control_poll(&control, cur_system, &cmd);
+            if (pr == 2 || (pr == 1 && cmd.quit))
+                break;
+            if (pr == 1 && (cmd.channel.system != cur_system ||
+                            cmd.channel.channel != cur_channel || cmd.channel.slot != cur_slot)) {
+                retune_t0 = now_ms();
+                int next_system = cmd.channel.system;
+                unsigned next_channel = cmd.channel.channel;
+                int next_slot = cmd.channel.slot;
+                if (u.stream) {
+                    (void)dt295_stream_stop(u.stream, 3000);
+                    if (dt295_stream_destroy(u.stream)) {
+                        native_abandoned = 1;
+                        rc = 7;
+                        break;
+                    }
+                    u.stream = NULL;
+                }
+                if (dt295_stop(d, &drained, error, sizeof(error))) {
+                    rc = 7;
+                    break;
+                }
+                fprintf(stderr, "{\"event\":\"retune\",\"step\":\"stop\",\"ms\":%llu}\n",
+                        (unsigned long long)(now_ms() - retune_t0));
+                dt295_routes_destroy(tables);
+                tables = dt295_routes_create();
+                if (!tables) {
+                    rc = 70;
+                    break;
+                }
+                dt295_routes_set_satellite(tables, next_system != PIXY_TERRESTRIAL);
+                int tuned_rc = 0;
+                if (next_system == PIXY_TERRESTRIAL) {
+                    tuned_rc = dt295_tune_terrestrial(d, next_channel, error, sizeof(error));
+                } else {
+                    uint32_t hz = 0;
+                    if (pixy_frequency((pixy_system)next_system, next_channel, &hz))
+                        tuned_rc = -1;
+                    else if (dt295_tune_satellite(d, hz, -1, error, sizeof(error)))
+                        tuned_rc = -1;
+                    else if (next_slot >= 0 &&
+                             dt295_select_satellite_slot(d, (unsigned)next_slot, error,
+                                                         sizeof(error)))
+                        tuned_rc = -1;
+                }
+                if (tuned_rc) {
+                    rc = 5;
+                    break;
+                }
+                fprintf(stderr, "{\"event\":\"retune\",\"step\":\"tune\",\"ms\":%llu}\n",
+                        (unsigned long long)(now_ms() - retune_t0));
+                dt295_route_plan next_plan = {0};
+                char next_error[DT295_ROUTE_ERROR] = {0};
+                if (dt295_routes_initial_plan(tables, &next_plan, next_error) ||
+                    dt295_reprepare_plan(d, &next_plan, error, sizeof(error)) ||
+                    dt295_start(d, error, sizeof(error))) {
+                    rc = 7;
+                    break;
+                }
+                fprintf(stderr, "{\"event\":\"retune\",\"step\":\"prepare\",\"ms\":%llu}\n",
+                        (unsigned long long)(now_ms() - retune_t0));
+                e = dt295_stream_start(usb_native_context(u.usb), usb_native_handle(u.usb),
+                                       &u.stream);
+                if (e) {
+                    rc = 7;
+                    snprintf(error, sizeof(error), "switch USB start error %d", e);
+                    break;
+                }
+                fprintf(stderr, "{\"event\":\"retune\",\"step\":\"stream\",\"ms\":%llu}\n",
+                        (unsigned long long)(now_ms() - retune_t0));
+                live = next_plan;
+                cur_system = (pixy_system)next_system;
+                cur_channel = next_channel;
+                cur_slot = next_slot;
+                remainder = 0;
+                align = (ts_align){0};
+                recording = 0;
+                ts_check_init(check);
+                last_input = now_ms();
+                fprintf(stderr,
+                        "{\"event\":\"tuned\",\"type\":\"%s\",\"channel\":\"%u\","
+                        "\"slot\":%d}\n",
+                        next_system == PIXY_TERRESTRIAL ? "GR"
+                                                        : (next_system == PIXY_BS ? "BS" : "CS"),
+                        next_channel, next_slot);
+            }
+        }
+        uint64_t now = now_ms();
+        if (recording) {
+            elapsed = now - record_start;
+            if (cfg->seconds && elapsed >= (uint64_t)cfg->seconds * 1000)
+                break;
+        } else if (now - preparation_start >= 30000) {
+            rc = 5;
+            snprintf(error, sizeof(error), "incomplete initial PAT/PMT/CAT after 30 seconds");
+            break;
+        }
+        e = ts_output_poll(output, 0);
+        if (!e)
+            e = ts_output_poll(diag, 0);
+        if (e) {
+            rc = output_exit(e);
+            snprintf(error, sizeof(error), "output progress: %s", strerror(e));
+            break;
+        }
+        int renewed = 0;
+        if (dt295_renew_if_due(d, &renewed, error, sizeof(error))) {
+            rc = 7;
+            break;
+        }
+        renewals += (unsigned)renewed;
+        size_t actual = 0;
+        e = capture_bulk(&u, capture_endpoint(), data + remainder, 65536, 100, &actual);
+        if (e && !(e == LIBUSB_ERROR_TIMEOUT && actual)) {
+            if (e == LIBUSB_ERROR_TIMEOUT && now_ms() - last_input < 10000)
+                continue;
+            rc = 7;
+            snprintf(error, sizeof(error), "USB input error %d", e);
+            break;
+        }
+        if (!actual)
+            continue;
+        last_input = now_ms();
+        size_t total = remainder + actual, pos = 0, emitted = 0;
+        while (pos + 188 <= total) {
+            size_t at = ts_align_next(&align, data, total, pos);
+            if (at + 188 > total) {
+                pos = at;
+                break;
+            }
+            pos = at;
+            uint8_t *packet = data + pos;
+            if (dt295_decode_packet(d, packet) < 0) {
+                rc = 8;
+                snprintf(error, sizeof(error), "invalid DT295 TS packet");
+                break;
+            }
+            dt295_routes_feed(tables, packet);
+            if (recording) {
+                ts_check_packet(check, packet);
+                packets++;
+                unsigned pid = ((packet[1] & 31u) << 8) | packet[2];
+                if (!cfg->filter_pids || cfg->pid_mask[pid]) {
+                    memcpy(out + emitted, packet, 188);
+                    emitted += 188;
+                }
+            }
+            pos += 188;
+        }
+        if (rc)
+            break;
+        remainder = total - pos;
+        memmove(data, data + pos, remainder);
+        dt295_routes_snapshot snapshot;
+        dt295_routes_snapshot_get(tables, &snapshot);
+        if (cfg->system != PIXY_TERRESTRIAL && snapshot.have_pat &&
+            snapshot.tsid != sat_state.selected_tsid) {
+            rc = 8;
+            snprintf(error, sizeof(error),
+                     "PAT TSID %u differs from selected TSID %u", (unsigned)snapshot.tsid,
+                     (unsigned)sat_state.selected_tsid);
+            break;
+        }
+        if (snapshot.unsupported_tables &&
+            !getenv("DT295_TOLERATE_PSI")) {
+            rc = 8;
+            snprintf(error, sizeof(error),
+                     "unsupported or ambiguous PAT/PMT/CAT configuration; reacquisition required");
+            break;
+        }
+        dt295_route_plan desired;
+        int plan_rc = 0;
+        if (recording)
+            plan_rc = dt295_routes_build(tables, 0, &live, &desired, route_error);
+        else if (!snapshot.ready)
+            plan_rc = dt295_routes_bootstrap_plan(tables, &live, &desired, route_error);
+        if (plan_rc) {
+            rc = 8;
+            snprintf(error, sizeof(error), "route plan: %s", route_error);
+            break;
+        }
+        if (recording) {
+            dt295_route_op committed_ops[DT295_ROUTE_OP_LIMIT];
+            size_t committed_count = 0;
+            if (apply_plan(d, &live, &desired, 1, committed_ops, &committed_count, error,
+                           sizeof(error))) {
+                rc = 8;
+                break;
+            }
+            if (cfg->diagnostic && committed_count) {
+                live_add_count += committed_count;
+                e = capture_live_add_events(diag, &live, committed_ops, committed_count, packets);
+                if (e) {
+                    rc = output_exit(e);
+                    snprintf(error, sizeof(error), "live PID diagnostic enqueue: %s", strerror(e));
+                    break;
+                }
+            }
+        } else if (!snapshot.ready) {
+            if (apply_plan(d, &live, &desired, 0, NULL, NULL, error, sizeof(error))) {
+                rc = 8;
+                break;
+            }
+        } else {
+            /* General configuration is acquired outside the recording interval.
+             * Reloading uses the same transport key, as the tested rearm path. */
+            dt295_route_plan full;
+            if (dt295_routes_build(tables, 0, NULL, &full, route_error)) {
+                rc = 8;
+                snprintf(error, sizeof(error), "initial complete plan: %s", route_error);
+                break;
+            }
+            if (!dt295_initial_ecm_gate_allowed(&full, snapshot.invalid_sections) &&
+                !allow_ecm_conflict()) {
+                rc = 8;
+                snprintf(error, sizeof(error),
+                         "multiple independent ECMs are outside the verified DT295 scope");
+                break;
+            }
+            fprintf(stderr, "{\"event\":\"retune\",\"step\":\"psi\",\"ms\":%llu}\n",
+                    (unsigned long long)(now_ms() - retune_t0));
+            if (dt295_stop(d, &drained, error, sizeof(error))) {
+                rc = 7;
+                break;
+            }
+            if (dt295_stream_stop(u.stream, 3000) || dt295_stream_destroy(u.stream)) {
+                native_abandoned = 1;
+                rc = 7;
+                snprintf(error, sizeof(error), "bootstrap USB cancellation did not quiesce");
+                break;
+            }
+            u.stream = NULL;
+            if (dt295_reprepare_plan(d, &full, error, sizeof(error)) ||
+                dt295_start(d, error, sizeof(error))) {
+                rc = 7;
+                break;
+            }
+            fprintf(stderr, "{\"event\":\"retune\",\"step\":\"full\",\"ms\":%llu}\n",
+                    (unsigned long long)(now_ms() - retune_t0));
+            e = dt295_stream_start(usb_native_context(u.usb), usb_native_handle(u.usb), &u.stream);
+            if (e) {
+                rc = 7;
+                snprintf(error, sizeof(error), "recording USB start error %d", e);
+                break;
+            }
+            live = full;
+            remainder = 0;
+            recording = 1;
+            record_start = last_input = now_ms();
+            ts_check_init(check);
+        }
+        if (emitted && (e = ts_output_submit(output, out, emitted, NULL))) {
+            rc = output_exit(e);
+            snprintf(error, sizeof(error), "TS enqueue: %s", strerror(e));
+            break;
+        }
+        now = now_ms();
+        if (now >= next_status) {
+            e = capture_status(diag, recording ? 2 : 1, packets, elapsed, renewals, u.stream,
+                               output, NULL, tables);
+            if (e) {
+                rc = 70;
+                snprintf(error, sizeof(error), "diagnostic enqueue: %s", strerror(e));
+                break;
+            }
+            next_status = now + 10000;
+        }
+        if (d && diag && now >= next_signal) {
+            dt295_signal_state sig = {0, 0, 0};
+            char sig_error[160];
+            if (!dt295_signal(d, cur_system != PIXY_TERRESTRIAL, &sig, sig_error,
+                              sizeof(sig_error))) {
+                char line[256];
+                int n = snprintf(line, sizeof(line),
+                                 "{\"event\":\"signal\",\"system\":\"%s\",\"locked\":%u,"
+                                 "\"cn_raw\":%lu,\"cn_mdb\":%d}\n",
+                                 cur_system != PIXY_TERRESTRIAL ? "satellite" : "terrestrial",
+                                 (unsigned)sig.locked, (unsigned long)sig.cn_raw, sig.cn_mdb);
+                if (n > 0 && (size_t)n < sizeof(line))
+                    (void)ts_output_submit(diag, line, (size_t)n, NULL);
+            }
+            next_signal = now + 5000;
+        }
+    }
+done:
+    if (recording)
+        elapsed = now_ms() - record_start;
+    if (d && dt295_has_session(d) && !native_abandoned &&
+        dt295_stop(d, &drained, stop_error, sizeof(stop_error)) && !rc)
+        rc = 7;
+    if (u.stream && !native_abandoned) {
+        int stop = dt295_stream_stop(u.stream, 3000);
+        dt295_stream_snapshot(u.stream, &final_usb);
+        if (stop || dt295_stream_destroy(u.stream)) {
+            native_abandoned = 1;
+            if (!rc)
+                rc = 7;
+        } else
+            u.stream = NULL;
+    }
+    if (d && !native_abandoned && dt295_has_session(d) &&
+        dt295_shutdown(d, shutdown_error, sizeof(shutdown_error)) && !rc)
+        rc = 7;
+    if (output) {
+        e = ts_output_finish(output, TS_OUTPUT_DRAIN_MS);
+        if (e && !rc)
+            rc = output_exit(e);
+    }
+    if (recording && !rc &&
+        (check->tei || check->scrambled || check->invalid || check->crc_errors ||
+         check->continuity))
+        rc = 8;
+    if (diag && output) {
+        capture_status(diag, rc ? 4 : 3, packets, elapsed, renewals, u.stream, output,
+                       &final_usb, tables);
+        if (cfg->diagnostic) {
+            e = capture_live_add_summary(diag, live_add_count);
+            if (e && !rc) {
+                rc = output_exit(e);
+                snprintf(error, sizeof(error), "live PID summary enqueue: %s", strerror(e));
+            }
+        }
+        char end[1024];
+        int n =
+            snprintf(end, sizeof(end),
+                     "{\"event\":\"end\",\"exit\":%d,\"state\":%u,\"packets\":%llu,\"elapsed_ms\":%"
+                     "llu,\"trailing_bytes\":%zu,\"stop_drained_bytes\":%zu,\"tei\":%llu,\"cc\":%"
+                     "llu,\"crc\":%llu,\"native_abandoned\":%d,\"ts_desyncs\":%llu,"
+                     "\"ts_dropped_bytes\":%llu}\n",
+                     rc, d && !native_abandoned ? dt295_state(d) : 65535,
+                     (unsigned long long)packets, (unsigned long long)elapsed, remainder, drained,
+                     (unsigned long long)check->tei, (unsigned long long)check->continuity,
+                     (unsigned long long)check->crc_errors, native_abandoned,
+                     (unsigned long long)align.desyncs, (unsigned long long)align.dropped);
+        uint64_t id;
+        if (n > 0 && (size_t)n < sizeof(end))
+            ts_output_submit(diag, end, (size_t)n, &id);
+        if (rc && error[0])
+            capture_message(diag, error);
+        if (stop_error[0])
+            capture_message(diag, stop_error);
+        if (shutdown_error[0])
+            capture_message(diag, shutdown_error);
+        e = ts_output_finish(diag, TS_OUTPUT_DRAIN_MS);
+        if (e && !rc)
+            rc = 70;
+    }
+    if (!diag && error[0])
+        fprintf(stderr, "DT295: %s\n", error);
+    if (!diag && stop_error[0])
+        fprintf(stderr, "DT295 stop cleanup: %s\n", stop_error);
+    if (!diag && shutdown_error[0])
+        fprintf(stderr, "DT295 shutdown cleanup: %s\n", shutdown_error);
+    if (ts_output_destroy(output) && !rc)
+        rc = 70;
+    if (ts_output_destroy(diag) && !rc)
+        rc = 70;
+    dt295_routes_destroy(tables);
+    if (!native_abandoned) {
+        dt295_destroy(d);
+        usb_close(u.usb);
+    }
+    if (lock_fd >= 0 && !native_abandoned)
+        close(lock_fd);
+    if (!native_abandoned)
+        dt295_assets_free(assets);
+    free(check);
+    return rc;
+#endif
+}

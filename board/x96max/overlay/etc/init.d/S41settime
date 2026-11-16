@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# The board has no RTC and no NTP client, so the clock starts at the epoch and
+# the recorder files every segment under 1970/01/01. Ask the NAS for the time
+# once at boot: it is the machine that names the files.
+#
+# Runs before S40network only if the interface is already up; otherwise the
+# retry loop below covers the short gap while DHCP settles.
+. /etc/default/pix-stream-linux 2>/dev/null || true
+: "${PIX_TIME_URL:=http://192.168.99.80:40776/api/time}"
+: "${PIX_LOG_DIR:=/tmp}"
+
+log() { echo "settime: $*" >&2; }
+
+i=0
+while [ $i -lt 30 ]; do
+    epoch=$(wget -q -T 2 -O - "$PIX_TIME_URL" 2>/dev/null | tr -dc '0-9')
+    if [ -n "$epoch" ] && [ "$epoch" -gt 1000000000 ] 2>/dev/null; then
+        if date -u -s "@$epoch" >/dev/null 2>&1; then
+            log "clock set to $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            exit 0
+        fi
+    fi
+    i=$((i + 1))
+    sleep 2
+done
+log "could not reach $PIX_TIME_URL; the clock stays at the epoch"
+exit 0

@@ -1,0 +1,7 @@
+source "$BR2_EXTERNAL_X96MAX_PATH/package/torne/Config.in"
+source "$BR2_EXTERNAL_X96MAX_PATH/package/pix-tuner/Config.in"
+source "$BR2_EXTERNAL_X96MAX_PATH/package/meson-venc/Config.in"
+source "$BR2_EXTERNAL_X96MAX_PATH/package/siano-ts/Config.in"
+source "$BR2_EXTERNAL_X96MAX_PATH/package/bcasd/Config.in"
+source "$BR2_EXTERNAL_X96MAX_PATH/package/cardrelay/Config.in"
+source "$BR2_EXTERNAL_X96MAX_PATH/package/stb-streamer/Config.in"

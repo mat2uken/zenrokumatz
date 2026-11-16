@@ -1,0 +1,56 @@
+#!/bin/sh
+# 復号（pix-producer）と配信（pix-reader）を組み合わせて回し続ける。
+#
+# pix-producer は -t で区切って終わる。終わったらリーダーも畳んで作り直す。
+# リーダーは tail -f で待ち続けるため、放っておくと生産が止まったまま
+# ファイルだけが育ち、tmpfs を埋めて録画が止まる。
+exec >>/tmp/pix-simple.log 2>&1
+. /etc/default/pix-stream-linux 2>/dev/null || true
+: "${PIX_LIVE_FILE:=/dev/shm/pix/live.ts}"
+: "${PIX_LIVE_MAX_MB:=1000}"
+
+log() { echo "$(date +%H:%M:%S) simple: $*"; }
+
+while :; do
+    if [ -w /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable ]; then
+        echo 1 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable 2>/dev/null
+        sleep 2
+        echo 0 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable 2>/dev/null
+        sleep 6
+    fi
+    rm -f "$PIX_LIVE_FILE"
+    log "starting the decrypted capture"
+    /usr/bin/pix-producer &
+    producer=$!
+    waited=0
+    while [ "$waited" -lt 120 ]; do
+        [ -s "$PIX_LIVE_FILE" ] && break
+        kill -0 "$producer" 2>/dev/null || break
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    if [ ! -s "$PIX_LIVE_FILE" ]; then
+        log "no data; $(tail -1 /tmp/pix-b25.log 2>/dev/null)"
+        kill -TERM "$producer" 2>/dev/null
+        wait "$producer" 2>/dev/null
+        sleep 5
+        continue
+    fi
+    log "streaming"
+    /usr/bin/pix-reader &
+    reader=$!
+    # 生産が終わるか、ファイルが上限に達したら区切る。
+    while kill -0 "$producer" 2>/dev/null; do
+        size=$(stat -c %s "$PIX_LIVE_FILE" 2>/dev/null || echo 0)
+        if [ "$size" -gt $((PIX_LIVE_MAX_MB * 1024 * 1024)) ]; then
+            log "live buffer hit ${PIX_LIVE_MAX_MB}MB; starting a new one"
+            break
+        fi
+        sleep 5
+    done
+    kill -TERM "$producer" "$reader" 2>/dev/null
+    wait "$producer" 2>/dev/null
+    wait "$reader" 2>/dev/null
+    log "cycle finished; restarting"
+    sleep 2
+done

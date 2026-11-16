@@ -1,0 +1,58 @@
+#!/bin/sh
+#
+# pix-ts-source - チューナーから受け取り、復号したTSを標準出力へ流す
+#
+# ランチャーから関数のままパイプへ繋ぐと、復号器のカード初期化が失敗する。
+# 独立したスクリプトにすると同じ処理が安定する（実測で確認）。
+# 設定は /etc/default/pix-stream-linux を読む。
+
+set -eu
+[ -r /etc/default/pix-stream-linux ] && . /etc/default/pix-stream-linux
+
+: "${PIX_LOG_DIR:=/tmp}"
+: "${PIX_TUNER:=pxs1ud}"
+: "${PIX_SYSTEM:=terrestrial}"
+: "${PIX_CHANNEL:=20}"
+: "${PIX_SAT_SLOT:=}"
+: "${PIX_PIDS:=}"
+: "${PIX_CAPTURE_SECONDS:=1800}"
+: "${PIX_CARD_SOCKET:=/dev/shm/torne/card.sock}"
+: "${PIX_DT295_ASSETS:=/usr/share/pix-tuner}"
+: "${PIX_FIRMWARE:=/lib/firmware/isdbt_rio.inp}"
+: "${PIX_TUNER_DEV:=}"
+
+case "$PIX_SYSTEM" in
+    terrestrial) chan="T$PIX_CHANNEL" ;;
+    *)           chan="$PIX_CHANNEL" ;;
+esac
+
+extra=""
+[ -n "$PIX_SAT_SLOT" ] && extra="$extra --slot $PIX_SAT_SLOT"
+for pid in $PIX_PIDS; do
+    extra="$extra -p $pid"
+done
+
+sleep "${PIX_START_DELAY:-0}"
+
+case "$PIX_TUNER" in
+    torne)
+        torne-c --channel "$PIX_CHANNEL" 2>"$PIX_LOG_DIR/pix-ts.log" \
+          | torne-b25 --card-socket "$PIX_CARD_SOCKET" 2>"$PIX_LOG_DIR/pix-b25.log"
+        ;;
+    dt295)
+        # shellcheck disable=SC2086
+        pix-ts-legacy --model dt295 --assets "$PIX_DT295_ASSETS" \
+            -s "$PIX_SYSTEM" -c "$chan" $extra -t "$PIX_CAPTURE_SECONDS" \
+            2>"$PIX_LOG_DIR/pix-ts.log" \
+          | ffmpeg -hide_banner -nostdin -v error -f mpegts \
+                -probesize 2000000 -analyzeduration 3000000 -i pipe:0 \
+                -map 0 -c copy -f mpegts pipe:1 2>"$PIX_LOG_DIR/pix-resync.log" \
+          | torne-b25 --card-socket "$PIX_CARD_SOCKET" \
+                --trace /dev/shm/pix/b25.trace 2>"$PIX_LOG_DIR/pix-b25.log"
+        ;;
+    pxs1ud|*)
+        siano-ts --device "$PIX_TUNER_DEV" --firmware "$PIX_FIRMWARE" -c "$PIX_CHANNEL" \
+            2>"$PIX_LOG_DIR/pix-ts.log" \
+          | torne-b25 --card-socket "$PIX_CARD_SOCKET" 2>"$PIX_LOG_DIR/pix-b25.log"
+        ;;
+esac

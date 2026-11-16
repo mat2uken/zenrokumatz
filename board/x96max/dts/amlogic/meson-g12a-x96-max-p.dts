@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// X96Max_P: G12A, 2 GiB, internal PHY 0180:3301 observed via Android UART.
+#include "meson-g12a-x96-max.dts"
+
+/ {
+	model = "X96Max_P (G12A, 2 GiB, internal Ethernet PHY)";
+	memory@0 {
+		reg = <0x0 0x0 0x0 0x80000000>;
+	};
+};
+
+&ethmac {
+	/delete-property/ pinctrl-0;
+	/delete-property/ pinctrl-names;
+	/delete-property/ amlogic,tx-delay-ns;
+	phy-mode = "rmii";
+	phy-handle = <&internal_ephy>;
+};
+
+&ext_mdio {
+	status = "disabled";
+};
+
+// The initial image uses wired Ethernet; this board's wireless chip is unverified.
+&sd_emmc_a {
+	status = "disabled";
+};
+
+&uart_A {
+	status = "disabled";
+};
+
+/*
+ * Both USB ports are wired to the outside as host ports: the USB3.0 port on
+ * dwc3 (px-s1ud) and the USB2.0 port on dwc2 (card reader). meson-g12-common
+ * defaults the dwc2 child to "peripheral" and the board DTS only overrides the
+ * parent, so without this the USB2.0 port never supplies VBUS and never sees a
+ * device (PORTSC PP=0, CCS=0).
+ */
+&dwc2 {
+	dr_mode = "host";
+};
+
+/*
+ * snps,dis_u2_susphy_quirk keeps the USB2 PHY in reset on this board: both
+ * GUSB2PHYCFG registers stay at 0x40102500 (PHYSoftRst=1) and the xHCI port
+ * registers never report a connect, so no device is ever enumerated. Clearing
+ * the quirk lets dwc3 leave the PHY running.
+ */
+&dwc3 {
+	/delete-property/ snps,dis_u2_susphy_quirk;
+};
+
+/*
+ * VBUS and PHY power. meson-g12a-x96-max.dts defines vcc_5v (GPIOH_8,
+ * open drain) but never wires it to the USB controller, so dwc3 never calls
+ * regulator_enable() and the ports stay unpowered: PORTSC1/2 read back 0x0
+ * (PP=0, CCS=0). meson-g12a-u200.dts, which uses the same SoC and does work,
+ * wires its 5 V rail into both vbus-supply and the PHY supplies.
+ */
+&usb {
+	vbus-supply = <&vcc_5v>;
+};
+
+&usb2_phy0 {
+	phy-supply = <&vcc_5v>;
+};
+
+&usb2_phy1 {
+	phy-supply = <&vcc_5v>;
+};

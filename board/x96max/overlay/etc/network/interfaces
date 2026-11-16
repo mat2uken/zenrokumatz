@@ -1,0 +1,10 @@
+# The address is reserved on the DHCP server by this interface's MAC
+# (90:0e:b3:0e:17:1b), so the box asks for its lease like any other client.
+# U-Boot passes that MAC from the chip's efuse into the device tree, so it is
+# the same on every boot.
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+  pre-up /etc/network/nfs_check

@@ -1,0 +1,8 @@
+config BR2_PACKAGE_STB_STREAMER
+	bool "stb-streamer (fMP4 spool and HTTP server)"
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	help
+	  Reads fragmented MP4 from standard input, keeps it in a bounded
+	  RAM spool and serves it over the same HTTP protocol as the
+	  Android build (GET /v1/streams/<channel>, GET /v1/status,
+	  POST /v1/stop). The NAS pulls from this endpoint.

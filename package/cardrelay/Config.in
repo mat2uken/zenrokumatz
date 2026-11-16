@@ -1,0 +1,6 @@
+config BR2_PACKAGE_CARDRELAY
+	bool "cardrelay (local card socket to remote bcasd)"
+	help
+	  Bridges the UNIX socket that torne-b25 opens to a remote bcasd
+	  over TCP. torne-b25 speaks the 524-byte frame protocol on
+	  /dev/shm/torne/card.sock; this relay forwards those frames.

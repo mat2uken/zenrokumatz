@@ -1,0 +1,110 @@
+#!/bin/sh
+# B-CAS カードへの経路を用意する。
+#
+#   local  ... この端末の USB リーダーを使う。pcscd -> bcasd -> cardrelay
+#   remote ... ネットワーク越しの bcasd を使う。cardrelay だけ動かす
+#
+# どちらでも torne-b25 から見えるのは $BCAS_SOCKET なので、上位は切り替えを
+# 意識しない。
+. /etc/default/bcas-linux 2>/dev/null || true
+: "${BCAS_MODE:=local}"
+: "${BCAS_REMOTE_HOST:=192.168.99.10}"
+: "${BCAS_REMOTE_PORT:=40790}"
+: "${BCAS_REMOTE_TOKEN:=}"
+: "${BCAS_SOCKET:=/dev/shm/torne/card.sock}"
+: "${BCAS_BIND:=127.0.0.1}"
+: "${BCAS_PORT:=40790}"
+: "${BCAS_LOCAL_TOKEN_FILE:=/etc/bcas/tokens}"
+
+PIDFILE_BCASD=/var/run/bcasd.pid
+PIDFILE_PCSCD=/var/run/pcscd.pid
+PIDFILE_RELAY=/var/run/cardrelay.pid
+
+local_token() {
+    awk '!/^#/ && NF >= 2 { print $2; exit }' "$BCAS_LOCAL_TOKEN_FILE" 2>/dev/null
+}
+
+write_relay_conf() {
+    mkdir -p /etc/bcas /dev/shm/torne
+    {
+        echo "host=$1"
+        echo "port=$2"
+        echo "token=$3"
+        echo "socket=$BCAS_SOCKET"
+        echo "connect_timeout_ms=3000"
+        echo "apdu_timeout_ms=5000"
+    } > /etc/bcas/cardrelay.conf
+    chmod 644 /etc/bcas/cardrelay.conf
+}
+
+start_local() {
+    printf 'Starting pcscd: '
+    mkdir -p /var/run/pcscd
+    start-stop-daemon -S -q -b -m -p "$PIDFILE_PCSCD" -x /usr/sbin/pcscd -- -f && echo "OK" || echo "FAIL"
+    sleep 2
+    printf 'Starting bcasd: '
+    start-stop-daemon -S -q -b -m -p "$PIDFILE_BCASD" -x /usr/bin/bcasd \
+        -- --config /etc/bcas/bcasd.conf && echo "OK" || echo "FAIL"
+    sleep 1
+    TOKEN=$(local_token)
+    if [ -z "$TOKEN" ]; then
+        echo "no token in $BCAS_LOCAL_TOKEN_FILE; card access will fail"
+    fi
+    printf 'Starting cardrelay (local): '
+    write_relay_conf "$BCAS_BIND" "$BCAS_PORT" "$TOKEN"
+    start_relay
+}
+
+start_remote() {
+    if [ -z "$BCAS_REMOTE_TOKEN" ]; then
+        echo "BCAS_MODE=remote ですが BCAS_REMOTE_TOKEN が空です"
+        echo "  $BCAS_REMOTE_HOST の /etc/bcas/tokens に登録した 64 桁 hex を"
+        echo "  /etc/default/bcas-linux の BCAS_REMOTE_TOKEN に入れてください"
+        return 1
+    fi
+    printf 'Starting cardrelay (remote %s:%s): ' "$BCAS_REMOTE_HOST" "$BCAS_REMOTE_PORT"
+    write_relay_conf "$BCAS_REMOTE_HOST" "$BCAS_REMOTE_PORT" "$BCAS_REMOTE_TOKEN"
+    start_relay
+}
+
+# start-stop-daemon can report success while the relay has already exited, and
+# a missing relay makes torne-b25 fail its card handshake later. Check for the
+# process and give it one more chance.
+start_relay() {
+    start-stop-daemon -S -q -b -m -p "$PIDFILE_RELAY" -x /usr/bin/cardrelay \
+        -- --config /etc/bcas/cardrelay.conf
+    sleep 1
+    if ! pidof cardrelay >/dev/null 2>&1; then
+        rm -f "$PIDFILE_RELAY"
+        start-stop-daemon -S -q -b -m -p "$PIDFILE_RELAY" -x /usr/bin/cardrelay \
+            -- --config /etc/bcas/cardrelay.conf
+        sleep 1
+    fi
+    if pidof cardrelay >/dev/null 2>&1; then echo "OK"; else echo "FAIL"; fi
+}
+
+start() {
+    case "$BCAS_MODE" in
+        remote) start_remote ;;
+        *) start_local ;;
+    esac
+}
+
+stop() {
+    printf 'Stopping cardrelay: '
+    start-stop-daemon -K -q -p "$PIDFILE_RELAY" -R TERM/5/KILL/5 && echo "OK" || echo "not running"
+    printf 'Stopping bcasd: '
+    start-stop-daemon -K -q -p "$PIDFILE_BCASD" -R TERM/5/KILL/5 && echo "OK" || echo "not running"
+    printf 'Stopping pcscd: '
+    start-stop-daemon -K -q -p "$PIDFILE_PCSCD" -R TERM/5/KILL/5 && echo "OK" || echo "not running"
+}
+
+case "$1" in
+    start|stop) "$1";;
+    restart) stop; sleep 1; start;;
+    status)
+        echo "mode=$BCAS_MODE socket=$BCAS_SOCKET"
+        ps | grep -E "[p]cscd|[b]casd|[c]ardrelay" | sed 's/^/  /'
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1;;
+esac

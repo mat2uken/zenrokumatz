@@ -1,0 +1,56 @@
+#!/bin/sh
+# 実放送のライブ配信を開始する。S96bcas が pcscd/bcasd/cardrelay を
+# 立ち上げた後に走る必要があるため、番号は S96 より後ろにする。
+# 実績のある構成（復号結果をファイルへ出し、別プロセスが読む）で動かす。
+DAEMON=/usr/bin/pix-stream-simple
+LEGACY=/usr/bin/pix-stream-linux
+PIDFILE=/var/run/pix-stream.pid
+
+start() {
+    printf 'Starting pix-stream: '
+    mkdir -p /dev/shm/pix
+    # cardrelay creates the socket a moment after S96bcas returns, so a boot
+    # can reach this point with the socket still missing. Wait for it instead
+    # of skipping the start, which used to leave the box idle until someone
+    # started the stream by hand.
+    waited=0
+    while [ ! -S /dev/shm/torne/card.sock ] && [ "$waited" -lt 40 ]; do
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    if [ ! -S /dev/shm/torne/card.sock ]; then
+        echo "card socket is still missing (S96bcas); skipped"
+        return 0
+    fi
+    start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" && echo "OK" || echo "FAIL"
+}
+
+stop() {
+    printf 'Stopping pix-stream: '
+    start-stop-daemon -K -q -p "$PIDFILE" -R TERM/5/KILL/5 && echo "OK" || echo "not running"
+    for p in $(ps | grep -E "[p]ix-stream-run|[p]ix-stream-linux" | awk '{print $1}'); do
+        kill -TERM "$p" 2>/dev/null
+    done
+    # The launcher shell itself must go too: otherwise it restarts its
+    # children after this stop and two pipelines fight over the tuner.
+    # The DT295 parks itself on SIGTERM; a SIGKILL leaves it in a firmware
+    # state it will not boot from, which needs a physical replug to clear.
+    for p in $(ps | grep -E "[p]ix-stream-linux|[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[f]fmpeg|[s]tb_streamer" | awk '{print $1}'); do
+        kill -TERM "$p" 2>/dev/null
+    done
+    sleep 3
+    for p in $(ps | grep -E "[p]ix-stream-linux|[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[f]fmpeg|[s]tb_streamer" | awk '{print $1}'); do
+        kill -9 "$p" 2>/dev/null
+    done
+    # Give the tuner a moment to drop the old session by itself. `receivers=`
+    # in `siano-ts --list` counts the devices it can see, not open sessions, so
+    # it cannot be used to decide whether the slot is free; rebinding the USB
+    # device here only made the next capture run at half rate.
+    sleep 2
+}
+
+case "$1" in
+    start|stop) "$1";;
+    restart) stop; sleep 1; start;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1;;
+esac

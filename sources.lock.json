@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-10",
+  "buildroot": {
+    "version": "2026.08.1",
+    "url": "https://buildroot.org/downloads/buildroot-2026.08.1.tar.xz",
+    "sha256": "34fb7bea8a213ffde39cc02e61703391560f26e0850f03138c722d0b09880f2b"
+  },
+  "linux": {
+    "version": "6.18.62",
+    "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.62.tar.xz",
+    "sha256": "490a7aedf1b355c565d3a6c05333ccccb5da82064eca46b590448a7099d7d651"
+  },
+  "dtv_android": {
+    "path": "/Users/kenichim/Desktop/work/dtv_android",
+    "head": "4fe3b1358c98d25794175798310e44cc935488f1",
+    "dirty": true,
+    "usage": "capture process layout and build flags; working tree left unchanged"
+  },
+  "torne": {
+    "repository": "/Users/kenichim/Desktop/work/pix-smb400/repo",
+    "commit": "861d55040d81ba5d009c589ebada7144eff760ee",
+    "paths": [
+      "src/torne",
+      "third_party/torne",
+      "third_party/arib25"
+    ],
+    "snapshot": "vendor/torne",
+    "note": "Recovered from the existing recording-autostart history. Identity with deployed Android binaries is unverified."
+  },
+  "pix_userland": {
+    "repository": "https://github.com/rk2kk/pix-userland.git",
+    "branch": "dt295/transcode-hooks",
+    "commit": "a866c61067f03557701914a2e48a3a11bfbb706e",
+    "snapshot": "vendor/pix-userland",
+    "dt295_firmware_sha256": "3cabe15f585a8a7a7d7b9b3db548b677b0732c13926dc3a2b5270acf1bc6ffc8"
+  },
+  "codecs": {
+    "repository": "https://github.com/ray38080289/meson-sm1-codecs.git",
+    "commit": "eb7a44464af1c7793f793698e309abe4e6ad82da",
+    "included_in_image": "vdec only, as board/x96max/patches/linux/0001-vdec-meson-sm1-codecs.patch",
+    "venc_h264": {
+      "module": "amvenc_avc.ko",
+      "device": "/dev/video1",
+      "state": "built as package/meson-venc (kernel-module infra, BR2_PACKAGE_MESON_VENC); installed to /lib/modules/<ver>/updates/amvenc_avc.ko in output/rootfs.ext4"
+    },
+    "firmware": {
+      "meson/vdec/gxl_mpeg12.bin": {
+        "source": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/fb505a691b2a37b9d1fc20617433dfd52fb6e27e/meson/vdec/gxl_mpeg12.bin",
+        "sha256": "4a851302785a48e84cb846e5e974a4f51a4ca87c52d961aab4307b1c91daf2b2"
+      },
+      "meson/venc/ga_h264_enc_cabac.bin": {
+        "source": "https://raw.githubusercontent.com/CoreELEC/media_modules-aml/201519678d35a9d7bf4dde1f3a328aa9d533589b/firmware/h264_enc.bin (entry ga_h264_enc_cabac.bin)",
+        "md5": "54dd341ef2d06bdbce243837355e20fc",
+        "sha256": "b93018e4e3d04fd9e69eeaaf4a12f868d2c9d1a51a9b8a8b3b409e387d36fe8b"
+      }
+    },
+    "snapshot": "vendor/meson-sm1-codecs",
+    "g12a_changes": [
+      "vdec/: kernel patch board/x96max/patches/linux/0001-vdec-meson-sm1-codecs.patch (queue start gate, cmd_stop drain, bytesperline 64, canvas_height_align 32)",
+      "venc-h264/: get_cpu_type() returns G12A, DT lookup amlogic,g12a-vdec, v4l2_m2m_buf_copy_metadata() third argument for 6.18.62"
+    ]
+  }
+}

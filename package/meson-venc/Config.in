@@ -1,0 +1,8 @@
+config BR2_PACKAGE_MESON_VENC
+	bool "meson H.264 hardware encoder (amvenc_avc)"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Amlogic HCodec H.264 encoder exposed as a V4L2 mem2mem device
+	  (/dev/video1). Ported from meson-sm1-codecs and switched to the
+	  G12A platform. The ucode is expected at
+	  /lib/firmware/meson/venc/ga_h264_enc_cabac.bin.

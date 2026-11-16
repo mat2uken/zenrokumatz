@@ -1,0 +1,186 @@
+#!/bin/sh
+#
+# pix-stream-run - BS/地デジのTSを受け取り、復号・変換して stb_streamer へ流す
+#
+# 復号器の出力を直接エンコーダへ繋ぐと、エンコーダの初期化中に復号器の
+# 書き込みが止まり、カードのやり取りが途切れて数秒で落ちる。いったん
+# tmpfs のファイルへ書き出し、別プロセスがそれを読む形にすると落ちない。
+#
+# 設定は /etc/default/pix-stream-linux を読む。
+
+set -u
+[ -r /etc/default/pix-stream-linux ] && . /etc/default/pix-stream-linux
+
+: "${PIX_TUNER:=dt295}"
+: "${PIX_SYSTEM:=terrestrial}"
+: "${PIX_CHANNEL:=20}"
+: "${PIX_SAT_SLOT:=}"
+: "${PIX_PIDS:=}"
+: "${PIX_TRANSCODE:=1}"
+: "${PIX_BITRATE:=6000k}"
+: "${PIX_GOP:=60}"
+: "${PIX_PORT:=40774}"
+: "${PIX_ALLOWED_IP:=192.168.99.80}"
+: "${PIX_SPOOL_MB:=192}"
+: "${PIX_DISPLAY:=X96Max}"
+: "${PIX_DEINTERLACE:=1}"
+: "${PIX_CAPTURE_SECONDS:=1800}"
+: "${PIX_LIVE_FILE:=/dev/shm/pix/live.ts}"
+: "${PIX_LIVE_MAX_MB:=512}"
+: "${PIX_LOG_DIR:=/tmp}"
+: "${PIX_CARD_SOCKET:=/dev/shm/torne/card.sock}"
+: "${PIX_DT295_ASSETS:=/usr/share/pix-tuner}"
+: "${PIX_START_DELAY:=0}"
+: "${PIX_TUNER_PORT:=/sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1}"
+
+# start-stop-daemon は標準出力を捨てるので、自分でログを残す。
+exec >>"${PIX_RUN_LOG:-/tmp/pix-run.log}" 2>&1
+log() { echo "$(date "+%H:%M:%S") pix-stream: $*"; }
+
+case "$PIX_SYSTEM" in
+    terrestrial) chan="T$PIX_CHANNEL" ;;
+    *)           chan="$PIX_CHANNEL" ;;
+esac
+
+extra=""
+[ -n "$PIX_SAT_SLOT" ] && extra="$extra --slot $PIX_SAT_SLOT"
+for pid in $PIX_PIDS; do extra="$extra -p $pid"; done
+
+if [ "$PIX_DEINTERLACE" = "1" ]; then
+    VF="bwdif=mode=send_frame,format=nv12"
+else
+    VF="format=nv12"
+fi
+# NASのマーカーは1440x1080で学習されているので、衛星はその大きさに合わせる。
+if [ "$PIX_TUNER" = "dt295" ]; then
+    VF="$VF,scale=1440:1080,setsar=4/3"
+fi
+
+kill_stale() {
+    for p in $(ps | grep -E "[p]ix-stream-run|[p]ix-ts-legacy|[t]orne-b25|[s]tb_streamer|[t]ail -f $PIX_LIVE_FILE" | awk '{print $1}'); do
+        [ "$p" = "$$" ] && continue
+        kill -TERM "$p" 2>/dev/null
+    done
+    waited=0
+    while [ "$waited" -lt 10 ]; do
+        left=$(ps | grep -cE "[p]ix-ts-legacy|[t]orne-b25|[s]tb_streamer")
+        [ "$left" = "0" ] && break
+        sleep 1
+        waited=$((waited + 1))
+    done
+    for p in $(ps | grep -E "[p]ix-ts-legacy|[t]orne-b25|[s]tb_streamer" | awk '{print $1}'); do
+        kill -KILL "$p" 2>/dev/null
+    done
+}
+
+port_reset() {
+    [ -w "$PIX_TUNER_PORT/disable" ] || return 0
+    log "resetting the tuner port"
+    echo 1 > "$PIX_TUNER_PORT/disable" 2>/dev/null
+    sleep 2
+    echo 0 > "$PIX_TUNER_PORT/disable" 2>/dev/null
+    # 再列挙が終わる前にチューナーを開くと、開けずに無配信のまま終わる。
+    waited=0
+    while [ "$waited" -lt 30 ]; do
+        if lsusb 2>/dev/null | grep -q 06b8; then
+            break
+        fi
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    sleep 2
+}
+
+producer() {
+    # shellcheck disable=SC2086
+    pix-ts-legacy --model dt295 --assets "$PIX_DT295_ASSETS" \
+        -s "$PIX_SYSTEM" -c "$chan" $extra -t "$PIX_CAPTURE_SECONDS" \
+        2>"$PIX_LOG_DIR/pix-ts.log" \
+      | ffmpeg -hide_banner -nostdin -v error -f mpegts \
+            -probesize 2000000 -analyzeduration 3000000 -i pipe:0 \
+            -map 0 -c copy -f mpegts pipe:1 2>"$PIX_LOG_DIR/pix-resync.log" \
+      | torne-b25 --card-socket "$PIX_CARD_SOCKET" \
+            --trace /dev/shm/pix/b25.trace 2>"$PIX_LOG_DIR/pix-b25.log"
+}
+
+reader() {
+    if [ "$PIX_TRANSCODE" = "1" ]; then
+        tail -f -c +1 "$PIX_LIVE_FILE" 2>/dev/null \
+          | ffmpeg -hide_banner -nostdin -v info -nostats \
+                -probesize 2000000 -analyzeduration 3000000 -f mpegts -i pipe:0 \
+                -c:v mpeg2_v4l2m2m -vf "$VF" \
+                -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
+                -map 0:v:0 -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
+                2>"$PIX_LOG_DIR/pix-ff1.log" \
+          | ffmpeg -hide_banner -nostdin -v info -nostats \
+                -probesize 2000000 -analyzeduration 3000000 -f mpegts -i pipe:0 \
+                -map 0:v -map 0:a -c copy -bsf:a aac_adtstoasc \
+                -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 pipe:1 \
+                2>"$PIX_LOG_DIR/pix-ff2.log" \
+          | stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
+                --spool-mb "$PIX_SPOOL_MB" --channel "$PIX_CHANNEL" --display "$PIX_DISPLAY" \
+                --program-file /dev/shm/pix/program.txt 2>"$PIX_LOG_DIR/pix-stb.log"
+    else
+        tail -f -c +1 "$PIX_LIVE_FILE" 2>/dev/null \
+          | ffmpeg -hide_banner -nostdin -v info -nostats \
+                -probesize 2000000 -analyzeduration 3000000 -f mpegts -i pipe:0 \
+                -map 0:v -map 0:a -c copy -bsf:a aac_adtstoasc \
+                -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 pipe:1 \
+                2>"$PIX_LOG_DIR/pix-ff2.log" \
+          | stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
+                --spool-mb "$PIX_SPOOL_MB" --channel "$PIX_CHANNEL" --display "$PIX_DISPLAY" \
+                --program-file /dev/shm/pix/program.txt 2>"$PIX_LOG_DIR/pix-stb.log"
+    fi
+}
+
+while :; do
+    kill_stale
+    port_reset
+    rm -f "$PIX_LIVE_FILE"
+    sleep "$PIX_START_DELAY"
+    started=$(date +%s)
+    producer > "$PIX_LIVE_FILE" 2>"$PIX_LOG_DIR/pix-producer.log" &
+    producer_pid=$!
+    # ポートを再列挙した直後は、ファームの起動と選局に時間がかかる。
+    # 短く切ると、まだ流れていないだけで「無配信」と判断してしまう。
+    waited=0
+    while [ "$waited" -lt 180 ]; do
+        [ -s "$PIX_LIVE_FILE" ] && break
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    if [ ! -s "$PIX_LIVE_FILE" ]; then
+        log "no decrypted data; restarting"
+        for stage in ts resync b25 producer; do
+            line=$(tail -1 "$PIX_LOG_DIR/pix-$stage.log" 2>/dev/null | tr -d '\r')
+            [ -n "$line" ] && log "  $stage: $line"
+        done
+        log "  producer alive: $(ps | grep -c "[t]orne-b25")"
+        kill -TERM "$producer_pid" 2>/dev/null
+        wait "$producer_pid" 2>/dev/null
+        sleep 5
+        continue
+    fi
+    log "streaming"
+    (
+        while :; do
+            sleep 10
+            size=$(stat -c %s "$PIX_LIVE_FILE" 2>/dev/null || echo 0)
+            [ "$size" -gt $((PIX_LIVE_MAX_MB * 1024 * 1024)) ] || continue
+            log "live buffer hit ${PIX_LIVE_MAX_MB}MB; starting a new one"
+            kill -TERM "$producer_pid" 2>/dev/null
+            for p in $(ps | grep "[t]ail -f -c" | awk '{print $1}'); do
+                kill -TERM "$p" 2>/dev/null
+            done
+            break
+        done
+    ) &
+    watchdog=$!
+    reader
+    kill -TERM "$watchdog" 2>/dev/null
+    kill -TERM "$producer_pid" 2>/dev/null
+    wait "$producer_pid" 2>/dev/null
+    ran=$(( $(date +%s) - started ))
+    log "pipeline stopped after ${ran}s; restarting"
+    sleep 2
+done

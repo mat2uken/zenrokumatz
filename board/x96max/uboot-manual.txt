@@ -1,0 +1,27 @@
+# X96Max_P: stock U-Boot 2015.01, inspected 2026-11-10.
+# Image and DTB load ranges were checked against the generated image sizes.
+# DTB at 0x01000000 was overwritten during stock U-Boot's Image relocation.
+# Linux 6.18.62 started with DTB at 0x08000000 on 2026-11-10.
+version
+printenv bootcmd preboot bootargs loadaddr kernel_addr_r fdt_addr_r
+mmc list
+help fatload
+help booti
+help fdt
+
+# MMC 0 = SDIO Port B (SD); MMC 1 = SDIO Port C (eMMC).
+# These RAM settings are temporary. Do not run saveenv.
+setenv sddev 0
+setenv kernel_addr_r 0x01080000
+setenv fdt_addr_r 0x08000000
+setenv dtb_mem_addr 0x08000000
+setenv fdtaddr 0x08000000
+mmc dev ${sddev}
+mmc rescan
+fatls mmc ${sddev}:1
+fatload mmc ${sddev}:1 ${kernel_addr_r} Image
+# Check the load succeeded and record filesize before the next command.
+fatload mmc ${sddev}:1 ${fdt_addr_r} meson-g12a-x96-max-p.dtb
+# Check the load succeeded before continuing.
+setenv bootargs 'console=ttyAML0,115200n8 earlycon root=PARTUUID=96320001-02 rootfstype=ext4 rootwait rw'
+booti ${kernel_addr_r} - ${fdt_addr_r}

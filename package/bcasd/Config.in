@@ -1,0 +1,8 @@
+config BR2_PACKAGE_BCASD
+	bool "bcasd (B-CAS APDU server)"
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_PCSC_LITE
+	help
+	  Multi-client B-CAS APDU server for PC/SC card readers. Clients
+	  speak the 524-byte TorneCardMessage frame over TCP, which
+	  torne-b25 reaches through cardrelay.

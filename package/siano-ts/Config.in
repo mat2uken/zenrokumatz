@@ -1,0 +1,6 @@
+config BR2_PACKAGE_SIANO_TS
+	bool "siano-ts (PX-S1UD ISDB-T tuner)"
+	select BR2_PACKAGE_LIBUSB
+	help
+	  User-space ISDB-T driver for Siano RIO based USB tuners
+	  (PLEX PX-S1UD 3275:0080). Based on Khronos31/siano-userland.

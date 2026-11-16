@@ -1,0 +1,49 @@
+# pix-stream-linux の設定（/usr/bin/pix-stream-linux を参照）
+
+# 選局する物理チャンネル。NAS 側のノード登録と同じ値にする。
+PIX_CHANNEL=20
+
+# NAS の録画管理画面に出る名前
+PIX_DISPLAY=X96Max-P
+
+# 接続するチューナー。1台につき1つだけ選ぶ。
+#   pxs1ud ... PX-S1UD（siano-ts で受信し、torne-b25 で復号）
+#   torne  ... torne（torne-c で受信し、torne-b25 で復号）
+#   dt295  ... PIX-DT295（pix-ts-legacy が復号まで行う）
+PIX_TUNER=pxs1ud
+
+# PX-S1UD の bus:address。空なら siano-ts --list から自動で拾う。
+PIX_TUNER_DEV=
+
+# dt295 のときのアセット置き場
+PIX_DT295_ASSETS=/usr/share/pix-tuner
+
+# 放送波の種類。terrestrial=地上、bs/cs=衛星。
+# 衛星のときはチューナーがトランスポンダを特定するため、スロットかTSIDが要る。
+PIX_SYSTEM=terrestrial
+PIX_SAT_SLOT=
+PIX_SAT_TSID=
+PIX_FIRMWARE=/lib/firmware/isdbt_rio.inp
+PIX_CARD_SOCKET=/dev/shm/torne/card.sock
+
+# 配信
+PIX_PORT=40774
+PIX_ALLOWED_IP=192.168.99.80,192.168.99.52
+PIX_SPOOL_MB=192
+PIX_BITRATE=6000k
+PIX_AUDIO_BITRATE=192k
+PIX_GOP=60
+PIX_DEINTERLACE=1
+
+# 下流の準備を待ってから選局する（秒）
+PIX_START_DELAY=4
+
+# CM特徴量のsideband。0=無効。NASがfeatures=v1を要求した時だけpixfを送る。
+PIX_FEATURES=0
+# feature用の一時ファイルは/dev/shmに置く。この上限を超えたら送出を止める。
+PIX_FEATURE_MAX_MB=384
+
+# 解析するフレームの間隔。3なら3フレームに1回を解析する。
+PIX_FEATURE_STEP=3
+# 30秒未満で終わる状態が続いたら解析を自動で止める回数。
+PIX_FEATURE_FAILURES=3

@@ -1,0 +1,54 @@
+#!/bin/sh
+#
+# pix-bcas-mode - B-CASの読み取り元を切り替える
+#
+#   pix-bcas-mode local   手元のUSBカードリーダーを使う
+#   pix-bcas-mode remote  ネットワーク先のbcasdを使う
+#
+# ローカルに切り替えるときは、CCID対応のリーダーが認識されているかを
+# 先に確かめる。無いまま切り替えると復号できず録画が止まるため。
+
+set -u
+MODE="${1:-}"
+CONF=/etc/default/bcas-linux
+
+usage() {
+    echo "usage: pix-bcas-mode local|remote" >&2
+    exit 2
+}
+
+[ -r "$CONF" ] || { echo "$CONF がありません" >&2; exit 1; }
+
+reader_present() {
+    # SCM/CCID のリーダーがUSBに見えているか
+    lsusb 2>/dev/null | grep -qiE "smart|ccid|SCR [0-9]|SCM Micro|Gemalto|EMV"
+}
+
+case "$MODE" in
+    local)
+        if ! reader_present; then
+            echo "カードリーダーが見つかりません。USBリーダーを挿してから実行してください。" >&2
+            lsusb 2>/dev/null | sed 's/^/  /' >&2
+            exit 1
+        fi
+        token=$(grep -E '^BCAS_LOCAL_TOKEN=' "$CONF" 2>/dev/null | cut -d= -f2-)
+        if [ -z "$token" ]; then
+            echo "BCAS_LOCAL_TOKEN が空です。$CONF に64桁hexを入れてください。" >&2
+            exit 1
+        fi
+        sed -i 's/^BCAS_MODE=.*/BCAS_MODE=local/' "$CONF"
+        echo "local に切り替えました（リーダー: $(lsusb | grep -iE 'smart|ccid|SCR [0-9]|SCM Micro|Gemalto|EMV' | head -1)）"
+        ;;
+    remote)
+        sed -i 's/^BCAS_MODE=.*/BCAS_MODE=remote/' "$CONF"
+        echo "remote に切り替えました（$(grep -E '^BCAS_REMOTE_HOST=' "$CONF" | cut -d= -f2-)）"
+        ;;
+    *)
+        usage
+        ;;
+esac
+
+/etc/init.d/S96bcas restart
+sleep 3
+echo "cardrelay: $(pidof cardrelay | wc -w) 個、ソケット: $(ls /dev/shm/torne/card.sock 2>/dev/null | wc -l)"
+echo "録画を再開するには /etc/init.d/S97pix-stream restart を実行してください。"
