@@ -1,0 +1,52 @@
+#!/bin/sh
+# pix-dt295-reset - DT295 を物理的に抜き差しせずにコールドブートさせる。
+#
+# DT295 は強制終了や電源断のあと、ファームウェアが state 2 / 0xffff に
+# 残り「firmware boot requires cold state 0 or unauthenticated state 16」で
+# 起動できなくなる。USB ポートの disable/enable では VBUS が切れないため
+# 復旧しないが、xhci のグルードライバ (dwc3-meson-g12a) を unbind/bind
+# すると vbus-supply が落ちてデバイスがコールドブートする。
+#
+# 実行すると録画は数十秒止まる。パイプラインを止めてから切り替える。
+set -u
+
+GLUE=ffe09000.usb
+DRIVER=/sys/bus/platform/drivers/dwc3-meson-g12a
+
+if [ "$(id -u)" != "0" ]; then
+    echo "pix-dt295-reset: root only" >&2
+    exit 1
+fi
+if [ ! -e "$DRIVER/$GLUE" ]; then
+    echo "pix-dt295-reset: $GLUE is not bound to $DRIVER" >&2
+    exit 1
+fi
+
+echo "pix-dt295-reset: stopping the pipeline"
+/etc/init.d/S97pix-stream stop >/dev/null 2>&1 || true
+for i in 1 2 3; do
+    for p in $(ps | grep -E "[p]ix-stream-simple|[p]ix-producer|[p]ix-reader|[e]it_watch|[s]tb_streamer|[f]fmpeg|[t]ail -f -c|[p]ix-ts-legacy" | awk '{print $1}'); do
+        kill -TERM "$p" 2>/dev/null || true
+    done
+    sleep 2
+done
+for p in $(ps | grep -E "[p]ix-stream-simple|[p]ix-producer|[p]ix-reader|[e]it_watch|[s]tb_streamer|[f]fmpeg|[t]ail -f -c|[p]ix-ts-legacy" | awk '{print $1}'); do
+    kill -9 "$p" 2>/dev/null || true
+done
+rm -f /var/run/pix-stream.pid /tmp/pix-userland-dt295-0.lock
+
+echo "pix-dt295-reset: power-cycling the USB port"
+echo "$GLUE" > "$DRIVER/unbind" 2>/dev/null || true
+sleep 3
+echo "$GLUE" > "$DRIVER/bind" 2>/dev/null || true
+sleep 2
+
+device=$(lsusb | grep -i "Pixela" | head -1)
+if [ -z "$device" ]; then
+    echo "pix-dt295-reset: DT295 did not re-enumerate" >&2
+    exit 1
+fi
+echo "pix-dt295-reset: $device"
+
+echo "pix-dt295-reset: starting the pipeline"
+/etc/init.d/S97pix-stream start

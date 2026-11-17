@@ -43,26 +43,35 @@ cleanup_children() {
     for p in $(ps | grep -E "[p]ix-ts-legacy|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c|[p]ix-reader|[p]ix-producer" | awk '{print $1}'); do
         kill -TERM "$p" 2>/dev/null
     done
-    sleep 1
+    # DT295 は SIGTERM で約1秒かけて停止する。KILL が早すぎると
+    # ファームウェアが固まり、次の選局が通らなくなる。
+    sleep 5
     for p in $(ps | grep -E "[p]ix-ts-legacy|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c|[p]ix-reader|[p]ix-producer" | awk '{print $1}'); do
         kill -9 "$p" 2>/dev/null
     done
 }
 
 encode() {
+    # bwdif（インタレース解除）とscaleを同時に掛けると実時間を割り込む
+    # （実測0.65x）。片方だけなら1.2x出る。画質を優先してデインタレースだけを
+    # 掛け、解像度は元の1920x1080のまま出す。縞の残る絵をprogressiveとして
+    # 符号化するのは避けたい。
     ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
         -f mpegts -i pipe:0 \
-        -c:v mpeg2_v4l2m2m -vf "bwdif=mode=send_frame,format=nv12,scale=1440:1080,setsar=4/3" \
+        -c:v mpeg2_v4l2m2m -vf "bwdif=mode=send_frame,format=nv12" \
         -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
         -map 0:v:0 -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
         2>/tmp/pix-ff1.log
 }
 
 fragment() {
+    # 音声はそのまま写す。AACを符号化し直すと実時間を割り込む（実測0.96x）。
+    # 写すだけなら1.19x出るので、こちらを既定にする。
     ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
         -f mpegts -i pipe:0 -map 0:v -map 0:a -c copy -bsf:a aac_adtstoasc \
         -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 pipe:1 2>/tmp/pix-ff2.log
 }
+
 
 streamer() {
     stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
@@ -77,6 +86,7 @@ run_direct() {
     pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
         -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
         2>/tmp/pix-ts.log \
+      | eit_watch --state /dev/shm/pix/program.txt 2>/tmp/pix-eit.log \
       | encode | fragment | streamer
 }
 
@@ -124,6 +134,30 @@ run_buffered() {
     rm -f "$PIX_RING_FILE"
 }
 
+# DT295 は強制終了や電源断のあとファームウェアが state 2 / 0xffff に残り、
+# 「firmware boot requires cold state 0 or unauthenticated state 16」で
+# 起動できなくなる。USB ポートの disable/enable では VBUS が切れないので、
+# xhci のグルードライバを unbind/bind してコールドブートさせる。
+# 手で抜き差しする代わりに、このループが自動で行う。
+dt295_recover() {
+    log "dt295: firmware is not bootable; power-cycling the USB controller"
+    cleanup_children
+    rm -f /tmp/pix-userland-dt295-0.lock
+    echo "$DT295_GLUE" > "$DT295_DRIVER/unbind" 2>/dev/null
+    sleep 3
+    echo "$DT295_GLUE" > "$DT295_DRIVER/bind" 2>/dev/null
+    sleep 2
+    if lsusb 2>/dev/null | grep -qi pixela; then
+        log "dt295: re-enumerated"
+    else
+        log "dt295: did not re-enumerate; will retry"
+    fi
+}
+
+DT295_GLUE=ffe09000.usb
+DT295_DRIVER=/sys/bus/platform/drivers/dwc3-meson-g12a
+fast_fail=0
+
 cycles=0
 while :; do
     cleanup_children
@@ -146,5 +180,18 @@ while :; do
     fi
     ran=$(( $(date +%s) - started ))
     log "pipeline stopped after ${ran}s; restarting"
+    if [ "$PIX_DECRYPT" != "1" ] && [ "$ran" -lt 10 ]; then
+        fast_fail=$((fast_fail + 1))
+    else
+        fast_fail=0
+    fi
+    if [ "$PIX_DECRYPT" != "1" ] && grep -qE "requires cold state|cannot read DT295 firmware state" /tmp/pix-ts.log 2>/dev/null; then
+        dt295_recover
+        fast_fail=0
+    elif [ "$PIX_DECRYPT" != "1" ] && [ "$fast_fail" -ge 3 ]; then
+        log "dt295: three quick failures in a row"
+        dt295_recover
+        fast_fail=0
+    fi
     sleep 2
 done

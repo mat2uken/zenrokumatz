@@ -22,6 +22,14 @@ start() {
         echo "card socket is still missing (S96bcas); skipped"
         return 0
     fi
+    # kill で落とした後に pid ファイルだけ残ると、start-stop-daemon は
+    # 「動いている」と判断して何も起動しない。生きているか確かめて消す。
+    if [ -f "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE" 2>/dev/null)
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$PIDFILE"
+        fi
+    fi
     start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" && echo "OK" || echo "FAIL"
 }
 
@@ -38,11 +46,11 @@ stop() {
     # eit_watch and the reader/writer shells sit between the tuner and
     # stb_streamer, so they have to be in this list as well: a leftover
     # eit_watch keeps the old pipe alive and the next start runs two chains.
-    for p in $(ps | grep -E "[p]ix-stream-linux|[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[p]ix-producer|[p]ix-reader|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c" | awk '{print $1}'); do
+    for p in $(ps | grep -E "[p]ix-stream-simple|[p]ix-stream-linux|[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[p]ix-producer|[p]ix-reader|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c" | awk '{print $1}'); do
         kill -TERM "$p" 2>/dev/null
     done
     sleep 3
-    for p in $(ps | grep -E "[p]ix-stream-linux|[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[p]ix-producer|[p]ix-reader|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c" | awk '{print $1}'); do
+    for p in $(ps | grep -E "[p]ix-stream-simple|[p]ix-stream-linux|[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[p]ix-producer|[p]ix-reader|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c" | awk '{print $1}'); do
         kill -9 "$p" 2>/dev/null
     done
     # Give the tuner a moment to drop the old session by itself. `receivers=`
