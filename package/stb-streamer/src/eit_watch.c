@@ -74,6 +74,43 @@ static void trim_spaces(char *s)
     if (p != s) memmove(s, p, strlen(p) + 1);
 }
 
+/*
+ * 番組名は short_event_descriptor に入っているが、present/following の
+ * セクションによっては記述子が付かず、スケジュール表の同じイベントには
+ * 付いていることがある。見えた名前をイベントIDで覚えておき、現在番組の
+ * セクションに名前が無いときはそれを使う。
+ */
+#define NAME_CACHE_SLOTS 64
+typedef struct {
+    int event_id;
+    char name[PROGRAM_NAME_MAX];
+} NameCacheEntry;
+static NameCacheEntry g_names[NAME_CACHE_SLOTS];
+static unsigned g_name_next;
+
+static void name_cache_put(int event_id, const char *name)
+{
+    if (event_id <= 0 || name[0] == '\0')
+        return;
+    for (int i = 0; i < NAME_CACHE_SLOTS; i++) {
+        if (g_names[i].event_id == event_id) {
+            snprintf(g_names[i].name, sizeof(g_names[i].name), "%s", name);
+            return;
+        }
+    }
+    NameCacheEntry *e = &g_names[g_name_next++ % NAME_CACHE_SLOTS];
+    e->event_id = event_id;
+    snprintf(e->name, sizeof(e->name), "%s", name);
+}
+
+static const char *name_cache_get(int event_id)
+{
+    for (int i = 0; i < NAME_CACHE_SLOTS; i++)
+        if (g_names[i].event_id == event_id && g_names[i].name[0])
+            return g_names[i].name;
+    return "";
+}
+
 static void event_name(const uint8_t *sec, size_t off, size_t desc_len,
                        char *out, size_t cap)
 {
@@ -144,13 +181,50 @@ static void handle_pat(const uint8_t *sec, size_t len)
 }
 
 /*
- * EIT の present/following（table_id 0x4E）から番組を採る。
- * service_id が自分の番組と一致するものだけを見る。
+ * 再起動すると g_last が空になり、最初に一致したセクションで状態を
+ * 上書きする。そのセクションに名前が無いと、名前が空のまま次の切替まで
+ * 残ってしまう。前回の状態がまだ放送時間内なら、名前ごと引き継ぐ。
  */
-static void handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
+static void load_state(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return;
+    Program p;
+    memset(&p, 0, sizeof(p));
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        size_t n = strlen(line);
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+            line[--n] = '\0';
+        if (!strncmp(line, "service=", 8)) p.service_id = atoi(line + 8);
+        else if (!strncmp(line, "event=", 6)) p.event_id = atoi(line + 6);
+        else if (!strncmp(line, "start=", 6)) p.start_ms = atoll(line + 6);
+        else if (!strncmp(line, "duration=", 9)) p.duration_ms = atoll(line + 9);
+        else if (!strncmp(line, "wall=", 5)) p.wall_ms = atoll(line + 5);
+        else if (!strncmp(line, "name=", 5)) snprintf(p.name, sizeof(p.name), "%s", line + 5);
+    }
+    fclose(f);
+    if (p.service_id <= 0 || p.event_id <= 0 || p.start_ms <= 0 || p.duration_ms <= 0)
+        return;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    int64_t now = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    if (now < p.start_ms || now >= p.start_ms + p.duration_ms)
+        return;                       /* 前の番組のものは使わない */
+    p.valid = 1;
+    g_last = p;
+}
+
+/*
+ * EIT（present/following とスケジュール表）から現在の番組を採る。
+ * service_id が自分の番組と一致するものだけを見る。
+ * 返り値は状態が変わったかどうか（呼び出し側が state_write する）。
+ */
+static int handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
 {
     if (g_service_id < 0 || len < 26)
-        return;
+        return 0;
     size_t sec_len = ((size_t)(sec[1] & 0x0f) << 8) | sec[2];
     size_t end = 3 + sec_len - 4;
     if (end > len)
@@ -158,7 +232,7 @@ static void handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
 
     int service_id = (sec[3] << 8) | sec[4];
     if (service_id != g_service_id)
-        return;
+        return 0;
 
     /*
      * イベントはヘッダ 14 バイトの後ろから始まる。
@@ -179,6 +253,14 @@ static void handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
         int64_t ev_dur = bcd_duration_ms(sec + i + 7);
         size_t desc_len = ((size_t)(sec[i + 10] & 0x0f) << 8) | sec[i + 11];
         size_t next = i + 12 + desc_len;
+        {
+            /* どのイベントの名前も覚えておく（後で使うことがある）。 */
+            char seen[PROGRAM_NAME_MAX] = "";
+            if (i + 12 + desc_len <= sec_len + 3)
+                event_name(sec, i + 12, desc_len, seen, sizeof(seen));
+            if (seen[0])
+                name_cache_put(event_id, seen);
+        }
 
         /*
          * present/following には番宣や穴埋めの数秒〜数十秒の項目が混ざる。
@@ -188,45 +270,52 @@ static void handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
         if (event_id != 0 && ev_start > 0 && ev_dur >= 180000) {
             /*
              * 放送中の番組は、その放送時間に現在時刻が入っているもの。
-             * 時計が正しければこれで一意に決まる。present/following には
-             * 「次の番組」も並ぶので、順番だけで決めてはいけない。
+             *
+             * present と following は別セクションで届く。following の
+             * セクションには「次の番組」しか入っていないので、時刻で
+             * 判定すれば一致しない。以前は「今より後に始まる一番早い
+             * イベント」を採るフォールバックがあり、following セクションが
+             * 届くたびに次番組へ飛んでいた（名前が1番組ずれ、区切りも
+             * 1番組早くなる）。時刻が一致しないものは採らない。
              */
             if (wall_ms > 0 && wall_ms >= ev_start &&
                 wall_ms < ev_start + ev_dur) {
-                best_event = event_id;
-                best_start = ev_start;
-                best_dur = ev_dur;
-                best_desc = i + 12;
-                best_desc_len = desc_len;
-                found_current = 1;
-                break;
-            }
-            /*
-             * どれも現在時刻を含まない場合は、前へ進む方向でいちばん早い
-             * ものを採る。時計がまだ合っていない起動直後でも動かすため。
-             */
-            if (!found_current) {
-                int take = 0;
-                if (!g_last.valid)
-                    take = 1;
-                else if (ev_start > g_last.start_ms)
-                    take = 1;
-                if (take && (best_event == 0 || ev_start < best_start)) {
+                if (!found_current) {
                     best_event = event_id;
                     best_start = ev_start;
                     best_dur = ev_dur;
                     best_desc = i + 12;
                     best_desc_len = desc_len;
+                    found_current = 1;
                 }
+                /*
+                 * 走査は続ける。同じセクションに後続イベントの名前も
+                 * 載っているので、名前キャッシュに拾わせる。
+                 */
             }
+            /*
+             * 時刻が一致しないイベントは採らない。以前は起動直後に限り
+             * 最初に見えたイベントを仮採用していたが、present セクションが
+             * 稀にしか届かない放送では following（次の番組）を拾ったまま
+             * 次の切替まで残ってしまう。スケジュール表からも現在番組を
+             * 引けるので、暫定採用はしない。
+             */
         }
         if (next <= i)
             break;
         i = next;
     }
 
-    if (best_event != 0 &&
-        (!g_last.valid || g_last.event_id != best_event)) {
+    if (best_event == 0)
+        return 0;
+
+    char name[PROGRAM_NAME_MAX] = "";
+    if (best_desc > 0 && best_desc + best_desc_len <= sec_len + 3)
+        event_name(sec, best_desc, best_desc_len, name, sizeof(name));
+    if (name[0] == '\0')
+        snprintf(name, sizeof(name), "%s", name_cache_get(best_event));
+
+    if (!g_last.valid || g_last.event_id != best_event) {
         Program p = {
             .service_id = service_id,
             .event_id = best_event,
@@ -235,14 +324,23 @@ static void handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
             .wall_ms = wall_ms,
             .valid = 1,
         };
-        /*
-         * 番組名はここで採る。EPG サービスに問い合わせなくても、放送波に
-         * 載っている情報だけで名前が決まるようにするため。
-         */
-        if (best_desc > 0 && best_desc + best_desc_len <= sec_len + 3)
-            event_name(sec, best_desc, best_desc_len, p.name, sizeof(p.name));
+        /* 番組名は放送波の記述子から採る（外部 EPG に依存しない）。 */
+        snprintf(p.name, sizeof(p.name), "%s", name);
         g_last = p;
+        return 1;
     }
+
+    /*
+     * 同じイベントで名前だけ後から届くことがある（セクションによっては
+     * short_event_descriptor が無い）。空のまま固定せず、名前が入った
+     * 時点で更新する。
+     */
+    if (name[0] && strcmp(name, g_last.name) != 0) {
+        snprintf(g_last.name, sizeof(g_last.name), "%s", name);
+        g_last.wall_ms = wall_ms;
+        return 1;
+    }
+    return 0;
 }
 
 /* ---- 入力 ---- */
@@ -301,7 +399,9 @@ int main(int argc, char **argv)
         }
     }
 
-    fprintf(stderr, "eit_watch: ready event-offset=14 state=%s\n", state_path);
+    load_state(state_path);
+    fprintf(stderr, "eit_watch: ready event-offset=14 state=%s (previous=%s)\n",
+            state_path, g_last.valid ? g_last.name : "-");
 
     static uint8_t in[TS_PACKET * 128];
     size_t have = 0;
@@ -358,15 +458,20 @@ int main(int argc, char **argv)
                     sec[0] == 0x00)
                     handle_pat(sec, slen);
             } else if (pid == EIT_PID) {
+                /*
+                 * present/following (0x4E) だけに頼ると、放送が present の
+                 * セクションを番組切替時にしか送らないことがあり、1回取り
+                 * こぼすと番組名が番組いっぱい固定される。スケジュール表
+                 * (0x50..0x5F) にも同じイベントが載っているので、時刻で
+                 * 現在番組を引き当てられるよう両方を読む。
+                 */
                 if (section_push(&g_eit, payload, plen, pusi, &sec, &slen) &&
-                    sec[0] == 0x4e) {
+                    (sec[0] == 0x4e || (sec[0] >= 0x50 && sec[0] <= 0x5f))) {
                     struct timespec ts;
                     clock_gettime(CLOCK_REALTIME, &ts);
                     int64_t wall = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-                    Program before = g_last;
-                    handle_eit(sec, slen, wall);
-                    if (g_last.valid &&
-                        (!before.valid || before.event_id != g_last.event_id)) {
+                    int changed = handle_eit(sec, slen, wall);
+                    if (changed && g_last.valid) {
                         state_write(state_path, &g_last);
                         fprintf(stderr,
                                 "eit_watch: service=%d event=%d start=%lld dur=%lld name=%s\n",

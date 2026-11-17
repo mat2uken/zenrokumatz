@@ -147,6 +147,69 @@ def archive_title(db_path, service_id, event_id, wall_ms):
     return None
 
 
+def plan_airtime(root, guide, date_prefix):
+    """Plan renames by the wall clock the segment started, not by its name.
+
+    Used to repair recordings made while eit_watch picked the following
+    programme: the name in the sidecar belongs to the next programme, the
+    content is the one on air when the capture started.
+    """
+    plan = []
+    skipped = []
+    for path in sorted(glob.glob(os.path.join(root, "20*", "*", "*", "*", "*", "*.json"))):
+        if path.endswith(".cm.json"):
+            continue
+        record_dir = os.path.dirname(path)
+        if date_prefix and date_prefix not in record_dir:
+            continue
+        try:
+            doc = json.load(open(path, encoding="utf-8"))
+        except (OSError, ValueError):
+            skipped.append((path, "unreadable sidecar"))
+            continue
+        service = doc.get("service", {})
+        service_name = service.get("name", "")
+        key = channel_key(service_name)
+        if key is None:
+            skipped.append((path, "no guide channel for %r" % service_name))
+            continue
+        wall_ms = (doc.get("capture", {}) or {}).get("startAt") or 0
+        if not wall_ms:
+            skipped.append((path, "no capture time"))
+            continue
+        title = lookup(guide, key, wall_ms)
+        if not title:
+            skipped.append((path, "no guide entry for %s" % (
+                datetime.datetime.fromtimestamp(wall_ms / 1000).strftime("%Y-%m-%d %H:%M"))))
+            continue
+        title = truncate_utf8(sanitize(title), NAME_MAX_BYTES)
+        stem = os.path.basename(path)[:-5]
+        parts = stem.split("_", 2)
+        if len(parts) != 3 or not parts[2].endswith("__p01"):
+            skipped.append((path, "unexpected file name"))
+            continue
+        datestamp, clock, rest = parts
+        old_name = rest[:-len("__p01")]
+        if old_name == title:
+            continue
+        parent = os.path.dirname(record_dir)
+        uuid = os.path.basename(record_dir).rsplit("__", 1)[-1]
+        plan.append({
+            "sidecar": path,
+            "record_dir": record_dir,
+            "parent": parent,
+            "uuid": uuid,
+            "datestamp": datestamp,
+            "clock": clock,
+            "old_name": old_name,
+            "new_name": title,
+            "service": service_name,
+            "wall_ms": wall_ms,
+            "guide_title": title,
+        })
+    return plan, skipped
+
+
 def plan(root, guide):
     plan = []
     skipped = []
@@ -355,11 +418,22 @@ def main():
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--journal", default=None)
+    ap.add_argument("--by-airtime", action="store_true",
+                    help="rename everything in --date by the capture start time")
+    ap.add_argument("--service", default="",
+                    help="limit to one service name (e.g. テレビ静岡)")
+    ap.add_argument("--date", default="",
+                    help="YYYY/MM/DD fragment to limit --by-airtime")
     args = ap.parse_args()
 
     db_path = args.db or os.path.join(args.root, "_catalog", "archive.sqlite")
     guide = load_guide(args.guide)
-    entries, skipped = plan(args.root, guide)
+    if args.by_airtime:
+        entries, skipped = plan_airtime(args.root, guide, args.date)
+        if args.service:
+            entries = [e for e in entries if e["service"] == args.service]
+    else:
+        entries, skipped = plan(args.root, guide)
 
     print("planned %d recording(s), skipped %d" % (len(entries), len(skipped)))
     by_service = {}

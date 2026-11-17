@@ -628,7 +628,31 @@ int main(int argc, char **argv)
                  * 行ったり来たりすることがある。そのたびに区切ると数秒の
                  * セグメントが量産される。直近で区切った番組には戻らない。
                  */
-                int recent = 0;
+                /*
+                 * 同じ番組のまま名前だけ後から分かることがある（EIT の
+                 * セクションによっては記述子が付かない）。区切りは変えずに
+                 * pixb+pixn を送り直し、録画側の現在のセグメントの名前を
+                 * 更新させる。録画側は同じイベントの pixb では分割しない。
+                 */
+                int name_update = g_have_program && cur.valid &&
+                                  cur.event_id == g_program.event_id &&
+                                  cur.name[0] &&
+                                  strcmp(cur.name, g_program.name) != 0;
+                if (name_update && moof_has_video(body, body_len)) {
+                    uint8_t box[44];
+                    build_boundary_box(&cur, box);
+                    if (buf_append(&frag, box, sizeof(box)) == 0) {
+                        uint8_t nb[8 + 256];
+                        size_t nl = build_name_box(&cur, nb, sizeof(nb));
+                        if (nl > 0)
+                            buf_append(&frag, nb, nl);
+                        snprintf(g_program.name, sizeof(g_program.name), "%s", cur.name);
+                        fprintf(stderr, "stb_linux_pipe: name update service=%d event=%d name=%s\n",
+                                cur.service_id, cur.event_id, cur.name);
+                    }
+                }
+
+                int recent = name_update ? 1 : 0;
                 if (g_have_program && cur.event_id == g_program.event_id)
                     recent = 1;
                 for (int k = 0; k < g_last_event_count && !recent; k++)

@@ -115,3 +115,53 @@ gcc -O2 -std=gnu11 -D_FILE_OFFSET_BITS=64 -I. -I/home/ku/work/dt295-nas-20261103
 
 確認は `cm integration:` の起動ログ、`cm fmp4 queued:` の publish ログ、
 `/dev/shm/pix_cm_queue/jobs.sqlite3` の `queue_jobs` で行う。
+
+## 番組名が1つずれる不具合（2026-11-17 修正）
+
+録画ファイル名の番組が実際の中身より1つ先になっていた。原因は `eit_watch` が
+EIT present/following の **following セクション（次の番組）** も現在番組として
+扱っていたこと。ARIB では present がセクション0、following がセクション1で
+別々に届く。following だけで「現在時刻を含むイベントが無い」と判断すると、
+「今より後に始まる一番早いイベント」を採るフォールバックが次の番組を選び、
+名前が1番組ずれ、区切りも早くなって同じ番組が分割されていた。
+
+修正内容:
+
+- 現在時刻がイベントの放送時間に入っているものだけを現在番組として採用
+- 起動直後の暫定採用を廃止（following を拾ったまま残るため）
+- スケジュール表（EIT 0x50〜0x5F）も読み、present セクションが届かない
+  放送局でも時刻から現在番組を引き当てられるようにした
+- NAS 側は、STB の `program.txt` を読んだとき **放送時間に現在時刻が入って
+  いなければ採用しない**（古い番組名でシードするのを防ぐ）
+
+## DT295 のソフトウェア復旧
+
+DT295 は強制終了や電源断のあとファームウェアが state 2 / 0xffff に残り、
+`firmware boot requires cold state 0 or unauthenticated state 16` で起動
+できなくなる。USB ポートの disable/enable では VBUS が切れないため復旧
+しないが、xhci のグルードライバ（`dwc3-meson-g12a`）を unbind/bind すると
+`vbus-supply` が落ちてデバイスがコールドブートする。
+
+```sh
+/usr/bin/pix-dt295-reset     # パイプライン停止 → VBUS 再投入 → 起動
+```
+
+2026-11-17 の実測では、競合プロセスが無い状態で 1 回の unbind/bind で
+state 16（unauthenticated）になり、23,268 パケットの受信に成功した。
+競合するパイプラインが動いていると復旧しないので、スクリプトは先に
+`S97pix-stream` を止め、残プロセスを掃除してから切り替える。
+
+あわせて `S97pix-stream` の停止処理に `pix-stream-simple` を追加した。
+PID ファイルが実際の PID とずれるとループが止まらず、起動のたびに
+パイプラインが多重化してチューナーを取り合うため。
+
+## 自動復旧と付け直し（2026-11-17 追加）
+
+- `pix-stream-simple` が DT295 の起動失敗（`requires cold state` /
+  `cannot read DT295 firmware state`）を検知したら、USB コントローラの
+  グルードライバを自動で unbind/bind する。連続3回の即時失敗でも同じ復旧を
+  行う。実測では SIGKILL で壊した状態から約17秒で録画が戻った。
+- `eit_watch` は起動時に前回の `program.txt` を読み、放送時間内であれば
+  名前ごと引き継ぐ。再起動のたびに名前が空に戻る問題を解消した。
+- 過去のズレた録画は `tools/rename-recordings.py --by-airtime` で放送時刻から
+  付け直せる（2026-11-17 のテレビ静岡26件に適用）。
