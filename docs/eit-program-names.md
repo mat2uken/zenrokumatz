@@ -87,3 +87,31 @@ python3 tools/rename-recordings.py --guide guide.json --apply  # 実行
   更新してから STB 側を更新する
 - `eit_watch` はバイト列を素通しするだけなので、映像の経路は変わらない
 - 番組名は全角のまま入る。シェルで扱うときは引用する
+
+## 録画側の CM 連携（2026-11-17 復旧）
+
+`pix_stream_recorder` は NAS の `/home/ku/pix-stream-20261101/` でビルドしている。
+このとき、置いてあった `pix_stream_recorder.c` が 11/08 版で、実際に動いていた
+11/13 ビルド（CM キュー連携入り）より古いことに気づかず再ビルドしてしまい、
+CM への fMP4 受け渡しが一時的に落ちた。11/13 のソースは残っていなかったため、
+11/03 の CM 連携版（`/home/ku/work/dt295-nas-20261103/build/`）を参照して
+次のとおり移植し直した。
+
+- `cm_queue.c` / `cm_queue.h` を同じディレクトリへ置く
+- `--cm-queue-dir`（既定 `/dev/shm/pix_cm_queue`）と tmpfs チェック
+- `publish()` は fMP4 を `cm_queue_submit` でワーカーへ渡す。ワーカーが
+  MP4 変換・CM 検出・カット・sidecar 作成を行う
+- ステージングは最後の完全なフラグメント境界（`complete_bytes`）で切り詰める
+- キューへ渡せなかったときだけ、従来どおり自前で MP4 化する
+
+ビルド:
+
+```sh
+cd /home/ku/pix-stream-20261101
+gcc -O2 -std=gnu11 -D_FILE_OFFSET_BITS=64 -I. -I/home/ku/work/dt295-nas-20261103/build \
+    -o pix_stream_recorder pix_stream_recorder.c cm_queue.c fmp4_to_mp4.c \
+    -l:libcjson.so.1 -lpthread
+```
+
+確認は `cm integration:` の起動ログ、`cm fmp4 queued:` の publish ログ、
+`/dev/shm/pix_cm_queue/jobs.sqlite3` の `queue_jobs` で行う。

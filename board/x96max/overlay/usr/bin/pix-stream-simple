@@ -1,56 +1,150 @@
 #!/bin/sh
-# 復号（pix-producer）と配信（pix-reader）を組み合わせて回し続ける。
 #
-# pix-producer は -t で区切って終わる。終わったらリーダーも畳んで作り直す。
-# リーダーは tail -f で待ち続けるため、放っておくと生産が止まったまま
-# ファイルだけが育ち、tmpfs を埋めて録画が止まる。
+# pix-stream-simple - チューナーから受けて変換し、stb_streamer へ流し続ける
+#
+# 経路は2通り。
+#
+#   クリア出力のチューナー（PIX-DT295）:
+#     tuner | 変換 | fMP4 | stb_streamer   を直結する。中間ファイルは作らない
+#
+#   復号が要るチューナー（PIX_DECRYPT=1、現在は未使用）:
+#     tuner | torne-b25 > /dev/shm/pix/live.ts と書き出し、別プロセスが
+#     tail -f で読む。復号器は出力が詰まるとカードのやり取りごと止まるため
+#     直結できないが、必要なら数十秒分（64MB程度）で足りる。
+#
 exec >>/tmp/pix-simple.log 2>&1
 . /etc/default/pix-stream-linux 2>/dev/null || true
+: "${PIX_BITRATE:=6000k}"
+: "${PIX_GOP:=60}"
+: "${PIX_PORT:=40774}"
+: "${PIX_ALLOWED_IP:=192.168.99.80}"
+: "${PIX_SPOOL_MB:=192}"
+: "${PIX_DISPLAY:=X96Max}"
+: "${PIX_CAPTURE_SECONDS:=1800}"
 : "${PIX_LIVE_FILE:=/dev/shm/pix/live.ts}"
-: "${PIX_LIVE_MAX_MB:=1000}"
+: "${PIX_RING_FILE:=/dev/shm/pix/live.ring}"
+: "${PIX_RING_MB:=32}"
+: "${PIX_LIVE_MAX_MB:=64}"
+: "${PIX_DECRYPT:=0}"
+: "${PIX_TUNER:=dt295}"
+: "${PIX_SYSTEM:=bs}"
+: "${PIX_CHANNEL:=9}"
+: "${PIX_SAT_SLOT:=0}"
+: "${PIX_PIDS:=0 17 18 257 273 289 320 321}"
 
 log() { echo "$(date +%H:%M:%S) simple: $*"; }
 
-while :; do
-    if [ -w /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable ]; then
-        echo 1 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable 2>/dev/null
-        sleep 2
-        echo 0 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable 2>/dev/null
-        sleep 6
-    fi
-    rm -f "$PIX_LIVE_FILE"
-    log "starting the decrypted capture"
-    /usr/bin/pix-producer &
+extra=""
+[ -n "$PIX_SAT_SLOT" ] && extra="$extra --slot $PIX_SAT_SLOT"
+for pid in $PIX_PIDS; do extra="$extra -p $pid"; done
+
+# 失敗した回の子が残ると、チューナーが多重に開いたままになる。
+cleanup_children() {
+    for p in $(ps | grep -E "[p]ix-ts-legacy|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c|[p]ix-reader|[p]ix-producer" | awk '{print $1}'); do
+        kill -TERM "$p" 2>/dev/null
+    done
+    sleep 1
+    for p in $(ps | grep -E "[p]ix-ts-legacy|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c|[p]ix-reader|[p]ix-producer" | awk '{print $1}'); do
+        kill -9 "$p" 2>/dev/null
+    done
+}
+
+encode() {
+    ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
+        -f mpegts -i pipe:0 \
+        -c:v mpeg2_v4l2m2m -vf "bwdif=mode=send_frame,format=nv12,scale=1440:1080,setsar=4/3" \
+        -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
+        -map 0:v:0 -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
+        2>/tmp/pix-ff1.log
+}
+
+fragment() {
+    ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
+        -f mpegts -i pipe:0 -map 0:v -map 0:a -c copy -bsf:a aac_adtstoasc \
+        -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 pipe:1 2>/tmp/pix-ff2.log
+}
+
+streamer() {
+    stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
+        --spool-mb "$PIX_SPOOL_MB" --channel "$PIX_CHANNEL" --display "$PIX_DISPLAY" \
+        --program-file /dev/shm/pix/program.txt 2>/tmp/pix-stb.log
+}
+
+# クリアTSを出すチューナーは直結する。中間ファイルを作らないので、
+# ディスクもRAMも消費せず、番組の途中で切れることもない。
+run_direct() {
+    # shellcheck disable=SC2086
+    pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
+        2>/tmp/pix-ts.log \
+      | encode | fragment | streamer
+}
+
+# 復号器を挟むときは、出力の詰まりでカードのやり取りが止まるため、
+# いったんファイルへ書いて別プロセスに読ませる。
+run_buffered() {
+    rm -f /dev/shm/pix/b25.trace "$PIX_RING_FILE"
+    # 復号器の出力は固定長のリングへ入れる。追記型のファイルに書くと
+    # 録画の長さだけ育って tmpfs を埋めるが、リングなら一定量で回る。
+    # shellcheck disable=SC2086
+    pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
+        2>/tmp/pix-ts.log \
+      | torne-b25 --card-socket /dev/shm/torne/card.sock --trace /dev/shm/pix/b25.trace \
+            2>/tmp/pix-b25.log \
+      | pix-ring --path "$PIX_RING_FILE" --size "$PIX_RING_MB" --produce \
+            2>/tmp/pix-ring.log &
     producer=$!
     waited=0
-    while [ "$waited" -lt 120 ]; do
-        [ -s "$PIX_LIVE_FILE" ] && break
-        kill -0 "$producer" 2>/dev/null || break
+    while [ "$waited" -lt 240 ]; do
+        [ -s "$PIX_RING_FILE" ] && break
+        state=$(awk '{print $3}' "/proc/$producer/stat" 2>/dev/null)
+        [ -z "$state" ] && break
+        [ "$state" = "Z" ] && break
         sleep 0.5
         waited=$((waited + 1))
     done
-    if [ ! -s "$PIX_LIVE_FILE" ]; then
-        log "no data; $(tail -1 /tmp/pix-b25.log 2>/dev/null)"
+    if [ ! -s "$PIX_RING_FILE" ]; then
+        log "no decrypted data; restarting"
         kill -TERM "$producer" 2>/dev/null
-        wait "$producer" 2>/dev/null
-        sleep 5
-        continue
+        return 1
     fi
-    log "streaming"
-    /usr/bin/pix-reader &
+    pix-ring --path "$PIX_RING_FILE" --size "$PIX_RING_MB" --consume \
+        2>>/tmp/pix-ring.log | encode | fragment | streamer &
     reader=$!
-    # 生産が終わるか、ファイルが上限に達したら区切る。
-    while kill -0 "$producer" 2>/dev/null; do
-        size=$(stat -c %s "$PIX_LIVE_FILE" 2>/dev/null || echo 0)
-        if [ "$size" -gt $((PIX_LIVE_MAX_MB * 1024 * 1024)) ]; then
-            log "live buffer hit ${PIX_LIVE_MAX_MB}MB; starting a new one"
-            break
-        fi
+    while :; do
+        state=$(awk '{print $3}' "/proc/$producer/stat" 2>/dev/null)
+        [ -z "$state" ] && break
+        [ "$state" = "Z" ] && break
         sleep 5
     done
     kill -TERM "$producer" "$reader" 2>/dev/null
     wait "$producer" 2>/dev/null
     wait "$reader" 2>/dev/null
-    log "cycle finished; restarting"
+    rm -f "$PIX_RING_FILE"
+}
+
+cycles=0
+while :; do
+    cleanup_children
+    [ "$cycles" -gt 0 ] && [ -w /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable ] \
+        && [ $((cycles % 10)) -eq 0 ] && {
+        log "re-enumerating the tuner"
+        echo 1 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable 2>/dev/null
+        sleep 2
+        echo 0 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable 2>/dev/null
+        sleep 6
+    }
+    cycles=$((cycles + 1))
+    started=$(date +%s)
+    log "starting"
+    if [ "$PIX_DECRYPT" = "1" ]; then
+        run_buffered
+    else
+        rm -f "$PIX_LIVE_FILE"
+        run_direct
+    fi
+    ran=$(( $(date +%s) - started ))
+    log "pipeline stopped after ${ran}s; restarting"
     sleep 2
 done

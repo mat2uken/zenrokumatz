@@ -26,9 +26,17 @@ define STB_STREAMER_BUILD_EIT_WATCH
 endef
 STB_STREAMER_POST_BUILD_HOOKS += STB_STREAMER_BUILD_EIT_WATCH
 
+define STB_STREAMER_BUILD_PIX_RING
+	$(TARGET_MAKE_ENV) $(TARGET_CC) $(TARGET_CFLAGS) -std=gnu11 \
+		-D_FILE_OFFSET_BITS=64 -I$(@D) \
+		-o $(@D)/pix-ring $(@D)/pix_ring.c
+endef
+STB_STREAMER_POST_BUILD_HOOKS += STB_STREAMER_BUILD_PIX_RING
+
 define STB_STREAMER_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/stb_streamer $(TARGET_DIR)/usr/bin/stb_streamer
 	$(INSTALL) -D -m 0755 $(@D)/eit_watch $(TARGET_DIR)/usr/bin/eit_watch
+	$(INSTALL) -D -m 0755 $(@D)/pix-ring $(TARGET_DIR)/usr/bin/pix-ring
 endef
 
 $(eval $(generic-package))
