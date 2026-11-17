@@ -158,6 +158,21 @@ DT295_GLUE=ffe09000.usb
 DT295_DRIVER=/sys/bus/platform/drivers/dwc3-meson-g12a
 fast_fail=0
 
+# 放送休止（空PAT）では番組が1つも乗らない。始めても黒画面を NAS に
+# 送るだけなので、開始前に短く確かめて待つ。
+broadcast_ready() {
+    # shellcheck disable=SC2086
+    pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t 5 -o /dev/null 2>/tmp/pix-tsprobe.log
+    # PAT が取れていて番組が0件なら放送休止。ロック前（have_pat 0）は
+    # 休止と決めつけず、そのまま開始する。
+    if grep -q '"have_pat":1' /tmp/pix-tsprobe.log 2>/dev/null &&
+       grep -q '"program_count":0' /tmp/pix-tsprobe.log 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
 cycles=0
 while :; do
     cleanup_children
@@ -170,6 +185,11 @@ while :; do
         sleep 6
     }
     cycles=$((cycles + 1))
+    if [ "$PIX_DECRYPT" != "1" ] && ! broadcast_ready; then
+        log "no programme on air (broadcast suspension); waiting 5 minutes"
+        sleep 300
+        continue
+    fi
     started=$(date +%s)
     log "starting"
     if [ "$PIX_DECRYPT" = "1" ]; then
