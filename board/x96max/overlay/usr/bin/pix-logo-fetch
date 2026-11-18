@@ -18,10 +18,12 @@ set -u
 
 LOG=${PIX_LOGO_LOG:-/tmp/pix-logo.log}
 DEFAULTS=/etc/default/pix-stream-linux
-INIT=/etc/init.d/S97pix-stream
+INIT=${PIX_LOGO_INIT:-/etc/init.d/S97pix-stream}
+PIDFILE=${PIX_LOGO_PIDFILE:-/var/run/pix-stream.pid}
 ASSETS=/usr/share/pix-tuner
-PARSER=/usr/bin/pix-dt295-logo
-CAPTURE=/usr/bin/pix-ts-legacy
+# 差し替えはテスト用 (scripts では既定のまま)
+PARSER=${PIX_LOGO_PARSER:-/usr/bin/pix-dt295-logo}
+CAPTURE=${PIX_LOGO_CAPTURE:-/usr/bin/pix-ts-legacy}
 out=${PIX_LOGO_DIR:-/var/lib/pix/logos}
 wait_seconds=180
 force=0
@@ -55,6 +57,17 @@ done
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') pix-logo-fetch: $*" | tee -a "$LOG" >&2; }
 
+# 途中で殺されても録画を止めっぱなしにしない。止めたのが自分なら必ず戻す。
+# restore_note には「何秒失ったか」を入れておく (中断時は空)。
+restore_note=""
+restore_pipeline() {
+    if [ "${started_pipeline:-0}" = "1" ]; then
+        started_pipeline=0
+        log "restarting the pipeline${restore_note:+ ($restore_note)}"
+        "$INIT" start >>"$LOG" 2>&1 || log "restart failed; run $INIT start"
+    fi
+}
+
 [ -r "$DEFAULTS" ] && . "$DEFAULTS" 2>/dev/null || true
 system=${PIX_SYSTEM:-bs}
 channel=${PIX_SAT_CHANNEL:-15}
@@ -76,7 +89,7 @@ for binary in "$PARSER" "$CAPTURE"; do
 done
 
 pipeline_running() {
-    pid=$(cat /var/run/pix-stream.pid 2>/dev/null)
+    pid=$(cat "$PIDFILE" 2>/dev/null)
     [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null
 }
 
@@ -102,13 +115,26 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 # Serialize manual and scheduled fetches before either can stop recording.
-fetch_lock=/var/run/pix-logo-fetch.lock
+fetch_lock=${PIX_LOGO_LOCK:-/var/run/pix-logo-fetch.lock}
 if ! mkdir "$fetch_lock" 2>/dev/null; then
     log "logo fetch lock is busy; recording was not interrupted"
     exit 1
 fi
-trap 'rmdir "$fetch_lock" 2>/dev/null || true' 0
-trap 'exit 1' 1 2 15
+# One EXIT trap for everything: give the recorder back AND drop the lock.
+# (A second `trap ... 0` later would silently replace this one.)
+release() {
+    restore_pipeline
+    rmdir "${fetch_lock:-/nonexistent}" 2>/dev/null || true
+}
+interrupted() {
+    # The capture is a session of its own: kill the whole group, then let the
+    # EXIT trap give the recorder back.
+    [ -n "${pipeline:-}" ] && kill -TERM -"$pipeline" 2>/dev/null
+    [ -n "${pipeline:-}" ] && wait "$pipeline" 2>/dev/null
+    exit 143
+}
+trap release EXIT
+trap interrupted INT TERM
 
 mkdir -p "$out" /dev/shm/pix
 log "stopping the pipeline (recording is interrupted for up to ${wait_seconds}s)"
@@ -135,15 +161,22 @@ fi
 
 started=$(date +%s)
 log "capturing BS-15 (929), waiting up to ${wait_seconds}s"
+# Its own process group, so a signal ends the capture now instead of waiting
+# for the tuner command to time out: `wait` is interrupted by the trap, and
+# the group is killed before the recorder is given back.
 # shellcheck disable=SC2086
-$capture_cmd 2>>"$LOG" | $parse_cmd 2>>"$LOG"
+setsid sh -c "$capture_cmd 2>>'$LOG' | $parse_cmd 2>>'$LOG'" &
+pipeline=$!
+wait "$pipeline"
 status=$?
 elapsed=$(( $(date +%s) - started ))
 
 if [ "$started_pipeline" = "1" ]; then
-    log "restarting the pipeline (${elapsed}s of recording lost)"
-    "$INIT" start >>"$LOG" 2>&1 || log "restart failed; run $INIT start"
+    restore_note="${elapsed}s of recording lost"
 fi
+# Give the recorder back before the summary, so the log reads in order.
+# (The EXIT trap repeats this only when the script was interrupted.)
+restore_pipeline
 
 case "$status" in
     0) log "logos stored in $out" ;;
