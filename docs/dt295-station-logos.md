@@ -161,8 +161,11 @@ NAS 側 (`pix-cm`) は録画ごとに四隅から常時表示マークを学習�
 ```
 
 `enabled: false` にすれば従来どおり。コードは
-`~/work/cm-general-build` に置き、`assemble_release.py` で
-`releases/20261118-logo-01` を作って `config.bundle` と `current` を差し替える。
+`experiments/cm-generic`（dtv_android）に置き、`assemble_release.py` で
+`releases/20261118-logo-03` を作って `config.bundle` と `current` を差し替える。
+NAS の `~/work/cm-general-build` は 619 行の古い版なので配備元にしない
+（この取り違えで 2026-11-18 に一度、15 本を CM カット無しで保存した）。
+組み立ては「直前のリリースのファイル + 変更したモジュール」で行う。
 戻すときは `config.bundle` と `current` を前のリリースに戻して
 `systemctl restart pix-cm-worker*`。
 
