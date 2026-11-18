@@ -1,0 +1,39 @@
+--- /dev/fd/63	2026-11-18 13:09:40
++++ work/nas/cm_service.py	2026-11-18 09:55:34
+@@ -146,6 +146,27 @@
+         print(json.dumps(dict(event='marker_cache_failed', error=str(error))), flush=True)
+ 
+ 
++def seed_marker_from_logo(config, metadata, info, source, stage):
++    """Fill the marker cache from the station logo the recorder serves.
++
++    Learning the mark is what fails on short or heavily covered recordings;
++    the logo gives the shape, so only its position has to be found. Failures
++    are logged and ignored: a recording must never depend on a logo.
++    """
++    if not (config.get('logo_source') or {}).get('enabled'):
++        return False
++    try:
++        import cm_logos  # numpy is only needed here
++        meta_path, refs_dir = marker_files(config, metadata, info)
++        if meta_path.exists():
++            return False
++        return cm_logos.seed_marker(config, metadata, info, source, stage, meta_path, refs_dir,
++                                    config.get('ffmpeg', 'ffmpeg'))
++    except Exception as error:  # noqa: BLE001 - a logo is never worth failing a job
++        print(json.dumps(dict(event='logo_seed_failed', error=str(error))), flush=True)
++        return False
++
++
+ def run_parallel(commands):
+     """Starts every (argv, log, env) at once and waits for all of them."""
+     started = []
+@@ -174,6 +195,8 @@
+                  '--references', str(config.get('scan_references', 3))]
+     origin = info['video_origin_s']
+     env = dict(os.environ, CM_TIME_ORIGIN=str(origin))
++    if rows is None:
++        seed_marker_from_logo(config, metadata, info, source, stage)
+     cached = load_marker(config, metadata, info)
+     candidates = []
+     if cached:

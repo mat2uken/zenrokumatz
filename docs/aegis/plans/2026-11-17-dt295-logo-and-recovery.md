@@ -120,6 +120,17 @@ PIX-DT295 処理を改善する。
   リリース `20261118-logo-01` を配備し、`config.bundle` と `current` を差し替え、
   worker を再起動した。
 
+## Next (2026-11-18 午後)
+
+- Buildroot での実ビルドを確認: `scripts/build-linux.sh pix-tuner-rebuild
+  stb-streamer-rebuild` が通り、`pix-ts-legacy` に復旧パッチの文字列
+  (`dt295_recover` ほか)、`pix-dt295-logo` に `--cdt` が入った成果物を確認。
+  STB へ配備し、局ロゴの採取と `/v1/logos` が動くことを確認。
+- `pix-logo-fetch` を中断しても録画を戻すようにした (EXIT トラップ + 専用
+  プロセスグループ + ロック)。実機 (busybox ash) で `wait` がシグナルで
+  中断されること、グループ kill が効くことを確認。
+- NAS 側の変更をリポジトリに写しを置いた (`nas/pix-cm/`)。
+
 ## Result (2026-11-18)
 
 ホストテストは通った。実機は DT295 が挿さっていない（PX-S1UD の地上波構成で
