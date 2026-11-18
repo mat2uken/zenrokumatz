@@ -129,7 +129,8 @@ PIX-DT295 処理を改善する。
 - `pix-logo-fetch` を中断しても録画を戻すようにした (EXIT トラップ + 専用
   プロセスグループ + ロック)。実機 (busybox ash) で `wait` がシグナルで
   中断されること、グループ kill が効くことを確認。
-- NAS 側の変更をリポジトリに写しを置いた (`nas/pix-cm/`)。
+- NAS 側の変更は dtv_android に保全した (`experiments/cm-generic/cm_logos.py` と
+  `cm_service.py` の差分、`docs/cm-station-logos.md`、コミット 47b9a83)。
 
 ## Result (2026-11-18)
 
