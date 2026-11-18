@@ -569,6 +569,19 @@ static void *client_thread(void *arg) {
         }
     }
 
+    /*
+     * The request headers are never read (only the request line is). Closing a
+     * socket with unread data makes the kernel send RST, and a client that is
+     * still reading the response reports a reset instead of seeing it (Python's
+     * urllib does). Drain them first, with a short timeout: a reader that keeps
+     * its side open must not hold this thread.
+     */
+    shutdown(fd, SHUT_WR);
+    struct timeval drain_timeout = {0, 200000};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &drain_timeout, sizeof(drain_timeout));
+    char discard[512];
+    while (recv(fd, discard, sizeof(discard), 0) > 0)
+        ;
     close(fd);
     free(ctx);
     return NULL;
