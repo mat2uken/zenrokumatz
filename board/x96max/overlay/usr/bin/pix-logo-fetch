@@ -1,0 +1,153 @@
+#!/bin/sh
+#
+# pix-logo-fetch - BS-15 のエンジニアリングサービス (929) から局ロゴを取り、
+#                  /var/lib/pix/logos に置く。
+#
+# 局ロゴは各チャンネルの放送には入っておらず、BS-15 の 929 が全局分を
+# 20 分ほどおきに 1 分弱だけ送出する。そのためこの箱では、録画中のチューナーを
+# 一時的に借りる必要がある。録画が数十秒〜数分途切れるので、既定では実行せず
+# --force を付けたときだけ動く。
+#
+#   pix-logo-fetch --force                 # 録画を止めて取りに行く
+#   pix-logo-fetch --force --wait 600      # 送出待ちを長めに取る
+#   pix-logo-fetch --dry-run               # 何をするかだけ表示する
+#
+# ロゴがそろえば待たずに終わり、パイプラインを再開する。取れなかったときは
+# 終了コード 3 を返すので、日を置いて実行し直す。
+set -u
+
+LOG=${PIX_LOGO_LOG:-/tmp/pix-logo.log}
+DEFAULTS=/etc/default/pix-stream-linux
+INIT=/etc/init.d/S97pix-stream
+ASSETS=/usr/share/pix-tuner
+PARSER=/usr/bin/pix-dt295-logo
+CAPTURE=/usr/bin/pix-ts-legacy
+out=${PIX_LOGO_DIR:-/var/lib/pix/logos}
+wait_seconds=180
+force=0
+dry_run=0
+started_pipeline=0
+
+usage() {
+    cat <<'TEXT'
+usage: pix-logo-fetch [--force] [--dry-run] [--wait SEC] [--out DIR]
+
+  --force       録画中のパイプラインを止めてチューナーを借りる (必須)
+  --dry-run     実行せず、止める・録る・戻すの内容だけ表示する
+  --wait SEC    送出を待つ上限 (既定 180)
+  --out DIR     書き出す先 (既定 /var/lib/pix/logos)
+
+終了コード: 0 取得または最新, 3 取得できず, 2 使い方/前提違い, 1 失敗
+TEXT
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force) force=1 ;;
+        --dry-run) dry_run=1 ;;
+        --wait) shift; wait_seconds=${1:-180} ;;
+        --out) shift; out=${1:-/var/lib/pix/logos} ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "pix-logo-fetch: unknown option $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') pix-logo-fetch: $*" | tee -a "$LOG" >&2; }
+
+[ -r "$DEFAULTS" ] && . "$DEFAULTS" 2>/dev/null || true
+system=${PIX_SYSTEM:-bs}
+channel=${PIX_SAT_CHANNEL:-15}
+tsid=${PIX_SAT_TSID:-0x40f1}
+
+if [ "$system" != "bs" ]; then
+    log "system is $system; the logos are on BS-15. set PIX_SYSTEM=bs to use this"
+    exit 2
+fi
+if [ "${PIX_TUNER:-}" != "dt295" ]; then
+    log "PIX_TUNER is '${PIX_TUNER:-}' (not dt295); this box cannot tune BS-15 over the DT295 path"
+    exit 2
+fi
+for binary in "$PARSER" "$CAPTURE"; do
+    if [ ! -x "$binary" ]; then
+        log "$binary is missing; install the pix-tuner build that has pix-dt295-logo"
+        exit 2
+    fi
+done
+
+pipeline_running() {
+    pid=$(cat /var/run/pix-stream.pid 2>/dev/null)
+    [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null
+}
+
+if [ "$dry_run" = "0" ] && [ "$force" = "0" ]; then
+    log "recording stops while the logos are fetched; rerun with --force"
+    exit 2
+fi
+
+capture_cmd="$CAPTURE --model dt295 --assets $ASSETS -s bs -c $channel --tsid $tsid -t $wait_seconds"
+parse_cmd="$PARSER --out $out --wait $wait_seconds --system bs --tsid $tsid"
+
+if [ "$dry_run" = "1" ]; then
+    echo "1. stop:    $INIT stop   (recording is interrupted)"
+    echo "2. capture: $capture_cmd \\"
+    echo "            | $parse_cmd"
+    echo "3. restart: $INIT start"
+    exit 0
+fi
+
+if [ "$(id -u)" != "0" ]; then
+    log "root only (it stops the recording pipeline)"
+    exit 2
+fi
+
+# Serialize manual and scheduled fetches before either can stop recording.
+fetch_lock=/var/run/pix-logo-fetch.lock
+if ! mkdir "$fetch_lock" 2>/dev/null; then
+    log "logo fetch lock is busy; recording was not interrupted"
+    exit 1
+fi
+trap 'rmdir "$fetch_lock" 2>/dev/null || true' 0
+trap 'exit 1' 1 2 15
+
+mkdir -p "$out" /dev/shm/pix
+log "stopping the pipeline (recording is interrupted for up to ${wait_seconds}s)"
+if pipeline_running; then
+    if ! "$INIT" stop >/dev/null 2>&1; then
+        log "pipeline stop failed; tuner was not borrowed"
+        exit 1
+    fi
+    started_pipeline=1
+fi
+# The tuner is only free once the capture process is gone: its lock would
+# otherwise make the new capture fail with "recording lock is busy".
+waited=0
+while ps | grep -q "[p]ix-ts-legacy" && [ "$waited" -lt 15 ]; do
+    sleep 1
+    waited=$((waited + 1))
+done
+if ps | grep -q "[p]ix-ts-legacy"; then
+    log "capture did not stop; tuner was not borrowed"
+    exit 1
+fi
+# The capture binary owns its fcntl lock. Never unlink its inode, even when
+# the file remains after an earlier process exited: fcntl releases on close.
+
+started=$(date +%s)
+log "capturing BS-15 (929), waiting up to ${wait_seconds}s"
+# shellcheck disable=SC2086
+$capture_cmd 2>>"$LOG" | $parse_cmd 2>>"$LOG"
+status=$?
+elapsed=$(( $(date +%s) - started ))
+
+if [ "$started_pipeline" = "1" ]; then
+    log "restarting the pipeline (${elapsed}s of recording lost)"
+    "$INIT" start >>"$LOG" 2>&1 || log "restart failed; run $INIT start"
+fi
+
+case "$status" in
+    0) log "logos stored in $out" ;;
+    3) log "no complete logo data in ${elapsed}s; try again another day" ;;
+    *) log "logo extraction failed (exit $status)" ;;
+esac
+exit "$status"

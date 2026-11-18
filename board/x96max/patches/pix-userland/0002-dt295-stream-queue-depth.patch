@@ -1,0 +1,15 @@
+--- a/include/dt295_stream.h
++++ b/include/dt295_stream.h
+@@ -8,8 +8,11 @@
+
+ typedef struct dt295_stream dt295_stream;
+
++/* 16 KiB is the largest single URB usbfs accepts, so the depth is what
++ * absorbs a host stall: 32 of them hold about 0.6 s at the transcoded rate,
++ * where 8 held under 0.2 s and dropped TS whenever the encoder blocked. */
+ enum {
+-    DT295_STREAM_TRANSFERS = 8,
++    DT295_STREAM_TRANSFERS = 32,
+     DT295_STREAM_TRANSFER_BYTES = 16384,
+     DT295_STREAM_RING_BYTES = 128 * 1024 * 1024,
+     DT295_STREAM_RING_BLOCKS = DT295_STREAM_RING_BYTES / DT295_STREAM_TRANSFER_BYTES,

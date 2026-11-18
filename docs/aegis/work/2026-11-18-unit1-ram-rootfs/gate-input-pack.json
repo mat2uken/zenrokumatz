@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "baselineRefs": [
+    "docs/aegis/plans/2026-11-18-ram-rootfs.md",
+    "docs/ram-rootfs.md",
+    "board/x96max/uboot-boot-default.md"
+  ],
+  "impactStatement": "docs/aegis/work/2026-11-18-unit1-ram-rootfs/impact-statement-draft.json",
+  "compatPlan": "X96MAX_PROFILE=rambootの既定は2代目のまま。1代目はX96MAX_UNIT=1を明示。通常diskビルドも残す",
+  "retirementPlan": "DT固定重複producer・死んだstart_live・EIT旧custom assembler退役。disk/旧ext4/旧kernel/旧bootcmdは明示復旧用に保持",
+  "evidenceBundle": [
+    "docs/aegis/work/2026-11-18-unit1-ram-rootfs/evidence-bundle-draft-unit1-full-regression.json",
+    "docs/aegis/work/2026-11-18-unit1-ram-rootfs/evidence-bundle-draft-unit1-saved-autoboot.json",
+    "docs/aegis/work/2026-11-18-unit1-ram-rootfs/evidence-bundle-draft-unit1-sd-absent.json",
+    "docs/aegis/work/2026-11-18-unit1-ram-rootfs/evidence-bundle-draft-unit2-offline-regression.json"
+  ]
+}

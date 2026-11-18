@@ -73,24 +73,6 @@ kill_stale() {
     done
 }
 
-port_reset() {
-    [ -w "$PIX_TUNER_PORT/disable" ] || return 0
-    log "resetting the tuner port"
-    echo 1 > "$PIX_TUNER_PORT/disable" 2>/dev/null
-    sleep 2
-    echo 0 > "$PIX_TUNER_PORT/disable" 2>/dev/null
-    # 再列挙が終わる前にチューナーを開くと、開けずに無配信のまま終わる。
-    waited=0
-    while [ "$waited" -lt 30 ]; do
-        if lsusb 2>/dev/null | grep -q 06b8; then
-            break
-        fi
-        sleep 0.5
-        waited=$((waited + 1))
-    done
-    sleep 2
-}
-
 producer() {
     # shellcheck disable=SC2086
     pix-ts-legacy --model dt295 --assets "$PIX_DT295_ASSETS" \
@@ -135,7 +117,8 @@ reader() {
 
 while :; do
     kill_stale
-    port_reset
+    # No unconditional USB reset: the same controller may hold boot/data media.
+    # For failed DT295 recovery use pix-dt295-reset (shared storage guard).
     rm -f "$PIX_LIVE_FILE"
     sleep "$PIX_START_DELAY"
     started=$(date +%s)

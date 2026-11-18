@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// Unit 2: U-Boot aml_dt=g12a_u211_4g, external RTL8211F PHY.
+#include "meson-g12a-x96-max-p-ephy.dts"
+
+/ {
+	model = "X96Max_P (G12A, 4 GiB, external Ethernet PHY)";
+	memory@0 {
+		// Match the vendor DT's linux,usable-memory: [1 MiB, 0xf5800000).
+		// Do not expose the top-of-address-space peripheral/reserved window.
+		reg = <0x0 0x00100000 0x0 0xf5700000>;
+	};
+};

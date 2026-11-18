@@ -1,0 +1,175 @@
+#!/bin/sh
+# Shared DT295 whole-controller recovery. Source this file; it has no CLI.
+# Fixed production paths: environment variables cannot disable the guard.
+# Host tests source it and then replace these paths/functions with fixtures.
+_PIX_USB_SYS=/sys
+_PIX_USB_PROC=/proc
+_PIX_USB_RUN=/run
+_PIX_USB_GLUE=ffe09000.usb
+
+_pix_usb_refuse() {
+    echo "pix-usb-reset: $*" >&2
+    return 1
+}
+
+_pix_usb_no_mappers() (
+    for kind in holders slaves; do
+        if [ ! -d "$1/$kind" ]; then
+            # Linux partitions have holders, but no slaves directory.
+            [ "$kind" = slaves ] && [ -f "$1/partition" ] && continue
+            _pix_usb_refuse "unknown block topology: $1/$kind"
+            exit 1
+        fi
+        for entry in "$1/$kind/"*; do
+            if [ -e "$entry" ] || [ -L "$entry" ]; then
+                _pix_usb_refuse "block mapping ($kind) at $1"
+                exit 1
+            fi
+        done
+    done
+)
+
+_pix_usb_check_block() (
+    case "$1" in *[!0-9:]*|:*|*:|*:*:*) _pix_usb_refuse "invalid block ID: $1"; exit 1;; esac
+    node=$(readlink -f "$_PIX_USB_SYS/dev/block/$1") || exit 1
+    [ -d "$node" ] || { _pix_usb_refuse "missing sysfs mapping for $1"; exit 1; }
+    IFS= read -r actual < "$node/dev" || exit 1
+    [ "$actual" = "$1" ] || { _pix_usb_refuse "inconsistent block mapping for $1"; exit 1; }
+    case "$node" in
+        "$_pix_usb_controller"/*) _pix_usb_refuse "mounted block/swap $1 is on the USB controller"; exit 1;;
+        "$_PIX_USB_SYS"/devices/virtual/*) _pix_usb_refuse "virtual/mapper block device $1"; exit 1;;
+        "$_PIX_USB_SYS"/devices/*/block/*) ;;
+        *) _pix_usb_refuse "unknown physical ancestry for $1"; exit 1;;
+    esac
+    # Check the partition AND its parent disk, not just the /dev name.
+    while [ "$node" != "$_PIX_USB_SYS/devices" ]; do
+        if [ -e "$node/dev" ]; then
+            _pix_usb_no_mappers "$node" || exit 1
+        fi
+        node=${node%/*}
+    done
+)
+
+_pix_usb_swap_id() (
+    # Swap files (including escaped/unresolvable names) cannot be safely mapped
+    # with st_rdev. Refuse them rather than guessing their backing filesystem.
+    [ -b "$1" ] || { _pix_usb_refuse "cannot prove swap backing device: $1"; exit 1; }
+    hex=$(stat -L -c '%t:%T' "$1") || exit 1
+    major=${hex%:*}; minor=${hex#*:}
+    case "$major:$minor" in *[!0-9a-fA-F:]*|:*|*:|*:*:*) exit 1;; esac
+    printf '%d:%d\n' "0x$major" "0x$minor"
+)
+
+_pix_usb_guard() (
+    driver=$_PIX_USB_SYS/bus/platform/drivers/dwc3-meson-g12a
+    _pix_usb_controller=$(readlink -f "$driver/$_PIX_USB_GLUE") || exit 1
+    platform=$(readlink -f "$_PIX_USB_SYS/bus/platform/devices/$_PIX_USB_GLUE") || exit 1
+    case "$_pix_usb_controller" in "$_PIX_USB_SYS"/devices/*) ;; *) exit 1;; esac
+    [ -d "$_pix_usb_controller" ] && [ "$_pix_usb_controller" = "$platform" ] &&
+        [ -w "$driver/unbind" ] && [ -w "$driver/bind" ] || {
+        _pix_usb_refuse "controller is not bound or reset controls are unavailable"; exit 1;
+    }
+    [ -d "$_PIX_USB_SYS/dev/block" ] || { _pix_usb_refuse "no sysfs block inventory"; exit 1; }
+    # An unmounted mapper can still hold a USB disk open. Inspect all block
+    # nodes under this controller, including partitions, before considering it idle.
+    for link in "$_PIX_USB_SYS/dev/block/"*; do
+        [ "$link" = "$_PIX_USB_SYS/dev/block/*" ] && continue
+        node=$(readlink -f "$link") || exit 1
+        [ -d "$node" ] || { _pix_usb_refuse "unresolved block inventory: $link"; exit 1; }
+        case "$node" in "$_pix_usb_controller"/*) _pix_usb_no_mappers "$node" || exit 1;; esac
+    done
+    # mountinfo's major:minor handles /dev/root aliases, bind mounts and
+    # partitions. Include other processes' mount namespaces, not just our own.
+    set -- "$_PIX_USB_PROC/self/mountinfo"
+    for mounts in "$_PIX_USB_PROC"/[0-9]*/mountinfo; do
+        [ "$mounts" = "$_PIX_USB_PROC/[0-9]*/mountinfo" ] && continue
+        set -- "$@" "$mounts"
+    done
+    records=$(awk '
+        FILENAME == ARGV[1] { own++ }
+        {
+            if (NF < 10 || $3 !~ /^[0-9]+:[0-9]+$/) exit 1
+            for (i = 7; i <= NF && $i != "-"; i++) {}
+            if (i + 3 > NF) exit 1
+            fs = $(i+1)
+            if (!seen[$3 " " fs]++) print $3, fs
+        }
+        END { if (!own) exit 1 }
+    ' "$@") || { _pix_usb_refuse "cannot read mount topology"; exit 1; }
+    while read -r dev fs; do
+        case "$dev" in
+            0:*)
+                # Only known non-block filesystems are exempt. In particular,
+                # overlay, FUSE and multi-device/unknown mappings fail closed.
+                case "$fs" in
+                    rootfs|ramfs|tmpfs|devtmpfs|proc|sysfs|devpts|cgroup|cgroup2|securityfs|debugfs|tracefs|configfs|pstore|mqueue|hugetlbfs|rpc_pipefs|fusectl|bpf|nfs|nfs4|cifs) ;;
+                    *) _pix_usb_refuse "unknown non-block backing: $dev $fs"; exit 1;;
+                esac;;
+            *) _pix_usb_check_block "$dev" || exit 1;;
+        esac
+    done <<EOF_MOUNTS
+$records
+EOF_MOUNTS
+    swaps=$(awk 'NR == 1 { if ($1 != "Filename") exit 1; next }
+        { if (NF != 5) exit 1; print $1 }
+        END { if (!NR) exit 1 }' "$_PIX_USB_PROC/swaps") || {
+        _pix_usb_refuse "cannot read active swaps"; exit 1;
+    }
+    [ -z "$swaps" ] && exit 0
+    while IFS= read -r swap; do
+        dev=$(_pix_usb_swap_id "$swap") || exit 1
+        _pix_usb_check_block "$dev" || exit 1
+    done <<EOF_SWAPS
+$swaps
+EOF_SWAPS
+)
+
+_pix_usb_now() {
+    # Monotonic seconds; /run state is intentionally retained for this boot.
+    awk '{ if ($1 !~ /^[0-9]+([.][0-9]+)?$/) exit 1; print int($1); ok=1; exit }
+        END { if (!ok) exit 1 }' "$_PIX_USB_PROC/uptime"
+}
+
+_pix_usb_write_control() {
+    printf '%s\n' "$_PIX_USB_GLUE" > "$_PIX_USB_SYS/bus/platform/drivers/dwc3-meson-g12a/$1"
+}
+
+_pix_usb_enumerated() {
+    devices=$(lsusb) || return 1
+    printf '%s\n' "$devices" | grep -qi pixela
+}
+
+# Optional callback runs only AFTER preflight, while holding the common lock.
+# Manual recovery uses it to stop the pipeline without interrupting on refusal.
+# Automatic recovery calls this only after its existing child cleanup.
+pix_usb_reset() (
+    lock=$_PIX_USB_RUN/pix-usb-reset.lock
+    state=$_PIX_USB_RUN/pix-usb-reset.state
+    mkdir "$lock" 2>/dev/null || { _pix_usb_refuse "reset locked (or stale lock); refusing"; exit 1; }
+    trap 'rmdir "$lock"' 0
+    trap 'exit 1' HUP INT TERM
+    _pix_usb_guard || exit 1
+    now=$(_pix_usb_now) || { _pix_usb_refuse "cannot read monotonic clock"; exit 1; }
+    count=0; last=0
+    if [ -e "$state" ] || [ -L "$state" ]; then
+        IFS=' ' read -r count last rest < "$state" || exit 1
+        case "$count:$last" in *[!0-9:]*|:*|*:|*:*:*) _pix_usb_refuse "invalid reset state"; exit 1;; esac
+        [ -z "$rest" ] && [ "$count" -le 3 ] && [ "$last" -le "$now" ] || exit 1
+        if [ "$count" -ge 3 ] || [ $((now - last)) -lt 300 ]; then
+            _pix_usb_refuse "reset budget exhausted/cooling down (max 3 per boot, 300s apart)"
+            exit 1
+        fi
+    fi
+    if [ "$#" -gt 0 ]; then
+        "$@" || { _pix_usb_refuse "pipeline stop failed"; exit 1; }
+    fi
+    # Stop/cleanup can take time: never trust a stale preflight for unbind.
+    _pix_usb_guard || exit 1
+    printf '%s %s\n' "$((count + 1))" "$now" > "$state" || exit 1
+    echo "pix-usb-reset: power-cycling $_PIX_USB_GLUE" >&2
+    _pix_usb_write_control unbind || { _pix_usb_refuse "unbind failed; stopping"; exit 1; }
+    sleep 3 || exit 1
+    _pix_usb_write_control bind || { _pix_usb_refuse "bind failed; stopping (controller may be unbound)"; exit 1; }
+    sleep 2 || exit 1
+    _pix_usb_enumerated || { _pix_usb_refuse "DT295 did not re-enumerate; stopping"; exit 1; }
+)

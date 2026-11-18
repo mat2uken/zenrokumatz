@@ -1,0 +1,11 @@
+# Unit 2 only. All setenv commands below are RAM-only until saveenv.
+# Kernel relocation, DTB and initramfs ranges do not overlap firmware/U-Boot.
+# Legacy uImage-wrapped gzip CPIO is required by this vendor U-Boot 2015.01.
+# The single conditional chain never boots stale memory after a failed load.
+# Vendor console accepts at most 511 bytes per line: keep definitions separate.
+setenv ram_boot_setup 'setenv kernel_addr_r 0x01080000; setenv fdt_addr_r 0x08000000; setenv dtb_mem_addr 0x08000000; setenv fdtaddr 0x08000000; setenv ramdisk_addr_r 0x10000000'
+setenv linux_boot_ram 'run ram_boot_setup; if usb start; then if fatload usb 0:1 ${kernel_addr_r} Image; then if fatload usb 0:1 ${fdt_addr_r} meson-g12a-x96-max-p-ephy-4g.dtb; then if fatload usb 0:1 ${ramdisk_addr_r} rootfs.cpio.uboot; then setenv bootargs console=ttyAML0,115200n8 earlycon rdinit=/init; booti ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r}; fi; fi; fi; fi'
+run linux_boot_ram
+# Only AFTER successful one-shot boot, service and USB independence checks:
+# setenv bootcmd 'run linux_boot_ram'
+# saveenv

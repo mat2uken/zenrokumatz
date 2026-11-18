@@ -84,6 +84,11 @@ start_relay() {
 }
 
 start() {
+    . /etc/default/pix-stream-linux 2>/dev/null || true
+    if [ "${PIX_TUNER:-pxs1ud}" = dt295 ] && [ "${PIX_DECRYPT:-0}" != 1 ]; then
+        echo "B-CAS: DT295 internal card (external relay not needed)"
+        return 0
+    fi
     case "$BCAS_MODE" in
         remote) start_remote ;;
         *) start_local ;;

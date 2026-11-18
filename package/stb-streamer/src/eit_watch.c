@@ -23,10 +23,11 @@
 #include <unistd.h>
 
 #include "arib_text.h"
+#include "logo_cdt.h"
+#include "logo_store.h"
 
 #define TS_PACKET 188
 #define EIT_PID 0x12
-#define MAX_SECTION 4096
 #define PROGRAM_NAME_MAX 256
 
 /* 現在の番組。NAS へ伝える項目だけを持つ。 */
@@ -43,6 +44,30 @@ typedef struct {
 static int g_pmt_pid = -1;
 static int g_service_id = -1;
 static Program g_last;
+
+/*
+ * 地上波の局ロゴ (CDT) は、録画中のこの TS にそのまま乗っている。素通しする
+ * ついでに拾っておけば、チューナーを止めずに /v1/logos を更新できる。
+ * --logo-dir が無ければ何もしない。
+ */
+static cdt_collector *g_cdt;
+static const char *g_logo_dir;
+static unsigned g_logo_written;
+static int g_logo_debug;
+static unsigned g_logo_progress_next;
+
+static void logo_debug(void *user, uint16_t pid, const uint8_t *section, size_t length)
+{
+    (void)user;
+    if (!g_logo_debug || length < 4)
+        return;
+    char hex[80];
+    size_t at = 0;
+    for (size_t i = 0; i < length && i < 24 && at + 3 < sizeof(hex); i++)
+        at += (size_t)snprintf(hex + at, sizeof(hex) - at, "%02x", section[i]);
+    fprintf(stderr, "eit_watch: section pid=0x%04x tid=0x%02x len=%zu %s\n", pid, section[0],
+            length, hex);
+}
 
 /* ---- 出力 ---- */
 
@@ -345,46 +370,75 @@ static int handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
 
 /* ---- 入力 ---- */
 
-typedef struct {
-    uint8_t buf[MAX_SECTION];
-    size_t len;
-    int active;
-} SectionBuf;
-
-static SectionBuf g_pat = {0}, g_eit = {0};
-
-/* セクションを組み立てる。完了したら 1 を返す。 */
-static int section_push(SectionBuf *s, const uint8_t *payload, size_t len,
-                        int pusi, const uint8_t **out, size_t *out_len)
+/* PAT/EIT とロゴは同じセクション再構成を使う。1パケットに複数あっても
+ * すべて呼ばれ、次の PUSI の pointer_field に入った前セクションの末尾も届く。 */
+static void program_section(void *ctx, uint16_t pid, const uint8_t *sec, size_t slen)
 {
-    if (pusi) {
-        size_t ptr = payload[0];
-        if (1 + ptr >= len) {
-            s->len = 0;
-            s->active = 0;
-            return 0;
+    const char *state_path = ctx;
+    if (pid == 0 && sec[0] == 0x00) {
+        handle_pat(sec, slen);
+    } else if (pid == EIT_PID &&
+               (sec[0] == 0x4e || (sec[0] >= 0x50 && sec[0] <= 0x5f))) {
+        /* present/following とスケジュール表の両方から、時刻が一致する
+         * 現在番組だけを採る。選択と名前の方針は handle_eit に集約する。 */
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        int64_t wall = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+        int changed = handle_eit(sec, slen, wall);
+        if (changed && g_last.valid) {
+            state_write(state_path, &g_last);
+            fprintf(stderr,
+                    "eit_watch: service=%d event=%d start=%lld dur=%lld name=%s\n",
+                    g_last.service_id, g_last.event_id,
+                    (long long)g_last.start_ms,
+                    (long long)g_last.duration_ms, g_last.name);
         }
-        s->len = 0;
-        memcpy(s->buf, payload + 1 + ptr, len - 1 - ptr);
-        s->len = len - 1 - ptr;
-        s->active = s->len >= 3;
-    } else if (s->active && s->len + len <= sizeof(s->buf)) {
-        memcpy(s->buf + s->len, payload, len);
-        s->len += len;
-    } else {
-        s->active = 0;
-        return 0;
     }
-    if (!s->active || s->len < 3)
-        return 0;
+}
 
-    size_t need = 3 + (((size_t)(s->buf[1] & 0x0f) << 8) | s->buf[2]);
-    if (s->len < need)
-        return 0;
-    *out = s->buf;
-    *out_len = need;
-    s->active = 0;
-    return 1;
+/*
+ * 取り込んだ CDT をファイルに出す。内容が変わったときだけ書き、SD カードを
+ * 毎分書き換えないようにする (generation はロゴの中身が変わった回数)。
+ */
+static void logos_flush(void)
+{
+    if (!g_cdt || g_cdt->generation == g_logo_written)
+        return;
+    if (!cdt_collector_has_logos(g_cdt))
+        return;
+    const logo_entry *entries = NULL;
+    size_t count = cdt_collector_entries(g_cdt, &entries);
+    if (!count)
+        return;
+    logo_output outputs[CDT_MAX_LOGOS * 2];
+    size_t n = 0;
+    for (size_t i = 0; i < count && n < sizeof(outputs) / sizeof(outputs[0]); i++) {
+        if (!entries[i].png_length || entries[i].png_length <= LOGO_STORE_TRANSPARENT_MAX)
+            continue;
+        for (size_t s = 0; s < entries[i].service_count; s++) {
+            outputs[n++] = (logo_output){
+                .id = (uint32_t)entries[i].services[s].original_network_id * 100000u +
+                      entries[i].services[s].service_id,
+                .network_id = entries[i].services[s].original_network_id,
+                .transport_stream_id = entries[i].services[s].transport_stream_id,
+                .service_id = entries[i].services[s].service_id,
+                .name = cdt_collector_name(g_cdt, entries[i].services[s].service_id),
+                .png = entries[i].png,
+                .png_length = entries[i].png_length,
+                .logo_type = entries[i].logo_type,
+                .logo_id = entries[i].logo_id,
+            };
+        }
+    }
+    if (!n)
+        return;
+    int changed = logo_store_write(g_logo_dir, outputs, n, "terrestrial", 0, 0);
+    if (changed > 0) {
+        fprintf(stderr, "eit_watch: logos written (%zu service(s), %d change(s))\n", n, changed);
+        g_logo_written = g_cdt->generation;
+    } else if (changed == 0) {
+        g_logo_written = g_cdt->generation;
+    }
 }
 
 int main(int argc, char **argv)
@@ -393,11 +447,32 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--state") && i + 1 < argc)
             state_path = argv[++i];
+        else if (!strcmp(argv[i], "--logo-dir") && i + 1 < argc)
+            g_logo_dir = argv[++i];
+        else if (!strcmp(argv[i], "--logo-debug"))
+            g_logo_debug = 1;
         else {
-            fprintf(stderr, "usage: %s [--state PATH]\n", argv[0]);
+            fprintf(stderr, "usage: %s [--state PATH] [--logo-dir DIR] [--logo-debug]\n", argv[0]);
             return 2;
         }
     }
+
+    if (g_logo_dir && g_logo_dir[0]) {
+        g_cdt = calloc(1, sizeof(*g_cdt));
+        if (!g_cdt) {
+            fprintf(stderr, "eit_watch: out of memory for the logo collector\n");
+            return 1;
+        }
+        cdt_collector_init(g_cdt);
+        g_cdt->debug = logo_debug;
+        if (logo_store_mkdirs(g_logo_dir))
+            fprintf(stderr, "eit_watch: cannot create %s: %s\n", g_logo_dir, strerror(errno));
+    }
+
+    ts_demux program_demux;
+    ts_demux_init(&program_demux);
+    ts_demux_add(&program_demux, 0);
+    ts_demux_add(&program_demux, EIT_PID);
 
     load_state(state_path);
     fprintf(stderr, "eit_watch: ready event-offset=14 state=%s (previous=%s)\n",
@@ -435,50 +510,20 @@ int main(int argc, char **argv)
             wrote += (size_t)w;
         }
 
-        for (size_t off = 0; off + TS_PACKET <= done; off += TS_PACKET) {
-            const uint8_t *p = in + off;
-            if (p[0] != 0x47)
-                continue;
-            int pid = ((p[1] & 0x1f) << 8) | p[2];
-            int pusi = (p[1] & 0x40) != 0;
-            int afc = (p[3] >> 4) & 0x3;
-            size_t poff = 4;
-            if (afc & 0x2)
-                poff = 5 + p[4];
-            if (!(afc & 0x1) || poff >= TS_PACKET)
-                continue;
+        ts_demux_feed(&program_demux, in, done, program_section, (void *)state_path);
 
-            const uint8_t *payload = p + poff;
-            size_t plen = TS_PACKET - poff;
-            const uint8_t *sec = NULL;
-            size_t slen = 0;
-
-            if (pid == 0) {
-                if (section_push(&g_pat, payload, plen, pusi, &sec, &slen) &&
-                    sec[0] == 0x00)
-                    handle_pat(sec, slen);
-            } else if (pid == EIT_PID) {
-                /*
-                 * present/following (0x4E) だけに頼ると、放送が present の
-                 * セクションを番組切替時にしか送らないことがあり、1回取り
-                 * こぼすと番組名が番組いっぱい固定される。スケジュール表
-                 * (0x50..0x5F) にも同じイベントが載っているので、時刻で
-                 * 現在番組を引き当てられるよう両方を読む。
-                 */
-                if (section_push(&g_eit, payload, plen, pusi, &sec, &slen) &&
-                    (sec[0] == 0x4e || (sec[0] >= 0x50 && sec[0] <= 0x5f))) {
-                    struct timespec ts;
-                    clock_gettime(CLOCK_REALTIME, &ts);
-                    int64_t wall = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-                    int changed = handle_eit(sec, slen, wall);
-                    if (changed && g_last.valid) {
-                        state_write(state_path, &g_last);
-                        fprintf(stderr,
-                                "eit_watch: service=%d event=%d start=%lld dur=%lld name=%s\n",
-                                g_last.service_id, g_last.event_id,
-                                (long long)g_last.start_ms,
-                                (long long)g_last.duration_ms, g_last.name);
-                    }
+        if (g_cdt) {
+            cdt_collector_feed(g_cdt, in, done);
+            static time_t last_flush;
+            time_t now = time(NULL);
+            if (now - last_flush >= 30) {
+                last_flush = now;
+                logos_flush();
+                if (now >= (time_t)g_logo_progress_next) {
+                    char progress[192];
+                    g_logo_progress_next = (unsigned)now + 300;
+                    fprintf(stderr, "eit_watch: %s\n",
+                            cdt_collector_progress(g_cdt, progress, sizeof(progress)));
                 }
             }
         }
@@ -487,6 +532,11 @@ int main(int argc, char **argv)
         have -= done;
         if (have == sizeof(in))
             have = 0;                       /* 188 で割れないまま満杯: 捨てる */
+    }
+    logos_flush();
+    if (g_cdt) {
+        cdt_collector_free(g_cdt);
+        free(g_cdt);
     }
     return 0;
 }

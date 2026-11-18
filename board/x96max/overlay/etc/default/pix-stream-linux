@@ -47,3 +47,16 @@ PIX_FEATURE_MAX_MB=384
 PIX_FEATURE_STEP=3
 # 30秒未満で終わる状態が続いたら解析を自動で止める回数。
 PIX_FEATURE_FAILURES=3
+
+# 局ロゴの置き場。pix-logo-fetch が書き、NAS は GET /v1/logos で取る。
+# 空にすると配信しない。
+PIX_LOGO_DIR=/var/lib/pix/logos
+
+# 局ロゴの週 1 回の自動取得。録画を数分止めるので深夜に回す。
+#   曜日 1=月 .. 7=日、時刻 0-23 (その1時間のうちに1回だけ)
+#   0 にすると自動取得しない。
+PIX_LOGO_WEEKLY=1
+PIX_LOGO_WEEKLY_DAY=1
+PIX_LOGO_WEEKLY_HOUR=4
+# 929 の送出を待つ上限 (秒)。送出は 20 分おきに 1 分弱なので 15 分あれば足りる。
+PIX_LOGO_WEEKLY_WAIT=900

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Stop the X96Max autoboot and start Linux from the SD card.
+"""Stop X96Max autoboot and start disk Linux or full RAM-root Linux.
 
-The box boots Android from eMMC on its own. Linux only starts when the U-Boot
-prompt is caught and the load commands are typed in, so this waits on the UART
-for the prompt, sends the sequence from board/x96max/uboot-manual.txt one line
-at a time (waiting for the prompt to come back after each), and then hands over
-to the kernel log.
+Catch the UART U-Boot prompt, load each file with confirmation, then hand over
+to the kernel log. Disk boot uses SD; RAM boot uses unit1 SD/2GiB or unit2
+USB/4GiB. Either RAM profile can instead load its files by TFTP. RAM boot also
+checks the firmware board identity before loading a unit-specific DTB.
 
 Nothing is saved to the environment: these settings live in RAM only.
 
 Usage:
   uboot_boot_linux.py [--dev /dev/cu.usbserial-0001] [--wait 180] [--log FILE]
+  uboot_boot_linux.py --dev /dev/cu.usbserial-01025FCC --ramboot [--tftp-server IPv4]
 """
 import argparse
 import os
@@ -47,7 +47,51 @@ BOOT = "booti ${kernel_addr_r} - ${fdt_addr_r}"
 # The loaders print these when they could not read the card. Continuing would
 # start the kernel from whatever happens to be in RAM.
 FAILURES = ("** Bad device", "Wrong Image Format", "ERROR: can't get", "Failed to load",
-            "Not a valid FAT", "Unable to read file")
+            "Not a valid FAT", "Unable to read file", "No partition table",
+            "File not found", "Bad Linux ARM64 Image magic", "TFTP error",
+            "Retry count exceeded", "ERROR: reserving fdt memory region failed",
+            "Wrong Ramdisk Image Format", "Ramdisk image is corrupt or invalid")
+
+
+RAMBOOT_BOARDS = {1: "g12a_u212_2g", 2: "g12a_u211_4g"}
+
+
+def ramboot_board_matches(text, unit):
+    expected = RAMBOOT_BOARDS.get(unit)
+    return expected is not None and re.search(
+        r"(?:^|\n)aml_dt=" + re.escape(expected) + r"\r?(?:\n|$)", text) is not None
+
+
+def ramboot_setup(server=None, ipaddr=None, unit=2):
+    """Full RAM boot; unit 1 uses SD/2GiB, unit 2 USB/4GiB. Never saveenv."""
+    if unit not in RAMBOOT_BOARDS:
+        raise ValueError("RAM boot unit must be 1 or 2")
+    dtb = "meson-g12a-x96-max-p.dtb" if unit == 1 else "meson-g12a-x96-max-p-ephy-4g.dtb"
+    setup = [
+        "printenv aml_dt",
+        "setenv kernel_addr_r 0x01080000", "setenv fdt_addr_r 0x08000000",
+        "setenv dtb_mem_addr 0x08000000", "setenv fdtaddr 0x08000000",
+        "setenv ramdisk_addr_r 0x10000000",
+    ]
+    if server:
+        import ipaddress
+        server = str(ipaddress.IPv4Address(server))
+        ipaddr = str(ipaddress.IPv4Address(ipaddr or ("192.168.99.109" if unit == 1 else "192.168.99.123")))
+        setup += [f"setenv ipaddr {ipaddr}", f"setenv serverip {server}"]
+        load = "tftpboot"
+    elif unit == 1:
+        setup += ["setenv sddev 0", "mmc dev ${sddev}", "mmc rescan"]
+        load = "fatload mmc ${sddev}:1"
+    else:
+        setup += ["usb start"]
+        load = "fatload usb 0:1"
+    setup += [
+        f"{load} ${{kernel_addr_r}} Image",
+        f"{load} ${{fdt_addr_r}} {dtb}",
+        f"{load} ${{ramdisk_addr_r}} rootfs.cpio.uboot",
+        "setenv bootargs 'console=ttyAML0,115200n8 earlycon rdinit=/init'",
+    ]
+    return setup, "booti ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r}"
 
 
 def open_port(dev):
@@ -127,6 +171,8 @@ def catch_prompt(console, wait_seconds):
 
 def run(console, command, timeout=25.0):
     """Sends one line and waits for the prompt to come back."""
+    # A prompt left by the preceding command is not completion evidence.
+    console.tail = ""
     os.write(console.fd, (command + "\r").encode())
     start = time.time()
     console.pump(0.3)
@@ -145,7 +191,18 @@ def main():
     ap.add_argument("--log", default="/tmp/uboot-linux-boot.log")
     ap.add_argument("--trace", type=float, default=20.0,
                     help="seconds of kernel log to show after booti")
+    ap.add_argument("--ramboot", action="store_true", help="full RAM-root boot from the selected unit's medium")
+    ap.add_argument("--unit", type=int, choices=(1, 2), default=2,
+                    help="RAM boot unit: 1=SD/2GiB, 2=USB/4GiB (default2)")
+    ap.add_argument("--tftp-server", help="load RAM-boot files from this IPv4 address instead of local media")
+    ap.add_argument("--ipaddr", help="temporary TFTP IPv4 (default: unit1 .109, unit2 .123)")
     args = ap.parse_args()
+    if args.tftp_server and not args.ramboot:
+        ap.error("--tftp-server requires --ramboot")
+    try:
+        setup, boot = ramboot_setup(args.tftp_server, args.ipaddr, args.unit) if args.ramboot else (SETUP, BOOT)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     log = open(args.log, "ab", buffering=0)
     fd = open_port(args.dev)
@@ -158,9 +215,9 @@ def main():
             return 1
         print("[boot] prompt caught", file=sys.stderr)
 
-        for command in SETUP:
+        for command in setup:
             print("[boot] %s" % command, file=sys.stderr)
-            if not run(console, command):
+            if not run(console, command, timeout=180.0 if command.startswith(("tftpboot ", "fatload ")) else 25.0):
                 print("[boot] no prompt after: %s" % command, file=sys.stderr)
                 return 1
             for marker in FAILURES:
@@ -169,10 +226,24 @@ def main():
                           file=sys.stderr)
                     return 1
 
-        print("[boot] %s" % BOOT, file=sys.stderr)
-        os.write(fd, (BOOT + "\r").encode())
+            if args.ramboot and command == "printenv aml_dt" and not ramboot_board_matches(console.tail, args.unit):
+                print("[boot] board does not match selected unit; stopping before loads", file=sys.stderr)
+                return 1
+
+            if command.startswith(("fatload ", "tftpboot ")):
+                counts = re.findall(r"(?:(\d+) bytes read|Bytes transferred = (\d+))", console.tail)
+                if not counts or not any(int(a or b) > 0 for a, b in counts):
+                    print("[boot] load has no positive byte-count confirmation; stopping", file=sys.stderr)
+                    return 1
+
+        print("[boot] %s" % boot, file=sys.stderr)
+        console.tail = ""
+        os.write(fd, (boot + "\r").encode())
         console.pump(args.trace)
-        print("[boot] done; kernel log in %s" % args.log, file=sys.stderr)
+        if "Kernel panic" in console.tail or UBOOT_PROMPT.search(console.tail):
+            print("[boot] boot failed; inspect the log", file=sys.stderr)
+            return 1
+        print("[boot] boot command sent; verify login/services in %s" % args.log, file=sys.stderr)
         return 0
     finally:
         log.close()

@@ -13,12 +13,24 @@ start() {
     # can reach this point with the socket still missing. Wait for it instead
     # of skipping the start, which used to leave the box idle until someone
     # started the stream by hand.
+    . /etc/default/pix-stream-linux 2>/dev/null || true
+    # Preserve the PX-S1UD/torne receiver and CM sideband path on unit 1.
+    # pix-stream-simple speaks the DT295 userland protocol, not siano-ts.
+    case "${PIX_TUNER:-pxs1ud}" in
+        dt295) daemon=$DAEMON ;;
+        pxs1ud|torne) daemon=$LEGACY ;;
+        *) echo "unsupported tuner: $PIX_TUNER"; return 1 ;;
+    esac
     waited=0
-    while [ ! -S /dev/shm/torne/card.sock ] && [ "$waited" -lt 40 ]; do
+    # DT295 uses its internal card; waiting for an external relay prevents
+    # standalone RAM-root boots from ever starting its direct pipeline.
+    needs_card=1
+    [ "${PIX_TUNER:-pxs1ud}" = dt295 ] && [ "${PIX_DECRYPT:-0}" != 1 ] && needs_card=0
+    while [ "$needs_card" = 1 ] && [ ! -S /dev/shm/torne/card.sock ] && [ "$waited" -lt 40 ]; do
         sleep 0.5
         waited=$((waited + 1))
     done
-    if [ ! -S /dev/shm/torne/card.sock ]; then
+    if [ "$needs_card" = 1 ] && [ ! -S /dev/shm/torne/card.sock ]; then
         echo "card socket is still missing (S96bcas); skipped"
         return 0
     fi
@@ -30,7 +42,7 @@ start() {
             rm -f "$PIDFILE"
         fi
     fi
-    start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" && echo "OK" || echo "FAIL"
+    start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$daemon" && echo "OK" || echo "FAIL"
 }
 
 stop() {

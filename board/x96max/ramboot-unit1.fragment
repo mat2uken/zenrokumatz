@@ -1,0 +1,4 @@
+# Unit 1: 2 GiB internal PHY, SD/mmc boot, PX-S1UD terrestrial.
+BR2_TARGET_GENERIC_HOSTNAME="x96max-linux"
+BR2_TARGET_GENERIC_ISSUE="X96Max_P RAM-root Linux"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/overlay $(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/ramboot-unit1-overlay"

@@ -1,0 +1,90 @@
+#!/bin/sh
+#
+# pix-logo-weekly - 週に1回、深夜に局ロゴを取りに行く
+#
+# BS の局ロゴ (929) はチューナーを借りる必要があるので、録画を数分止める。
+# 放送が少ない深夜に週 1 回だけ実行する。時刻は /etc/default/pix-stream-linux の
+# PIX_LOGO_WEEKLY_DAY (1=月 .. 7=日) と PIX_LOGO_WEEKLY_HOUR (0-23) で決める。
+#
+# 端末に RTC が無く、起動直後は時計が 1970 年を指す。時計が正しくないあいだは
+# 何もしない。1 週間のうちに指定の時刻帯へ入ったら 1 回だけ実行し、成否を
+# /var/lib/pix/logos/.weekly に残す (同じ週に何度も止めない)。
+set -u
+
+# 端末はUTCで動いている。放送も人間の予定も日本時間なので、ここだけJSTで数える
+# (busybox の date は TZ を見る)。
+TZ=${PIX_LOGO_TZ:-JST-9}
+export TZ
+
+DEFAULTS=/etc/default/pix-stream-linux
+LOG=${PIX_LOGO_LOG:-/tmp/pix-logo.log}
+STATE=${PIX_LOGO_DIR:-/var/lib/pix/logos}/.weekly
+FETCH=/usr/bin/pix-logo-fetch
+# 2025 年より前は時計が合っていないとみなす (RTC が無いので起動直後は 1970)。
+CLOCK_MIN=1735689600
+# 最小の待ち受け回数。時計が飛んでも指定の時刻帯でだけ走る。
+SLEEP_SECONDS=${PIX_LOGO_WEEKLY_POLL:-300}
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') pix-logo-weekly: $*" | tee -a "$LOG" >&2; }
+
+# 環境変数で渡された値は設定ファイルより優先する (試運転しやすくするため)。
+day_override=${PIX_LOGO_WEEKLY_DAY:-}
+hour_override=${PIX_LOGO_WEEKLY_HOUR:-}
+wait_override=${PIX_LOGO_WEEKLY_WAIT:-}
+[ -r "$DEFAULTS" ] && . "$DEFAULTS" 2>/dev/null || true
+day=${day_override:-${PIX_LOGO_WEEKLY_DAY:-1}}
+hour=${hour_override:-${PIX_LOGO_WEEKLY_HOUR:-4}}
+wait_seconds=${wait_override:-${PIX_LOGO_WEEKLY_WAIT:-900}}
+
+if [ "${PIX_LOGO_WEEKLY:-1}" != "1" ]; then
+    log "weekly fetch is disabled (PIX_LOGO_WEEKLY=$PIX_LOGO_WEEKLY)"
+fi
+if [ ! -x "$FETCH" ]; then
+    log "$FETCH is missing; nothing to schedule"
+fi
+
+log "scheduled for weekday $day at ${hour}時台 (wait ${wait_seconds}s), poll ${SLEEP_SECONDS}s"
+
+while :; do
+    now=$(date +%s 2>/dev/null || echo 0)
+    if [ "$now" -lt "$CLOCK_MIN" ]; then
+        sleep "$SLEEP_SECONDS"
+        continue
+    fi
+    if [ "${PIX_LOGO_WEEKLY:-1}" != "1" ] || [ ! -x "$FETCH" ]; then
+        sleep "$SLEEP_SECONDS"
+        continue
+    fi
+    week=$(date +%G-%V)
+    done_week=$(sed -n 's/^week=//p' "$STATE" 2>/dev/null)
+    today=$(date +%u)
+    this_hour=$(date +%H)
+    if [ "$done_week" != "$week" ] && [ "$today" = "$day" ] &&
+       [ "$((10#$this_hour))" = "$((10#$hour))" ]; then
+        log "starting the weekly logo fetch (week $week)"
+        started=$(date +%s)
+        "$FETCH" --force --wait "$wait_seconds"
+        status=$?
+        elapsed=$(( $(date +%s) - started ))
+        mkdir -p "${PIX_LOGO_DIR:-/var/lib/pix/logos}"
+        {
+            echo "week=$week"
+            echo "status=$status"
+            echo "seconds=$elapsed"
+            echo "at=$(date '+%Y-%m-%dT%H:%M:%S%z')"
+        } > "${STATE}.tmp" && mv "${STATE}.tmp" "$STATE"
+        case "$status" in
+            0) log "weekly fetch done in ${elapsed}s" ;;
+            3) log "no logo data this week (${elapsed}s); next week" ;;
+            *) log "weekly fetch failed (exit $status); retrying in 6 hours" ;;
+        esac
+        if [ "$status" != "0" ] && [ "$status" != "3" ]; then
+            # 失敗した週は 6 時間後に 1 度だけやり直す (録画への影響を抑えるため
+            # 同じ週に何度も止めない: done_week を書かないので条件は満たすが、
+            # 時刻帯を外れると走らない)。
+            sleep 21600
+            continue
+        fi
+    fi
+    sleep "$SLEEP_SECONDS"
+done

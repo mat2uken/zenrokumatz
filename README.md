@@ -137,7 +137,23 @@ pix-ts-legacy --model dt295 --assets /usr/share/pix-tuner -c T17 -t 10 -o /tmp/d
 
 torneは続けて、`capture-agent.sh` と同じカード用Unix socket＋`torne-b25`の組合せで復号後TSを取得します。受信側と復号側の終了コード、TEI・CC・スクランブル表示は別々に確認します。ファイルができただけでは受信成功とみなしません。映像・音声のデコードと停止後の再開始まで確認する必要がありますが、これらの実機試験はまだ実施していません。
 
-DT295の既存実装はfirmware state `0x00` または `0x10` からの開始を前提にしています。以前の利用後に `0x11` が残っている場合は、USB給電を切ってから再接続する手順が必要です。
+DT295の既存実装はfirmware state `0x00` または `0x10` からの開始だけを扱っていました。
+`board/x96max/patches/pix-userland/` のパッチで、前回の残り（`0x11` / `0x12` /
+ストリーム中 `0x01`・`0x02`・`0x04` / エラー `0xFFFF`）からも、USBを切り直さずに
+ソフトリセットで `0x10` へ戻すようにしています（コマンド3。`0x11` は前のセッションが
+残らないようアイドルイメージを読み直し、駄目ならサスペンド→レジューム）。同じパッチで、
+セッションの keepalive を12秒周期（従来30秒）にし、
+ACKを待たないファームウェアへのコマンドは4回で打ち切るようにしました。
+それでも戻らない個体向けに `pix-dt295-reset`（USBコントローラの unbind/bind）は
+残しています。
+
+局ロゴの受信は `pix-dt295-logo` で行い、`stb_streamer` の `/v1/logos` で NAS に
+配ります。地上波は各局の TS の CDT から、`eit_watch --logo-dir` が録画を止めずに
+拾います。BS/CS は 929 のカルーセルからで `pix-logo-fetch` がチューナーを借り、
+`S98pix-logo` が週 1 回（既定 月曜 04:00 JST）自動で実行します。NAS 側は
+`cm_logos.py` がロゴからマーカーの初期値を書き、CM カットは従来どおり
+それを測って判定します。詳細と使い方は
+[docs/dt295-station-logos.md](docs/dt295-station-logos.md)。
 
 ## SoCエンコードまでの順序
 
@@ -231,6 +247,10 @@ ffmpeg -re -c:v mpeg2_v4l2m2m -i input.ts -vf "setpts=N/FR/TB,copy,format=nv12" 
 - 1080iは `bwdif=mode=send_frame` を挟むと29.97pになります。この場合は新規フレームになるため `copy` は不要です。
 
 実放送の1440x1080i MPEG-2＋AACから、110フレームの1080p29.97 H.264＋AACのMP4を作れることを確認しています。
+
+## 1代目・2代目のRAM起動
+
+両機とも起動時だけOS全体をinitramfsへ読み込み、動作中はRAM上で稼働します。1代目はSD/mmc、2代目はUSBから読み込みます。再起動時には媒体が必要です。機体別ビルド、起動媒体の更新、揮発する設定、SSHホスト鍵、復旧時の停止条件は [RAM起動の運用手順](<docs/ram-rootfs.md>) を参照してください。
 
 ## 検証状況
 

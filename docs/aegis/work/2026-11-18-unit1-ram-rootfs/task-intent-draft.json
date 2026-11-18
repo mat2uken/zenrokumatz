@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "1代目も起動時のみSD/mmcを読み、稼働中はRAMだけに統一する",
+  "goal": "1代目も起動時のみSD/mmcを読み、稼働中はRAMだけに統一する",
+  "successEvidence": [
+    "一時RAM起動、rootfsとswap/mmcマウント不使用、SSH同一鍵、映像音声・EIT・NAS録画復帰、保存済みbootcmdからの再起動、2代目回帰なし"
+  ],
+  "stopCondition": "Stop when success evidence is satisfied or a blocker/risk requires pause.",
+  "nonGoals": [
+    "4GB化、チャンネル変更、USBドライバ警告修正、commit/push"
+  ],
+  "scope": "1代目192.168.99.109、2GB内部PHY DTB、PX-S1UD・テレビ静岡ch17・CM特徴量・既存B-CAS接続とSSH鍵を維持。共通ビルドを機体別入力に拡張",
+  "changeKinds": [
+    "migration"
+  ],
+  "riskHints": [
+    "high"
+  ]
+}

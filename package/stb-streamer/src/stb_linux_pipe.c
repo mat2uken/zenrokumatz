@@ -437,6 +437,7 @@ int main(int argc, char **argv)
     const char *channel = "";
     const char *display = "X96Max-P";
     const char *program_file = "/dev/shm/pix/program.txt";
+    const char *logo_dir = "/var/lib/pix/logos";
     const char *feature_file = "";
     const char *feature_audio_file = "";
     const char *feature_black_file = "";
@@ -455,6 +456,8 @@ int main(int argc, char **argv)
             display = argv[++i];
         } else if (strcmp(argv[i], "--program-file") == 0 && i + 1 < argc) {
             program_file = argv[++i];
+        } else if (strcmp(argv[i], "--logo-dir") == 0 && i + 1 < argc) {
+            logo_dir = argv[++i];
         } else if (strcmp(argv[i], "--feature-file") == 0 && i + 1 < argc) {
             feature_file = argv[++i];
         } else if (strcmp(argv[i], "--feature-audio-file") == 0 && i + 1 < argc) {
@@ -467,7 +470,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "usage: %s [--port N] [--allowed-ip LIST] "
                             "[--spool-mb N] [--channel NAME] [--display NAME] "
                             "[--feature-file PATH] [--feature-audio-file PATH] "
-                            "[--feature-black-file PATH] [--feature-max-mb N]\n",
+                            "[--feature-black-file PATH] [--feature-max-mb N] "
+                            "[--logo-dir DIR]\n",
                     argv[0]);
             return 2;
         }
@@ -493,6 +497,7 @@ int main(int argc, char **argv)
         .stop_flag = &g_stop,
         .idle_timeout_sec = 0,
         .program_path = program_file,
+        .logo_dir = logo_dir,
     };
     StbHttpServer *srv = stb_http_start(&cfg);
     if (!srv) {

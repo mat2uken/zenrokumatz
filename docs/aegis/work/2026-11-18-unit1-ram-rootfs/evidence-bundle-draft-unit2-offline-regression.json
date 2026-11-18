@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "unit2-offline-regression",
+  "type": "test",
+  "source": "work/ramboot-unit1/unit2-final-regression-tests.log",
+  "summary": "2代目profileをオフライン再ビルドし106件中105件成功、機体別ロゴ入力なし1件skip。実機2代目は再配備・再起動せず録画継続",
+  "verifier": "parent-agent",
+  "sliceId": "unit2-offline-regression",
+  "evidenceStatus": "evidence-finalized",
+  "updatedAt": "2026-11-18"
+}

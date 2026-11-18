@@ -1,0 +1,29 @@
+# Unit 1: PX-S1UD, テレビ静岡 ch17, remote B-CAS. Runtime root is volatile RAM.
+# Public stream settings retained from the existing unit 1 installation.
+PIX_TUNER=pxs1ud
+PIX_SYSTEM=terrestrial
+PIX_CHANNEL=17
+PIX_DISPLAY=X96Max-P
+PIX_TUNER_DEV=
+PIX_FIRMWARE=/lib/firmware/isdbt_rio.inp
+PIX_CARD_SOCKET=/dev/shm/torne/card.sock
+
+PIX_PORT=40774
+PIX_ALLOWED_IP=192.168.99.80,192.168.99.52
+PIX_SPOOL_MB=192
+PIX_BITRATE=6000k
+PIX_AUDIO_BITRATE=192k
+PIX_GOP=60
+PIX_DEINTERLACE=1
+PIX_START_DELAY=4
+
+# Preserve CM feature sideband; analysis and final cuts remain NAS-owned.
+PIX_FEATURES=1
+PIX_FEATURE_MAX_MB=384
+PIX_FEATURE_STEP=3
+PIX_FEATURE_FAILURES=3
+
+PIX_LOGO_WEEKLY=1
+PIX_LOGO_WEEKLY_DAY=1
+PIX_LOGO_WEEKLY_HOUR=4
+PIX_LOGO_WEEKLY_WAIT=900

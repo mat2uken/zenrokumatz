@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "unit1-saved-autoboot",
+  "type": "hardware",
+  "source": "work/ramboot-unit1/acceptance-summary.json",
+  "summary": "saveenv後の自動再起動から同一鍵SSH・rootfs/no swap/no block mounts・H264/AAC・実EIT名・CM・ロゴ・NAS両機録画を確認。実行binaryは最終CPIOと一致",
+  "verifier": "parent-agent",
+  "sliceId": "unit1-saved-autoboot",
+  "evidenceStatus": "evidence-finalized",
+  "updatedAt": "2026-11-18"
+}

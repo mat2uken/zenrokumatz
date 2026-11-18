@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [],
+  "owners": [],
+  "invariants": [
+    "2代目への配備・再起動なし。1代目は2GB DTB、既存host identityと機密B-CAS設定を隔離して維持。全媒体初期化・既存ext4削除なし"
+  ],
+  "compatBoundary": "X96MAX_PROFILE=rambootの既定は2代目のまま。1代目はX96MAX_UNIT=1を明示。通常diskビルドも残す",
+  "nonGoals": [
+    "4GB化、チャンネル変更、USBドライバ警告修正、commit/push"
+  ]
+}

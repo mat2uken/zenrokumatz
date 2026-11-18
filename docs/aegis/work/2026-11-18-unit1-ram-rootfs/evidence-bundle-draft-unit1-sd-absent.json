@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "unit1-sd-absent",
+  "type": "hardware",
+  "source": "work/ramboot-unit1/final-sd-absent-metadata.log",
+  "summary": "最終CPIOでSD controllerのみ実切断しmmcblk0消滅を確認。SSH/AV/EIT/CM/NAS継続、pushed68から70、drop0。同CIDで再接続",
+  "verifier": "parent-agent",
+  "sliceId": "unit1-sd-absent",
+  "evidenceStatus": "evidence-finalized",
+  "updatedAt": "2026-11-18"
+}

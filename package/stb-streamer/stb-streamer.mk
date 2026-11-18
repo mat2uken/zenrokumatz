@@ -22,7 +22,11 @@ endef
 define STB_STREAMER_BUILD_EIT_WATCH
 	$(TARGET_MAKE_ENV) $(TARGET_CC) $(TARGET_CFLAGS) -std=gnu11 \
 		-D_FILE_OFFSET_BITS=64 -I$(@D) \
-		-o $(@D)/eit_watch $(@D)/eit_watch.c $(@D)/arib_text.c
+		-I$(BR2_EXTERNAL_X96MAX_PATH)/package/pix-tuner/logo \
+		-o $(@D)/eit_watch $(@D)/eit_watch.c $(@D)/arib_text.c \
+		$(BR2_EXTERNAL_X96MAX_PATH)/package/pix-tuner/logo/logo_cdt.c \
+		$(BR2_EXTERNAL_X96MAX_PATH)/package/pix-tuner/logo/logo_store.c \
+		$(BR2_EXTERNAL_X96MAX_PATH)/package/pix-tuner/logo/ts_section.c
 endef
 STB_STREAMER_POST_BUILD_HOOKS += STB_STREAMER_BUILD_EIT_WATCH
 

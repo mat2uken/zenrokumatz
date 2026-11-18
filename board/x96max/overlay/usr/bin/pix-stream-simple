@@ -14,6 +14,7 @@
 #
 exec >>/tmp/pix-simple.log 2>&1
 . /etc/default/pix-stream-linux 2>/dev/null || true
+. /usr/bin/pix-usb-reset-common || exit 1
 : "${PIX_BITRATE:=6000k}"
 : "${PIX_GOP:=60}"
 : "${PIX_PORT:=40774}"
@@ -31,6 +32,7 @@ exec >>/tmp/pix-simple.log 2>&1
 : "${PIX_CHANNEL:=9}"
 : "${PIX_SAT_SLOT:=0}"
 : "${PIX_PIDS:=0 17 18 257 273 289 320 321}"
+: "${PIX_LOGO_DIR:=/var/lib/pix/logos}"
 
 log() { echo "$(date +%H:%M:%S) simple: $*"; }
 
@@ -76,7 +78,8 @@ fragment() {
 streamer() {
     stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
         --spool-mb "$PIX_SPOOL_MB" --channel "$PIX_CHANNEL" --display "$PIX_DISPLAY" \
-        --program-file /dev/shm/pix/program.txt 2>/tmp/pix-stb.log
+        --program-file /dev/shm/pix/program.txt --logo-dir "$PIX_LOGO_DIR" \
+        2>/tmp/pix-stb.log
 }
 
 # クリアTSを出すチューナーは直結する。中間ファイルを作らないので、
@@ -86,7 +89,8 @@ run_direct() {
     pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
         -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
         2>/tmp/pix-ts.log \
-      | eit_watch --state /dev/shm/pix/program.txt 2>/tmp/pix-eit.log \
+      | eit_watch --state /dev/shm/pix/program.txt --logo-dir "$PIX_LOGO_DIR" \
+            2>/tmp/pix-eit.log \
       | encode | fragment | streamer
 }
 
@@ -140,22 +144,16 @@ run_buffered() {
 # xhci のグルードライバを unbind/bind してコールドブートさせる。
 # 手で抜き差しする代わりに、このループが自動で行う。
 dt295_recover() {
-    log "dt295: firmware is not bootable; power-cycling the USB controller"
+    log "dt295: attempting guarded USB controller recovery"
     cleanup_children
-    rm -f /tmp/pix-userland-dt295-0.lock
-    echo "$DT295_GLUE" > "$DT295_DRIVER/unbind" 2>/dev/null
-    sleep 3
-    echo "$DT295_GLUE" > "$DT295_DRIVER/bind" 2>/dev/null
-    sleep 2
-    if lsusb 2>/dev/null | grep -qi pixela; then
-        log "dt295: re-enumerated"
-    else
-        log "dt295: did not re-enumerate; will retry"
+    rm -f /tmp/pix-userland-dt295-0.lock || return 1
+    if ! pix_usb_reset; then
+        log "dt295: recovery refused or failed; stopping (manual intervention required)"
+        return 1
     fi
+    log "dt295: re-enumerated"
 }
 
-DT295_GLUE=ffe09000.usb
-DT295_DRIVER=/sys/bus/platform/drivers/dwc3-meson-g12a
 fast_fail=0
 
 # 放送休止（空PAT）では番組が1つも乗らない。始めても黒画面を NAS に
@@ -171,6 +169,9 @@ broadcast_ready() {
        grep -q '"program_count":0' /tmp/pix-tsprobe.log 2>/dev/null; then
         return 1
     fi
+    # No output without a confirmed empty PAT may be firmware failure, not a
+    # static picture. Let the normal pipeline expose its error and recover.
+    [ "$bytes" -eq 0 ] && return 0
     # カラーバーなどの静止画は符号化後のレートが極端に低い（実測: 静止区間
     # 237 kbps、通常番組 4〜6 Mbps）。6秒の平均で判断する。
     kbps=$((bytes * 8 / 6 / 1000))
@@ -181,18 +182,8 @@ broadcast_ready() {
     return 0
 }
 
-cycles=0
 while :; do
     cleanup_children
-    [ "$cycles" -gt 0 ] && [ -w /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable ] \
-        && [ $((cycles % 10)) -eq 0 ] && {
-        log "re-enumerating the tuner"
-        echo 1 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable 2>/dev/null
-        sleep 2
-        echo 0 > /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1/disable 2>/dev/null
-        sleep 6
-    }
-    cycles=$((cycles + 1))
     if [ "$PIX_DECRYPT" != "1" ] && ! broadcast_ready; then
         log "no programme on air (broadcast suspension); waiting 5 minutes"
         sleep 300
@@ -213,12 +204,14 @@ while :; do
     else
         fast_fail=0
     fi
-    if [ "$PIX_DECRYPT" != "1" ] && grep -qE "requires cold state|cannot read DT295 firmware state" /tmp/pix-ts.log 2>/dev/null; then
-        dt295_recover
+    # パッチを当てた個体はまずソフトリセットで戻る。それでも駄目だったときだけ
+    # ここ (USB の切り直し) に来る。
+    if [ "$PIX_DECRYPT" != "1" ] && grep -qE "requires cold state|cannot read DT295 firmware state|firmware could not be reset" /tmp/pix-ts.log 2>/dev/null; then
+        dt295_recover || exit 1
         fast_fail=0
     elif [ "$PIX_DECRYPT" != "1" ] && [ "$fast_fail" -ge 3 ]; then
         log "dt295: three quick failures in a row"
-        dt295_recover
+        dt295_recover || exit 1
         fast_fail=0
     fi
     sleep 2

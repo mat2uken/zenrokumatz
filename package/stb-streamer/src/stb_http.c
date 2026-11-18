@@ -431,6 +431,76 @@ static void handle_program(ClientContext *ctx) {
         write_all(fd, body, len);
 }
 
+#define LOGO_INDEX_MAX (256u * 1024u)
+#define LOGO_FILE_MAX (512u * 1024u)
+
+/* Only the flat <service id>.png names pix-dt295-logo writes. */
+static int logo_name_ok(const char *name) {
+    size_t length = strlen(name);
+    if (length < 5 || length > 64 || strcmp(name + length - 4, ".png") != 0)
+        return 0;
+    for (size_t i = 0; i + 4 < length; i++) {
+        char c = name[i];
+        if (!((c >= '0' && c <= '9') || c == '-' || c == '_'))
+            return 0; /* no '/', no '.', nothing to escape the directory with */
+    }
+    return 1;
+}
+
+static void send_file(int fd, const char *path, size_t max_bytes, const char *content_type) {
+    char *body = malloc(max_bytes);
+    size_t length = 0;
+    if (body && path) {
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            length = fread(body, 1, max_bytes, f);
+            fclose(f);
+        }
+    }
+    if (!body || length == 0) {
+        free(body);
+        const char *nf =
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        write_all(fd, nf, strlen(nf));
+        return;
+    }
+    char header[256];
+    int header_length = snprintf(header, sizeof(header),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n", content_type, length);
+    write_all(fd, header, (size_t)header_length);
+    write_all(fd, body, length);
+    free(body);
+}
+
+static void handle_logos_index(ClientContext *ctx) {
+    const char *dir = ctx->srv->cfg.logo_dir;
+    if (!dir) {
+        send_file(ctx->client_fd, NULL, 0, "application/json");
+        return;
+    }
+    char path[512];
+    if (snprintf(path, sizeof(path), "%s/index.json", dir) >= (int)sizeof(path)) {
+        send_file(ctx->client_fd, NULL, 0, "application/json");
+        return;
+    }
+    send_file(ctx->client_fd, path, LOGO_INDEX_MAX, "application/json");
+}
+
+static void handle_logo_file(ClientContext *ctx, const char *name) {
+    const char *dir = ctx->srv->cfg.logo_dir;
+    char path[576];
+    if (!dir || !logo_name_ok(name) ||
+        snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path)) {
+        send_file(ctx->client_fd, NULL, 0, "image/png");
+        return;
+    }
+    send_file(ctx->client_fd, path, LOGO_FILE_MAX, "image/png");
+}
+
 int stb_http_take_feature_restart(StbHttpServer *srv) {    int pending = srv->feature_restart;
     srv->feature_restart = 0;
     return pending;
@@ -483,6 +553,10 @@ static void *client_thread(void *arg) {
             handle_status(ctx);
         } else if (strcmp(method, "GET") == 0 && strcmp(uri, "/v1/program") == 0) {
             handle_program(ctx);
+        } else if (strcmp(method, "GET") == 0 && strcmp(uri, "/v1/logos") == 0) {
+            handle_logos_index(ctx);
+        } else if (strcmp(method, "GET") == 0 && strncmp(uri, "/v1/logos/", 10) == 0) {
+            handle_logo_file(ctx, uri + 10);
         } else if (strcmp(method, "POST") == 0 && strcmp(uri, "/v1/stop") == 0) {
             if (ctx->srv->cfg.stop_flag) {
                 *ctx->srv->cfg.stop_flag = 1;

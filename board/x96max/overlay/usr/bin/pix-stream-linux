@@ -29,7 +29,6 @@
 : "${PIX_SKIP_PACKETS:=0}"
 : "${PIX_LIVE_FILE:=/dev/shm/pix/live.ts}"
 : "${PIX_LIVE_MAX_MB:=256}"
-: "${PIX_LIVE_TRIES:=5}"
 : "${PIX_FIRMWARE:=/lib/firmware/isdbt_rio.inp}"
 : "${PIX_CARD_SOCKET:=/dev/shm/torne/card.sock}"
 : "${PIX_PORT:=40774}"
@@ -51,6 +50,8 @@
 : "${PIX_FEATURE_SIZE:=320x180}"
 # 連続失敗の上限。超えたら解析を切って素のパイプラインへ戻す。
 : "${PIX_FEATURE_FAILURES:=3}"
+# 局ロゴ。pix-logo-fetch がここへ書き、NAS は GET /v1/logos で取る。
+: "${PIX_LOGO_DIR:=/var/lib/pix/logos}"
 
 log() { echo "pix-stream: $*" >&2; }
 
@@ -63,11 +64,11 @@ kill_stale() {
     # The DT295 parks itself on SIGTERM and only then can the next capture open
     # it again. A SIGKILL leaves the firmware in a state it refuses to boot
     # from, so try the polite signal first and force only what survives.
-    for p in $(ps | grep -E "[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[f]fmpeg|[s]tb_streamer|[t]ail -f" | awk '{print $1}'); do
+    for p in $(ps | grep -E "[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f" | awk '{print $1}'); do
         kill -TERM "$p" 2>/dev/null
     done
     sleep 3
-    for p in $(ps | grep -E "[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[f]fmpeg|[s]tb_streamer|[t]ail -f" | awk '{print $1}'); do
+    for p in $(ps | grep -E "[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f" | awk '{print $1}'); do
         kill -9 "$p" 2>/dev/null
     done
     # Wait until the processes are really gone. Starting a new tuner while the
@@ -75,7 +76,7 @@ kill_stale() {
     # the failure then looks like a card or stream problem.
     waited=0
     while [ "$waited" -lt 20 ]; do
-        left=$(ps | grep -cE "[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[f]fmpeg|[s]tb_streamer")
+        left=$(ps | grep -cE "[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[e]it_watch|[f]fmpeg|[s]tb_streamer")
         [ "$left" -eq 0 ] && break
         sleep 0.5
         waited=$((waited + 1))
@@ -166,7 +167,7 @@ fi
 FEAT_AUX_OUT=""
 FEAT_AUDIO_OUT=""
 FEAT_ARGS=""
-VIDEO_IN="-vf $VF"
+VIDEO_IN="-vf $VF -map 0:v:0"
 if [ "$PIX_FEATURES" = "1" ]; then
     mkdir -p /dev/shm/pix
     # Analyse a 320x180 copy. Running signalstats on the full 1440x1080 frames
@@ -270,79 +271,41 @@ ts_source() {
     esac
 }
 
-# The card exchange fails now and then before it ever answers, and when it
-# fails torne-b25 exits without a byte. Retry until the tuner's stream is
-# actually decrypted, then hand the file on: the encoder never sees the
-# attempts, only a stream that already has data at its head.
-start_live() {
-    attempt=1
-    while [ "$attempt" -le "$PIX_LIVE_TRIES" ]; do
-        rm -f "$PIX_LIVE_FILE"
-        ts_source >"$PIX_LIVE_FILE" 2>"$PIX_LOG_DIR/pix-producer.log" &
-        live_pid=$!
-        waited=0
-        while [ "$waited" -lt 40 ]; do
-            [ -s "$PIX_LIVE_FILE" ] && return 0
-            sleep 0.5
-            waited=$((waited + 1))
-        done
-        kill -TERM "$live_pid" 2>/dev/null
-        wait "$live_pid" 2>/dev/null
-        log "no decrypted data on attempt ${attempt}/${PIX_LIVE_TRIES}"
-        attempt=$((attempt + 1))
-    done
-    live_pid=""
-    return 1
-}
-
-dt295_port_reset() {
-    # Find the tuner's port, then reset only that one: the root filesystem is
-    # on the other USB port and resetting it would take the system down.
-    for child in /sys/bus/usb/devices/*; do
-        [ -r "$child/idVendor" ] || continue
-        [ "$(cat "$child/idVendor")" = "06b8" ] || continue
-        [ "$(cat "$child/idProduct")" = "103b" ] || continue
-        dev=$(basename "$child")
-        break
-    done
-    case "$dev" in
-        *-*) bus=${dev%%-*}; port=${dev#*-}; port=${port%%.*} ;;
-        *) log "DT295 device path unknown"; return ;;
-    esac
-    node=/sys/bus/usb/devices/usb${bus}/${bus}-0:1.0/usb${bus}-port${port}/disable
-    [ -w "$node" ] || { log "no reset node for $dev"; return; }
-    log "resetting the DT295 port ($dev)"
-    echo 1 > "$node" 2>/dev/null
-    sleep 2
-    echo 0 > "$node" 2>/dev/null
-    sleep 4
+# Both ingress paths need the same programme metadata, feature outputs and HTTP
+# contract. Probe budgets differ: keep the proven direct-source values and the
+# larger budget used by the buffered DT295 workaround.
+encode_and_stream() {
+    eit_watch --state /dev/shm/pix/program.txt --logo-dir "$PIX_LOGO_DIR" \
+          2>"$PIX_LOG_DIR/pix-eit.log" \
+      | ffmpeg -hide_banner -nostdin -v info -nostats -probesize "$1" -analyzeduration "$2" -f mpegts -i pipe:0 \
+          -c:v mpeg2_v4l2m2m $VIDEO_IN \
+          -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
+          -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
+          $FEAT_AUX_OUT $FEAT_AUDIO_OUT 2>"$PIX_LOG_DIR/pix-ff1.log" \
+      | ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
+          -f mpegts -i pipe:0 \
+          -map 0:v -map 0:a -c copy -bsf:a aac_adtstoasc \
+          -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 pipe:1 \
+          2>"$PIX_LOG_DIR/pix-ff2.log" \
+      | stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
+          --spool-mb "$PIX_SPOOL_MB" --channel "$PIX_CHANNEL" --display "$PIX_DISPLAY" \
+          --program-file /dev/shm/pix/program.txt $FEAT_ARGS \
+          --logo-dir "$PIX_LOGO_DIR" \
+          2>"$PIX_LOG_DIR/pix-stb.log"
 }
 
 run_pipeline() {
-    # 復号器の出力を直接エンコーダへ繋ぐと、エンコーダの初期化中に復号器が
-    # 書き込みで止まり、カードのやり取りが途切れて落ちる。ファイルを挟むと
-    # 復号器は止まらずに書き続けられる（実測で確認）。
+    # PX-S1UD and torne use the proven continuous path: no growing TS buffer or
+    # periodic capture gaps. Only the legacy DT295 lane needs the workaround.
+    if [ "$PIX_TUNER" != "dt295" ]; then
+        ts_source | encode_and_stream 400000 500000
+        return
+    fi
+
+    # DT295's external descrambler can stall during encoder initialisation.
+    # Keep its buffered workaround, but leave tuner selection to ts_source.
     rm -f "$PIX_LIVE_FILE"
-    # スクリプト経由だと復号器が起動直後に落ちるため、実績のある形をそのまま
-    # ここへ書く（チューナー → 再同期 → 復号）。
-    case "$PIX_SYSTEM" in
-        terrestrial) live_chan="T$PIX_CHANNEL" ;;
-        *)           live_chan="$PIX_CHANNEL" ;;
-    esac
-    live_extra=""
-    [ -n "$PIX_SAT_SLOT" ] && live_extra="$live_extra --slot $PIX_SAT_SLOT"
-    for pid in $PIX_PIDS; do live_extra="$live_extra -p $pid"; done
-    (
-        # shellcheck disable=SC2086
-        pix-ts-legacy --model dt295 --assets "$PIX_DT295_ASSETS" \
-            -s "$PIX_SYSTEM" -c "$live_chan" $live_extra -t "$PIX_CAPTURE_SECONDS" \
-            2>"$PIX_LOG_DIR/pix-ts.log" \
-          | ffmpeg -hide_banner -nostdin -v error -f mpegts \
-                -probesize 2000000 -analyzeduration 3000000 -i pipe:0 \
-                -map 0 -c copy -f mpegts pipe:1 2>"$PIX_LOG_DIR/pix-resync.log" \
-          | torne-b25 --card-socket "$PIX_CARD_SOCKET" \
-                --trace /dev/shm/pix/b25.trace 2>"$PIX_LOG_DIR/pix-b25.log"
-    ) > "$PIX_LIVE_FILE" 2>"$PIX_LOG_DIR/pix-source.log" &
+    ts_source >"$PIX_LIVE_FILE" 2>"$PIX_LOG_DIR/pix-source.log" &
     producer=$!
     waited=0
     while [ "$waited" -lt 40 ]; do
@@ -371,21 +334,7 @@ run_pipeline() {
         done
     ) &
     watchdog=$!
-    tail -f -c +1 "$PIX_LIVE_FILE" 2>/dev/null \
-      | ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 -f mpegts -i pipe:0 \
-          -c:v mpeg2_v4l2m2m $VIDEO_IN \
-          -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
-          -map 0:v:0 -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
-          $FEAT_AUX_OUT $FEAT_AUDIO_OUT 2>"$PIX_LOG_DIR/pix-ff1.log" \
-      | ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
-          -f mpegts -i pipe:0 \
-          -map 0:v -map 0:a -c copy -bsf:a aac_adtstoasc \
-          -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 pipe:1 \
-          2>"$PIX_LOG_DIR/pix-ff2.log" \
-      | stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
-          --spool-mb "$PIX_SPOOL_MB" --channel "$PIX_CHANNEL" --display "$PIX_DISPLAY" \
-          --program-file /dev/shm/pix/program.txt $FEAT_ARGS \
-          2>"$PIX_LOG_DIR/pix-stb.log"
+    tail -f -c +1 "$PIX_LIVE_FILE" 2>/dev/null | encode_and_stream 2000000 3000000
     kill -TERM "$watchdog" 2>/dev/null
     kill -TERM "$producer" 2>/dev/null
     wait "$producer" 2>/dev/null
@@ -402,12 +351,9 @@ while :; do
     # reads it, and a message left over from an earlier attempt would make a
     # live channel look like it is still off the air.
     : > "$PIX_LOG_DIR/pix-ts.log"
-    # The DT295 only streams reliably after a fresh USB enumeration. Starting
-    # the tuner again on the same enumeration is what turned every retry into
-    # another failure, so the port is reset before each attempt.
-    if [ "$PIX_TUNER" = "dt295" ]; then
-        dt295_port_reset
-    fi
+    # Let the tuner's firmware recovery handle an old session first. Do not
+    # reset USB ports on every cycle: a parent hub can also contain storage.
+    # Explicit hardware recovery goes through guarded pix-dt295-reset.
     started=$(date +%s)
     run_pipeline
     ended=$(date +%s)
@@ -449,7 +395,7 @@ while :; do
         FEAT_ARGS=""
         FEAT_AUX_OUT=""
         FEAT_AUDIO_OUT=""
-        VIDEO_IN="-vf $VF"
+        VIDEO_IN="-vf $VF -map 0:v:0"
     fi
     sleep 5
 done

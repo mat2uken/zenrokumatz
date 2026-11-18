@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-11-18-unit1-ram-rootfs",
+  "currentTodo": "完了：保存済みSD-to-RAM自動起動からSSH・AV・EIT・CM・NAS復帰を実機確認",
+  "completedTodos": [
+    "機体別profile/identity・3本FAT照合・一時起動・最終SD実切断・saveenv・割込みなしreset・実行binary一致・106件回帰・運用手順更新・UART解放"
+  ],
+  "activeSlice": "completed",
+  "evidenceRefs": [
+    "work/ramboot-unit1/acceptance-summary.json",
+    "work/ramboot-unit1/persist-autoboot-driver.log",
+    "work/ramboot-unit1/final-autoboot-runtime.log",
+    "work/ramboot-unit1/final-autoboot-nas-nodes.json",
+    "work/ramboot-unit1/uart-released.log"
+  ],
+  "blockedOn": null,
+  "nextStep": "通常録画を継続。今後の更新は機体別RAMビルドとFAT3本照合を行い、長期観測は別途実施する",
+  "updatedAt": "2026-11-18"
+}

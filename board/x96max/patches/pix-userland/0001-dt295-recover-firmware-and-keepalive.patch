@@ -1,0 +1,310 @@
+--- a/src/dt295.c
++++ b/src/dt295.c
+@@ -14,6 +14,15 @@
+ #define MAX_BUNDLE (32u * 1024u * 1024u)
+ #define USB_TIMEOUT (-7)
+ #define DT295_DEADLINE 1
++/* Firmware recovery and the secure session's keepalive. The firmware faults
++ * to 0xFFFF about 60 s after the last SECURE_REALTIME keepalive, so the
++ * renewal must be due well inside that window. */
++#define DT295_ACK_TIMEOUT_MS 5000u
++#define DT295_STALL_LIMIT 4u
++#define DT295_KA_INTERVAL_MS 12000u
++#define DT295_KA_RETRY_MS 2000u
++#define DT295_KA_RETRY_MAX 3u
++#define DT295_DRAIN_LIMIT (4u * 1024u * 1024u)
+
+ struct dt295_assets {
+     uint8_t *idle, *trc, *material;
+@@ -35,6 +44,11 @@
+     uint64_t card_recovery_generation;
+     uint8_t card_activation_valid;
+     uint8_t card_recovery_generation_valid;
++    /* Consecutive command timeouts: a firmware that stopped acking must not
++     * cost a full timeout per command. */
++    unsigned noack;
++    /* Consecutive keepalive failures, for the retry budget. */
++    unsigned renew_fail;
+ };
+
+ static void seterr(char *e, size_t n, const char *s) {
+@@ -413,6 +427,7 @@
+     int r = d->io.interrupt(d->io.user, 0x83, b, sizeof(b), ms, &n);
+     return r == USB_TIMEOUT ? 0 : (r || !n ? -1 : 0);
+ }
++/* 0 = the bit came up, 1 = timeout, -1 = the device could not be read. */
+ static int wait_event(dt295 *d, uint16_t mask, unsigned timeout) {
+     uint64_t end = now_ms(d) + timeout;
+     for (;;) {
+@@ -421,9 +436,13 @@
+             return -1;
+         if (p & mask)
+             return 0;
++        /* A pending firmware state change blocks the next command until the
++         * host acknowledges it: drain it instead of waiting for the ack. */
++        if ((p & 4) && putword(d, 0x90074, 4))
++            return -1;
+         uint64_t now = now_ms(d);
+         if (now >= end)
+-            return -1;
++            return 1;
+         unsigned left = (unsigned)(end - now);
+         if (left > 50)
+             left = 50;
+@@ -501,12 +520,34 @@
+ static int command(dt295 *d, uint8_t cmd, uint8_t sub, uint16_t val, int i2c, uint8_t *response) {
+     uint16_t mask = i2c ? 2 : 8, pending, completion;
+     uint8_t b[4] = {cmd, sub, (uint8_t)(val >> 8), (uint8_t)val};
+-    if (word(d, 0x90074, &pending) || pending & mask)
++    /* A wedged firmware acks nothing. Each command would otherwise burn the
++     * full timeout, and a tune alone is about 46 of them. */
++    if (d->noack >= DT295_STALL_LIMIT)
++        return -1;
++    if (word(d, 0x90074, &pending))
+         return -1;
++    /* Clear what an earlier command or event left set: a doorbell is refused
++     * while a status bit the firmware announced is still pending. */
++    if ((pending & mask) && putword(d, 0x90074, mask))
++        return -1;
++    if ((pending & 4) && putword(d, 0x90074, 4))
++        return -1;
+     if (ctl(d, 0x40, i2c ? 0xb9 : 0xb8, 0, 0, b, 4, 1000))
+         return -1;
+-    if (wait_event(d, mask, 5000) || word(d, i2c ? 0x80016 : 0x80014, &completion))
++    int waited = wait_event(d, mask, DT295_ACK_TIMEOUT_MS);
++    if (waited) {
++        if (waited < 0)
++            return -1;
++        uint16_t s = 0;
++        d->noack++;
++        /* 0xFFFF answers nothing more: stop trying at once. */
++        if (!word(d, 0x82008, &s) && s == 0xffff)
++            d->noack = DT295_STALL_LIMIT;
+         return -1;
++    }
++    d->noack = 0;
++    if (word(d, i2c ? 0x80016 : 0x80014, &completion))
++        return -1;
+     if (cmd == 8 && response && rd(d, 0x83000, response, 512))
+         return -1;
+     if (putword(d, 0x90074, mask))
+@@ -673,20 +714,128 @@
+ }
+ int dt295_has_session(const dt295 *d) {
+     return d && d->has_session;
++}
++
++/* Acknowledge every status bit and read the interrupt endpoint out, so the
++ * next command is not refused because an old event is still pending. */
++static int recover_events(dt295 *d) {
++    for (unsigned i = 0; i < 16; i++) {
++        uint16_t p, clear;
++        if (word(d, 0x90074, &p))
++            return -1;
++        clear = (uint16_t)(p & (uint16_t)(0x0100 | 0x0200 | 0x0400 | 0x0800));
++        if (p & 4)
++            clear |= 4;
++        if (!clear)
++            return 0;
++        if (putword(d, 0x90074, clear))
++            return -1;
++        if (notify(d, 10))
++            return -1;
++    }
++    return 0;
+ }
+
++/* Read out what an earlier stream left queued on EP 0x81. It belongs to the
++ * previous session's transport key, so it can only be discarded. */
++static size_t recover_drain_ts(dt295 *d) {
++    uint8_t b[16384];
++    size_t total = 0;
++    while (total < DT295_DRAIN_LIMIT) {
++        size_t n = 0;
++        if (bulk_in(d, 0x81, b, sizeof(b), 10, &n) || !n)
++            break;
++        total += n;
++    }
++    return total;
++}
++
++/* Re-enable the command / status interrupts: the warm start skips the step the
++ * cold download does, and a run that died early may have left them off. */
++static int recover_irq_enable(dt295 *d) {
++    for (int b = 13; b >= 0; b--)
++        if (field(d, 0x90078, (unsigned)b, 1, b != 4))
++            return -1;
++    for (int b = 11; b >= 0; b--)
++        if (field(d, 0x901b4, (unsigned)b, 1, 1))
++            return -1;
++    return 0;
++}
++
++/* Bring a firmware that a previous run left running back to state 0x10.
++ * Command 3 is answered with 0x10 from every state the firmware can be left
++ * in; 0x11 and 0x12 additionally accept the suspend/resume pair (command 3
++ * and command 2/0 are refused from 0x11, verified on hardware). The image is
++ * never downloaded here: a download only works from state 0. */
++static int recover_soft_reset(dt295 *d, uint16_t from) {
++    fprintf(stderr, "{\"event\":\"dt295_recover\",\"from\":\"0x%04x\"}\n", (unsigned)from);
++    d->noack = 0;
++    if (recover_events(d))
++        return -1;
++    if (from == 0xffff || from == 1 || from == 2 || from == 3 || from == 4) {
++        size_t drained = recover_drain_ts(d);
++        if (drained)
++            fprintf(stderr, "{\"event\":\"dt295_recover_drain\",\"bytes\":%zu}\n", drained);
++    }
++    if (from == 0x11) {
++        /* From idle the previous session is still inside the firmware, and it
++         * dies at some point after the next one starts: that is how a stream
++         * stops on its own. Reload the idle image instead (the sequence the
++         * shutdown uses): the firmware then starts a fresh session. */
++        if (!command(d, 4, 0, 1, 0, NULL)) {
++            int uploaded = 1;
++            for (size_t off = 0; uploaded && off < d->assets->idle_n; off += 65536) {
++                size_t n = d->assets->idle_n - off;
++                if (n > 65536)
++                    n = 65536;
++                if (bulk_out(d, 0x02, d->assets->idle + off, n, 300))
++                    uploaded = 0;
++            }
++            if (uploaded && !command(d, 4, 1, 0, 0, NULL) && !wait_state(d, 0x10, 5000))
++                return 0;
++        }
++        /* Otherwise the suspend/resume pair, which command 3 also covers. */
++        (void)putword(d, 0x90074, 4);
++        if (!command(d, 2, 1, 0, 0, NULL) && !wait_state(d, 0x12, 1500)) {
++            (void)putword(d, 0x90074, 4);
++            if (!command(d, 2, 0, 0, 0, NULL) && !wait_state(d, 0x10, 3000))
++                return 0;
++        }
++    } else if (from == 0x12) {
++        if (!command(d, 2, 0, 0, 0, NULL) && !wait_state(d, 0x10, 3000))
++            return 0;
++    }
++    for (unsigned attempt = 0; attempt < 2; attempt++) {
++        if (attempt) {
++            (void)recover_events(d);
++            (void)putword(d, 0x90074, 4);
++        }
++        if (!command(d, 3, 0, 0, 0, NULL) && !wait_state(d, 0x10, 3000))
++            return 0;
++    }
++    fprintf(stderr, "{\"event\":\"dt295_recover_failed\",\"from\":\"0x%04x\",\"state\":\"0x%04x\"}\n",
++            (unsigned)from, (unsigned)dt295_state(d));
++    return -1;
++}
++
+ int dt295_boot(dt295 *d, char *e, size_t en) {
+     if (!d || d->poisoned)
+         return fail(d, e, en, "DT295 context unavailable");
+     uint16_t s;
+     if (word(d, 0x82008, &s))
+         return fail(d, e, en, "cannot read DT295 firmware state");
++    d->noack = 0;
+     if (s == 0x10) {
+         seterr(e, en, "");
+         return 0;
+     }
+-    if (s != 0)
+-        return fail(d, e, en, "firmware boot requires cold state 0 or unauthenticated state 16");
++    if (s != 0) {
++        (void)recover_soft_reset(d, s);
++        if (dt295_state(d) != 0x10 || recover_irq_enable(d) || dt295_state(d) != 0x10)
++            return fail(d, e, en, "firmware could not be reset; a cold power cycle is required");
++        seterr(e, en, "");
++        return 0;
++    }
+     if (field(d, 0x90194, 12, 3, 1) || putword(d, 0x90198, 0x40))
+         return fail(d, e, en, "boot setup failed");
+     for (int b = 13; b >= 0; b--)
+@@ -778,7 +927,8 @@
+     memcpy(d->session_iv, mat(d, 0x85218, 16), 16);
+     d->has_session = 1;
+     d->renewal_counter = 1;
+-    d->renewal_due = now_ms(d) + 30000;
++    d->renewal_due = now_ms(d) + DT295_KA_INTERVAL_MS;
++    d->renew_fail = 0;
+     if (field(d, 0x80074, 8, 2, 1) || field(d, 0x80074, 0, 7, 0))
+         goto bad_after_auth;
+     for (unsigned sh = 12; sh >= 4; sh -= 4)
+@@ -1741,6 +1891,8 @@
+     return prepare_config(d, ops, n, plan->primary_program, plan->video_stream_type,
+                           plan->audio_stream_type, 1, e, en);
+ }
++
++static int renew(dt295 *d);
+
+ int dt295_start(dt295 *d, char *e, size_t en) {
+     if (!d || d->cleanup_only || !d->prepared || d->started || !d->has_ts_key || drain_state(d) || d->state != 1)
+@@ -1751,6 +1903,11 @@
+         return fail(d, e, en, "receive start failed; start command was not retried");
+     }
+     d->started = 1;
++    /* The keepalive clock starts with the stream, and its first one goes out
++     * here: a long recording must never drift into the firmware's ~60 s
++     * limit just because it is not idle. */
++    if (renew(d))
++        fprintf(stderr, "{\"event\":\"dt295_keepalive\",\"phase\":\"start\",\"ok\":0}\n");
+     seterr(e, en, "");
+     return 0;
+ }
+@@ -1778,7 +1935,8 @@
+     if (random_bytes(reply + 16, 4) || secure_command(d, 0x02020400, reply, 20, NULL, 0, NULL))
+         goto cleanup;
+     d->renewal_counter = c == 0xffffffff ? 1 : c + 1;
+-    d->renewal_due = now_ms(d) + 30000;
++    d->renewal_due = now_ms(d) + DT295_KA_INTERVAL_MS;
++    d->renew_fail = 0;
+     rc = 0;
+ cleanup:
+     secure_clear(challenge, sizeof(challenge));
+@@ -1796,8 +1954,20 @@
+         seterr(e, en, "");
+         return 0;
+     }
+-    if (renew(d))
+-        return fail(d, e, en, "DT295 session renewal failed; request was not retried");
++    if (renew(d)) {
++        /* One immediate retry absorbs a command that raced a state change.
++         * After that, keep the session alive a little longer: the firmware
++         * tolerates about 60 s without a keepalive, and restarting the stream
++         * for one missed renewal costs more than it saves. */
++        if (renew(d)) {
++            if (++d->renew_fail >= DT295_KA_RETRY_MAX)
++                return fail(d, e, en, "DT295 session renewal failed three times; not retried");
++            d->renewal_due = now_ms(d) + DT295_KA_RETRY_MS;
++            seterr(e, en, "");
++            return 0;
++        }
++    }
++    d->renew_fail = 0;
+     if (renewed)
+         *renewed = 1;
+     seterr(e, en, "");
+@@ -1887,3 +2057,24 @@
+         return -1;
+     return dt295_packet_crypto(d->ts_key, d->assets->iv, packet);
+ }
++
++#ifdef DT295_TESTING
++/* Host-test hooks (scripts/test-dt295-host.sh). Not compiled into the product. */
++int dt295_test_command(dt295 *d, uint8_t cmd, uint8_t sub, uint16_t val) {
++    return command(d, cmd, sub, val, 0, NULL);
++}
++unsigned dt295_test_noack(const dt295 *d) {
++    return d->noack;
++}
++void dt295_test_force_session(dt295 *d, uint64_t now) {
++    memset(d->session_key, 0, sizeof(d->session_key));
++    memset(d->session_iv, 0, sizeof(d->session_iv));
++    d->has_session = 1;
++    d->renewal_counter = 1;
++    d->renewal_due = now;
++    d->renew_fail = 0;
++}
++uint64_t dt295_test_renewal_due(const dt295 *d) {
++    return d->renewal_due;
++}
++#endif

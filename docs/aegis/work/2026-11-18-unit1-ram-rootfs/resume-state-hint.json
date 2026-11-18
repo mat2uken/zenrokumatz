@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-11-18-unit1-ram-rootfs",
+  "lastCheckpointRef": "docs/aegis/work/2026-11-18-unit1-ram-rootfs/todo-checkpoint-draft.json",
+  "resumeInstruction": "移行は完了。1代目はSD/mmc起動RAM、2代目は既存USB起動RAMで両機録画中。UART中継は停止しlock解放確認済み。再起動時のみ媒体が必要。設定変更はRAMで揮発するためidentity/defaultsから再ビルド。ext4・旧Image/DTB・旧bootcmdは復旧用保持。commit/pushなし",
+  "knownPartialWork": [
+    "機体別profile/identity・3本FAT照合・一時起動・最終SD実切断・saveenv・割込みなしreset・実行binary一致・106件回帰・運用手順更新・UART解放"
+  ],
+  "mustReadBeforeContinuing": [
+    "docs/aegis/work/2026-11-18-unit1-ram-rootfs/10-intent.md",
+    "docs/aegis/work/2026-11-18-unit1-ram-rootfs/20-checkpoint.md",
+    "docs/aegis/work/2026-11-18-unit1-ram-rootfs/todo-checkpoint-draft.json"
+  ],
+  "unsafeToAssume": [
+    "物理AC電源抜差し・長時間運転・既知USB警告原因は検証外。旧初期レビュー/87件だけをPX/SI実動作証明として使わない。最終106件と保存後実機証拠を参照"
+  ]
+}
