@@ -132,8 +132,11 @@ class EitSectionTests(unittest.TestCase):
         self.assertFalse(self.state.exists())
         self.stream(data, logos=True)
         state = dict(line.split("=", 1) for line in self.state.read_text().splitlines())
+        # continues/stops let the streamer keep one segment for this
+        # programme even when the station reports another starting event.
         self.assertEqual(state, dict(service="35864", event="1599", start="1794960000000",
-                                     duration="8640000", wall="1794967250000", name="ＮＯＷ"))
+                                     duration="8640000", wall="1794967250000",
+                                     continues="1", stops="0", name="ＮＯＷ"))
 
     def test_back_to_back_wrong_service_then_current(self):
         data = section(0, pat(35864))

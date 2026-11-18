@@ -29,6 +29,11 @@ class LogoFetchTests(unittest.TestCase):
         defaults = self.base / "defaults"
         defaults.write_text("PIX_TUNER=dt295\nPIX_SYSTEM=bs\n")
         self.executable("id", "#!/bin/sh\necho 0\n")
+        # The capture is put in its own session; the host stub keeps the
+        # fixture's PATH closed to the machine's real programs.
+        real_setsid = "/usr/bin/setsid" if Path("/usr/bin/setsid").exists() else ""
+        self.executable("setsid", "#!/bin/sh\n"
+                        + (f'exec "{real_setsid}" "$@"\n' if real_setsid else 'exec "$@"\n'))
         self.executable("sleep", "#!/bin/sh\nexit 0\n")
         self.executable("ps", '#!/bin/sh\nif [ -f "$ACTIVE" ]; then echo "123 root pix-ts-legacy"; fi\n')
         self.executable("init", "#!" + sys.executable + "\n" + '''import os, sys
@@ -116,7 +121,8 @@ sys.exit(0 if sys.stdin.buffer.read() else 3)
         self.pipeline()
         result = self.invoke("--force", MOCK_KEEP_CAPTURE="1")
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertEqual(self.calls(), ["stop"])
+        # The tuner is never borrowed, and the recorder it stopped is given back.
+        self.assertEqual(self.calls(), ["stop", "start"])
         self.assertFalse(self.fetch_lock.exists())
 
     def test_busy_fetch_lock_prevents_even_pipeline_stop(self):

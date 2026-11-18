@@ -38,6 +38,14 @@ typedef struct {
     int64_t duration_ms;
     int64_t wall_ms;
     char name[PROGRAM_NAME_MAX];
+    /*
+     * 「番組はまだ続いている」の根拠。EIT の segment_last_section_number が
+     * 0x00 以外なら、後続セクションに続きがあるので番組は続いている。0x00
+     * は「これで終わり」の番組、または見えていない後続があるだけの番組。
+     */
+    int continues;
+    /* 0x00 が続く回数。これが伸びると後続が無い側へ 1 票入る。 */
+    int stops;
     int valid;
 } Program;
 
@@ -78,9 +86,12 @@ static void state_write(const char *path, const Program *p)
     FILE *f = fopen(tmp, "w");
     if (!f)
         return;
-    fprintf(f, "service=%d\nevent=%d\nstart=%lld\nduration=%lld\nwall=%lld\nname=%s\n",
+    fprintf(f,
+            "service=%d\nevent=%d\nstart=%lld\nduration=%lld\nwall=%lld\n"
+            "continues=%d\nstops=%d\nname=%s\n",
             p->service_id, p->event_id, (long long)p->start_ms,
-            (long long)p->duration_ms, (long long)p->wall_ms, p->name);
+            (long long)p->duration_ms, (long long)p->wall_ms,
+            p->continues, p->stops, p->name);
     fclose(f);
     rename(tmp, path);
 }
@@ -227,6 +238,8 @@ static void load_state(const char *path)
         else if (!strncmp(line, "start=", 6)) p.start_ms = atoll(line + 6);
         else if (!strncmp(line, "duration=", 9)) p.duration_ms = atoll(line + 9);
         else if (!strncmp(line, "wall=", 5)) p.wall_ms = atoll(line + 5);
+        else if (!strncmp(line, "continues=", 10)) p.continues = atoi(line + 10);
+        else if (!strncmp(line, "stops=", 6)) p.stops = atoi(line + 6);
         else if (!strncmp(line, "name=", 5)) snprintf(p.name, sizeof(p.name), "%s", line + 5);
     }
     fclose(f);
@@ -271,6 +284,13 @@ static int handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
     int64_t best_start = 0, best_dur = 0;
     size_t best_desc = 0, best_desc_len = 0;
     int found_current = 0;
+    /*
+     * 番組の記述が複数セクションに分かれるのが長い番組の普通の形である。
+     * 最終セクション番号と現在のセクション番号を読み、分割の有無を
+     * 「番組が続いているか」の根拠にする。
+     */
+    int segment_last = sec[10];
+    int section_number = sec[6];
     size_t i = 14;
     while (i + 12 <= end) {
         int event_id = (sec[i] << 8) | sec[i + 1];
@@ -347,12 +367,24 @@ static int handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
             .start_ms = best_start,
             .duration_ms = best_dur,
             .wall_ms = wall_ms,
+            .continues = segment_last != 0 || section_number != 0,
             .valid = 1,
         };
         /* 番組名は放送波の記述子から採る（外部 EPG に依存しない）。 */
         snprintf(p.name, sizeof(p.name), "%s", name);
         g_last = p;
         return 1;
+    }
+
+    /*
+     * continues は 0x00 以外のセクションを見た証拠を保持し、0x00 だけが
+     * 続いた回数で打ち消す。長い番組は 0x00 のセクションでも番組は続く。
+     */
+    if (segment_last != 0 || section_number != 0) {
+        g_last.continues = 1;
+        g_last.stops = 0;
+    } else {
+        g_last.stops++;
     }
 
     /*
@@ -388,10 +420,12 @@ static void program_section(void *ctx, uint16_t pid, const uint8_t *sec, size_t 
         if (changed && g_last.valid) {
             state_write(state_path, &g_last);
             fprintf(stderr,
-                    "eit_watch: service=%d event=%d start=%lld dur=%lld name=%s\n",
+                    "eit_watch: service=%d event=%d start=%lld dur=%lld "
+                    "continues=%d stops=%d name=%s\n",
                     g_last.service_id, g_last.event_id,
                     (long long)g_last.start_ms,
-                    (long long)g_last.duration_ms, g_last.name);
+                    (long long)g_last.duration_ms,
+                    g_last.continues, g_last.stops, g_last.name);
         }
     }
 }

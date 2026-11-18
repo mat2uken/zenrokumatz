@@ -48,6 +48,8 @@ typedef struct {
     int64_t duration_ms;
     int64_t wall_ms;
     char name[256];
+    int continues;
+    int stops;
     int valid;
 } ProgramInfo;
 
@@ -56,6 +58,32 @@ static int g_have_program;
 static time_t g_last_boundary_at;
 static uint32_t g_last_events[4];
 static int g_last_event_count;
+
+/*
+ * 「別の番組になったか」だけを判断する。
+ *
+ * eit_watch は番組の開始時刻が現在時刻に一致するイベントを採る。番組表の
+ * 開始時刻にまだ変わっていないだけの番組が混ざると、同じ番組を別イベント
+ * として短く報告してしまう。そのたびに区切ると 1 番組が 3〜4 本に分かれる。
+ *
+ * - EIT が番組の継続（後続セクションあり）を示していれば、別イベントでも
+ *   同じ番組として扱う。継続を知った後は 0x00 のセクションが少し続いても
+ *   継続のままとする（長い番組の先頭セクションは 0x00 になる）。
+ * - 継続が分からないときは、開始時刻が以前より後ろへ動いた場合だけ
+ *   次の番組と扱う。
+ * - 開始時刻が同じままなら、番組名の揺れだけなので分けない。
+ * - 開始時刻が分からないときは、イベント ID の変化で判断する。
+ */
+static int program_changed(const ProgramInfo *prev, const ProgramInfo *cur)
+{
+    if (cur->event_id == prev->event_id)
+        return 0;
+    if (cur->continues)
+        return 0;
+    if (cur->start_ms > 0 && prev->start_ms > 0)
+        return cur->start_ms > prev->start_ms;
+    return 1;
+}
 
 static void read_program_file(const char *path, ProgramInfo *out)
 {
@@ -75,6 +103,8 @@ static void read_program_file(const char *path, ProgramInfo *out)
         else if (!strncmp(line, "start=", 6)) p.start_ms = atoll(line + 6);
         else if (!strncmp(line, "duration=", 9)) p.duration_ms = atoll(line + 9);
         else if (!strncmp(line, "wall=", 5)) p.wall_ms = atoll(line + 5);
+        else if (!strncmp(line, "continues=", 10)) p.continues = atoi(line + 10);
+        else if (!strncmp(line, "stops=", 6)) p.stops = atoi(line + 6);
         else if (!strncmp(line, "name=", 5)) snprintf(p.name, sizeof(p.name), "%s", line + 5);
     }
     fclose(f);
@@ -629,19 +659,17 @@ int main(int argc, char **argv)
                 memset(&cur, 0, sizeof(cur));
                 read_program_file(program_file, &cur);
                 /*
-                 * EIT は present/following が揺れるので、短時間に同じ番組が
-                 * 行ったり来たりすることがある。そのたびに区切ると数秒の
-                 * セグメントが量産される。直近で区切った番組には戻らない。
-                 */
-                /*
                  * 同じ番組のまま名前だけ後から分かることがある（EIT の
-                 * セクションによっては記述子が付かない）。区切りは変えずに
-                 * pixb+pixn を送り直し、録画側の現在のセグメントの名前を
-                 * 更新させる。録画側は同じイベントの pixb では分割しない。
+                 * セクションによっては記述子が付かない）。継続が分かって
+                 * いる番組では、別イベントに見えても同じセグメントの名前
+                 * として送り直す。録画側は同じイベントの pixb では分割せず、
+                 * 別イベントの pixb では分割してしまうので、ここで区切ると
+                 * 1 番組が数本に分かれる。直近に区切った番組へ戻る揺れも
+                 * 同じ理由で区切らない。
                  */
-                int name_update = g_have_program && cur.valid &&
-                                  cur.event_id == g_program.event_id &&
-                                  cur.name[0] &&
+                int same_program = g_have_program && cur.valid &&
+                                   !program_changed(&g_program, &cur);
+                int name_update = same_program && cur.name[0] &&
                                   strcmp(cur.name, g_program.name) != 0;
                 if (name_update && moof_has_video(body, body_len)) {
                     uint8_t box[44];
@@ -658,7 +686,7 @@ int main(int argc, char **argv)
                 }
 
                 int recent = name_update ? 1 : 0;
-                if (g_have_program && cur.event_id == g_program.event_id)
+                if (same_program)
                     recent = 1;
                 for (int k = 0; k < g_last_event_count && !recent; k++)
                     if (g_last_events[k] == cur.event_id)
