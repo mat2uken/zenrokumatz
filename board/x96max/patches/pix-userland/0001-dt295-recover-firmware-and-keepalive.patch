@@ -13,7 +13,7 @@
 +#define DT295_KA_RETRY_MS 2000u
 +#define DT295_KA_RETRY_MAX 3u
 +#define DT295_DRAIN_LIMIT (4u * 1024u * 1024u)
-
+ 
  struct dt295_assets {
      uint8_t *idle, *trc, *material;
 @@ -35,6 +44,11 @@
@@ -26,7 +26,7 @@
 +    /* Consecutive keepalive failures, for the retry budget. */
 +    unsigned renew_fail;
  };
-
+ 
  static void seterr(char *e, size_t n, const char *s) {
 @@ -413,6 +427,7 @@
      int r = d->io.interrupt(d->io.user, 0x83, b, sizeof(b), ms, &n);
@@ -59,9 +59,9 @@
 +    /* A wedged firmware acks nothing. Each command would otherwise burn the
 +     * full timeout, and a tune alone is about 46 of them. */
 +    if (d->noack >= DT295_STALL_LIMIT)
-+        return -1;
-+    if (word(d, 0x90074, &pending))
          return -1;
++    if (word(d, 0x90074, &pending))
++        return -1;
 +    /* Clear what an earlier command or event left set: a doorbell is refused
 +     * while a status bit the firmware announced is still pending. */
 +    if ((pending & mask) && putword(d, 0x90074, mask))
@@ -88,12 +88,10 @@
      if (cmd == 8 && response && rd(d, 0x83000, response, 512))
          return -1;
      if (putword(d, 0x90074, mask))
-@@ -673,20 +714,128 @@
- }
- int dt295_has_session(const dt295 *d) {
+@@ -675,18 +716,188 @@
      return d && d->has_session;
-+}
-+
+ }
+ 
 +/* Acknowledge every status bit and read the interrupt endpoint out, so the
 + * next command is not refused because an old event is still pending. */
 +static int recover_events(dt295 *d) {
@@ -112,8 +110,8 @@
 +            return -1;
 +    }
 +    return 0;
- }
-
++}
++
 +/* Read out what an earlier stream left queued on EP 0x81. It belongs to the
 + * previous session's transport key, so it can only be discarded. */
 +static size_t recover_drain_ts(dt295 *d) {
@@ -140,6 +138,48 @@
 +    return 0;
 +}
 +
++/* Stop a stream that a killed process left running. Command 3 alone did not
++ * get the firmware out of state 2 on hardware (2026-11-18); the normal stop
++ * does: pause -> drain the queued TS until the receiver reports state 4 ->
++ * back to state 1 -> idle parameters -> command 1 (state 0x11). This mirrors
++ * the vendor driver's to-idle sequence. */
++static int recover_stop_stream(dt295 *d) {
++    if (drain_state(d))
++        return -1;
++    if (d->state == 2) {
++        if (command(d, 5, 0, 4, 0, NULL))
++            return -1;
++        uint64_t end = now_ms(d) + 6000;
++        for (;;) {
++            uint8_t b[16384];
++            size_t n = 0;
++            (void)bulk_in(d, 0x81, b, sizeof(b), 100, &n);
++            if (drain_state(d))
++                return -1;
++            if (d->state == 4 || d->state == 0xffff)
++                break;
++            if (now_ms(d) >= end)
++                return -1;
++        }
++    }
++    if (d->state == 2 || d->state == 4) {
++        if (command(d, 5, 0, 1, 0, NULL) || wait_state(d, 1, 3000))
++            return -1;
++    }
++    if (d->state != 1)
++        return -1;
++    if (field(d, 0x80074, 8, 2, 1) || field(d, 0x80074, 0, 7, 0))
++        return -1;
++    for (unsigned sh = 12; sh >= 4; sh -= 4)
++        if (field(d, 0x80076, sh, 4, 1))
++            return -1;
++    if (field(d, 0x80078, 8, 8, 0) || field(d, 0x80078, 0, 8, 0))
++        return -1;
++    if (command(d, 1, 0, 0, 0, NULL) || wait_state(d, 0x11, 5000))
++        return -1;
++    return 0;
++}
++
 +/* Bring a firmware that a previous run left running back to state 0x10.
 + * Command 3 is answered with 0x10 from every state the firmware can be left
 + * in; 0x11 and 0x12 additionally accept the suspend/resume pair (command 3
@@ -150,10 +190,30 @@
 +    d->noack = 0;
 +    if (recover_events(d))
 +        return -1;
-+    if (from == 0xffff || from == 1 || from == 2 || from == 3 || from == 4) {
++    if (from == 0xffff) {
 +        size_t drained = recover_drain_ts(d);
 +        if (drained)
 +            fprintf(stderr, "{\"event\":\"dt295_recover_drain\",\"bytes\":%zu}\n", drained);
++    } else if (from == 1 || from == 2 || from == 3 || from == 4) {
++        /* A dead host left the stream running. Stop it properly first; the
++         * firmware is then at 0x11 and the idle-image reload below applies. */
++        if (recover_stop_stream(d) == 0) {
++            fprintf(stderr, "{\"event\":\"dt295_recover_stop\",\"state\":\"0x0011\"}\n");
++            putword(d, 0x90074, 4);
++            if (!command(d, 4, 0, 1, 0, NULL)) {
++                int uploaded = 1;
++                for (size_t off = 0; uploaded && off < d->assets->idle_n; off += 65536) {
++                    size_t n = d->assets->idle_n - off;
++                    if (n > 65536)
++                        n = 65536;
++                    if (bulk_out(d, 0x02, d->assets->idle + off, n, 300))
++                        uploaded = 0;
++                }
++                if (uploaded && !command(d, 4, 1, 0, 0, NULL) &&
++                    !wait_state(d, 0x10, 5000))
++                    return 0;
++            }
++        }
 +    }
 +    if (from == 0x11) {
 +        /* From idle the previous session is still inside the firmware, and it
@@ -219,7 +279,7 @@
      if (field(d, 0x90194, 12, 3, 1) || putword(d, 0x90198, 0x40))
          return fail(d, e, en, "boot setup failed");
      for (int b = 13; b >= 0; b--)
-@@ -778,7 +927,8 @@
+@@ -778,7 +989,8 @@
      memcpy(d->session_iv, mat(d, 0x85218, 16), 16);
      d->has_session = 1;
      d->renewal_counter = 1;
@@ -229,16 +289,16 @@
      if (field(d, 0x80074, 8, 2, 1) || field(d, 0x80074, 0, 7, 0))
          goto bad_after_auth;
      for (unsigned sh = 12; sh >= 4; sh -= 4)
-@@ -1741,6 +1891,8 @@
+@@ -1741,6 +1953,8 @@
      return prepare_config(d, ops, n, plan->primary_program, plan->video_stream_type,
                            plan->audio_stream_type, 1, e, en);
  }
 +
 +static int renew(dt295 *d);
-
+ 
  int dt295_start(dt295 *d, char *e, size_t en) {
      if (!d || d->cleanup_only || !d->prepared || d->started || !d->has_ts_key || drain_state(d) || d->state != 1)
-@@ -1751,6 +1903,11 @@
+@@ -1751,6 +1965,11 @@
          return fail(d, e, en, "receive start failed; start command was not retried");
      }
      d->started = 1;
@@ -250,7 +310,7 @@
      seterr(e, en, "");
      return 0;
  }
-@@ -1778,7 +1935,8 @@
+@@ -1778,7 +1997,8 @@
      if (random_bytes(reply + 16, 4) || secure_command(d, 0x02020400, reply, 20, NULL, 0, NULL))
          goto cleanup;
      d->renewal_counter = c == 0xffffffff ? 1 : c + 1;
@@ -260,7 +320,7 @@
      rc = 0;
  cleanup:
      secure_clear(challenge, sizeof(challenge));
-@@ -1796,8 +1954,20 @@
+@@ -1796,8 +2016,20 @@
          seterr(e, en, "");
          return 0;
      }
@@ -283,7 +343,7 @@
      if (renewed)
          *renewed = 1;
      seterr(e, en, "");
-@@ -1887,3 +2057,24 @@
+@@ -1887,3 +2119,24 @@
          return -1;
      return dt295_packet_crypto(d->ts_key, d->assets->iv, packet);
  }

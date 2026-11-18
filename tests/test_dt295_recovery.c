@@ -237,6 +237,16 @@ static int has_command(const mock *m, int ch, uint8_t cmd, uint8_t sub) {
     return 0;
 }
 
+/* Command 5 carries the stage in its parameter, so the sub-command alone
+ * cannot tell a pause from a resume. */
+static int has_command_par(const mock *m, int ch, uint8_t cmd, uint8_t sub, uint16_t par) {
+    for (unsigned i = 0; i < m->commands && i < 64; i++)
+        if ((int)m->recorded[i][0] == ch && m->recorded[i][1] == cmd &&
+            m->recorded[i][2] == sub && m->recorded[i][3] == par)
+            return 1;
+    return 0;
+}
+
 /* 0x11 (idle, left by a previous run): the idle image is reloaded so the
  * previous session cannot die in the middle of the next stream. */
 static void test_boot_from_idle(dt295_assets *assets) {
@@ -294,8 +304,9 @@ static void test_boot_from_fault(dt295_assets *assets) {
     mock_free(&m);
 }
 
-/* 0x02 (streaming, killed mid-recording): the TS of the dead stream must not
- * reach the next stream. */
+/* 0x02 (streaming, killed mid-recording): stop it the way a normal stop does.
+ * Command 3 alone did not get the firmware out of this state on hardware
+ * (2026-11-18), so the pause/drain/idle sequence has to be used. */
 static void test_boot_from_stream(dt295_assets *assets) {
     mock m;
     mock_init(&m);
@@ -305,8 +316,10 @@ static void test_boot_from_stream(dt295_assets *assets) {
     char error[256] = {0};
     CHECK(dt295_boot(d, error, sizeof(error)) == 0);
     CHECK(dt295_state(d) == 0x0010);
-    CHECK(m.ts_drained == 65536);
-    CHECK(has_command(&m, 0, 3, 0));
+    CHECK(has_command_par(&m, 0, 5, 0, 4)); /* pause */
+    CHECK(has_command(&m, 0, 1, 0));        /* idle */
+    CHECK(m.ts_drained > 0);
+    CHECK(!has_command(&m, 0, 3, 0));
     dt295_destroy(d);
     mock_free(&m);
 }

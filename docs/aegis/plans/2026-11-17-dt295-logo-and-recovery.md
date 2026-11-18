@@ -139,6 +139,18 @@ PIX-DT295 処理を改善する。
 - NAS 側の変更は dtv_android に保全した (`experiments/cm-generic/cm_logos.py` と
   `cm_service.py` の差分、`docs/cm-station-logos.md`、コミット 47b9a83)。
 
+## 実機確認 (2026-11-18 14:00, 192.168.99.123 / x96max-p2)
+
+- **ファームウェア復旧**: 録画中に `pix-ts-legacy` を kill -9 して state 0x0002 を
+  残したところ、当初の実装 (コマンド3) では戻らなかった
+  (`dt295_recover_failed`) 。参照実装の to-idle と同じ「pause → EP 0x81 排出 →
+  state 1 → idle」を実装し直し、再試験で `dt295_recover_stop` を出して
+  **VBUS を切り直さずに復旧**・受信再開 (exit 0, 124,710 パケット) を確認。
+- **BS ロゴ**: 929 へ選局し PMT のカルーセル 2 本 (BS 0x79 / CS 0x7A) を認識。
+  10 分待ったが送出に当たらず、その途中で個体がネットワークから消失した
+  (14:12 頃、ping/SSH とも応答なし。パイプラインは停止したまま)。復旧後に
+  再実行が必要。
+
 ## Result (2026-11-18)
 
 ホストテストは通った。実機は DT295 が挿さっていない（PX-S1UD の地上波構成で

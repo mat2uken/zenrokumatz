@@ -239,8 +239,13 @@ pix-ts-legacy --model dt295 --assets /usr/share/pix-tuner \
 grep dt295_recover /tmp/pix-ts.log   # {"event":"dt295_recover","from":"0x0002"} など
 ```
 
-`dt295_recover` が出て 5 秒の取得が終われば、ソフトリセットで復旧している
-（`0x11` なら `dt295_recover` の後さらに idle イメージの読み直しが走る）。
+`dt295_recover` が出て 5 秒の取得が終われば、ソフトリセットで復旧している。
+状態別の目印:
+
+- `0x0002`（ストリーム中）: `dt295_recover_stop` が出て、pause → 排出 →
+  state 1 → idle を通る。実機でコマンド3 だけでは戻らなかったための経路。
+- `0x0011`: idle イメージの読み直し。
+- `0xffff`: 残りの TS を読み捨ててからコマンド3。
 出ずに「firmware could not be reset」で失敗するなら、その固体はまだ
 `pix-dt295-reset`（unbind/bind）が要る。
 
