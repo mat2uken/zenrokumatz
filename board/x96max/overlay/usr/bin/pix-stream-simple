@@ -162,12 +162,20 @@ fast_fail=0
 # 送るだけなので、開始前に短く確かめて待つ。
 broadcast_ready() {
     # shellcheck disable=SC2086
-    pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
-        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t 5 -o /dev/null 2>/tmp/pix-tsprobe.log
+    bytes=$(pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t 6 2>/tmp/pix-tsprobe.log \
+        | encode | wc -c)
     # PAT が取れていて番組が0件なら放送休止。ロック前（have_pat 0）は
     # 休止と決めつけず、そのまま開始する。
     if grep -q '"have_pat":1' /tmp/pix-tsprobe.log 2>/dev/null &&
        grep -q '"program_count":0' /tmp/pix-tsprobe.log 2>/dev/null; then
+        return 1
+    fi
+    # カラーバーなどの静止画は符号化後のレートが極端に低い（実測: 静止区間
+    # 237 kbps、通常番組 4〜6 Mbps）。6秒の平均で判断する。
+    kbps=$((bytes * 8 / 6 / 1000))
+    if [ "$kbps" -lt 300 ]; then
+        log "static picture (${kbps} kbps); treating as broadcast suspension"
         return 1
     fi
     return 0
