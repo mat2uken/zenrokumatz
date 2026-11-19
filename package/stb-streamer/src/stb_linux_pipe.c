@@ -691,6 +691,22 @@ int main(int argc, char **argv)
                 for (int k = 0; k < g_last_event_count && !recent; k++)
                     if (g_last_events[k] == cur.event_id)
                         recent = 1;
+                /*
+                 * 別イベントに見える切り替わりは、番組が本当に変わったのか
+                 * EIT の揺れなのかを後から確かめられるよう、根拠を残す。
+                 * 直近に区切った番組へ戻る揺れを無視するときも同じ記録を残す。
+                 */
+                if (cur.valid && g_have_program &&
+                    cur.event_id != g_program.event_id &&
+                    moof_has_video(body, body_len)) {
+                    fprintf(stderr,
+                            "stb_linux_pipe: event switch from=%d(%lld,%d) "
+                            "to=%d(%lld,%d) name=%d cut=%d\n",
+                            g_program.event_id, (long long)g_program.start_ms,
+                            g_program.continues, cur.event_id,
+                            (long long)cur.start_ms, cur.continues,
+                            name_update, recent ? 0 : 1);
+                }
                 if (cur.valid && !recent &&
                     moof_has_video(body, body_len)) {
                     uint8_t box[44];
