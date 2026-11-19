@@ -1354,3 +1354,48 @@ round 37 では `USB3 ports: 0` の後 **0.54 秒の間隔**があり、その�
    外し、xhci のポート数は別の方法（カーネル側で固定）で扱う。
 3. 出るなら round 37 の成功は別要因。dwc2 の初期化順を明示的に制御する
    （DTS の順序、または `dwc2` を確実に先に probe させる）。
+
+## 追記（round 57）: dwc2 の PHY 初期化が glue の前提を整えている可能性
+
+### dwc2 の構成
+
+```
+usb@ff400000 {
+    compatible = "amlogic,meson-g12a-usb", "snps,dwc2";
+    clocks = <&clkc CLKID_USB1_DDR_BRIDGE>;  clock-names = "otg";
+    phys = <&usb2_phy1>;                     phy-names = "usb2-phy";
+    dr_mode = "peripheral";
+}
+```
+
+dwc2 は `usb2_phy1`（`0xff63a000`）を `phy_init` する
+（`drivers/usb/dwc2/platform.c` の `phy_init(hsotg->phy)`）。
+
+round 37 の成功ログでは、dwc2 が初期化を終えてから xhci が登録された。
+
+### 依存関係の仮説
+
+`usb2_phy1` の初期化が、USB サブシステムの前提（HHI のクロックゲートや
+メモリPD など）を整え、その後に glue の `USB_R1` が書けるようになる、という
+順序依存がありうる。
+
+round 37 では dwc2 が先に走って成功し、round 54/55 では dwc3 が先に走って
+`USB_R1` 書き込みで例外になった、と説明できる。
+
+### 検証方法
+
+1. **`-noextra` DTB で起動**し、probe 順と例外の有無を見る（最優先）。
+2. dwc3 が先に走るなら、DTS で順序を制御する:
+   - glue（`usb@ffe09000`）から `dwc2` の phandle を参照して依存を作る
+   - または `dwc3` の phy リストから `usb2_phy1` を参照し、PHY の初期化を
+     先に完了させる
+3. 順序制御が難しい場合、`dwc3` の probe を遅延させる（`deferred probe`）。
+
+### 現状の成果物
+
+| ファイル | 用途 |
+|---|---|
+| `meson-g12a-x96-max-p-gxl.dtb`（51,168B） | GXL + `extra-usb-port` + `usb_ctrl` |
+| `meson-g12a-x96-max-p-gxl-noextra.dtb`（51,133B） | GXL + `usb_ctrl` のみ（round 37 と同サイズ） |
+
+次は `-noextra` で round 37 の条件を再現し、probe 順を観察する。
