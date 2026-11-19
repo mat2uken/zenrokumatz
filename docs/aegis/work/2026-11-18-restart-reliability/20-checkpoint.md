@@ -1,5 +1,10 @@
 # 進行状態（2026-11-18 19:40 JST頃）
 
+## 追記（2026-11-19 12:50頃）移設後の起動とコンソール識別
+- **移設後PASS**：2台目（`x96max-p2` / 192.168.99.123）は電源投入で自動起動し録画再開。NAS API `capturing:true/readers:1`、実ファイルが 10863048→37669856 bytes /30.4秒（[1](</Users/kenichim/Desktop/work/X96MaxLinuxTSEnc/work/restart-nas-recording-after-relocation-1.json>)/[2](</Users/kenichim/Desktop/work/X96MaxLinuxTSEnc/work/restart-nas-recording-after-relocation-2.json>)）。IPアドレスは移設前と同じ。
+- **コンソール識別**：NAS `ku@192.168.99.10` のシリアルは2本。`/dev/ttyUSB0`＝CP2102(serial 0001)＝**1台目**（応答は`x96max-linux login:`）、`/dev/ttyUSB1`＝CP2104(serial 01025FCC)＝**2台目**（応答は`x96max-p2 login: Password:`）。改行を送った応答のホスト名で判定した。**1台目には触れない**。2台目はrootパスワード未知のためコンソールではログインせず、操作はSSH（root@192.168.99.123）で行う。
+- 読み取り手順は [console-probe-remote.py](</Users/kenichim/Desktop/work/X96MaxLinuxTSEnc/work/console-probe-remote.py>)。NASへ`cat > /tmp/...`で置いて`sudo -n timeout 20 python3 /tmp/console-read.py /dev/ttyUSB1`。115200 8N1・`VMIN=0/VTIME=2`で改行を送って応答を読む（`cat`は非ブロッキングで0バイトになり当てにならない）。
+
 ## 追記（2026-11-19 11:05頃）新CPIOでの再起動確認
 - **再起動1回目は実行されなかった**：helperの`RESTART_ACTION`対応で生成コマンドが壊れ（`+ action + r`が文字列連結されず端末で`not found`）、S99/S98/S97の停止と`sync`のみ実行、poweroff/rebootは走らなかった。録画は停止済みのまま残ったので、原因を直して2回目を実施。
 - **再起動2回目PASS**：S97停止でnative END exit0/state16 → `sync` → `reboot`（UARTで`Board ID = 1`）。UART受動観測で`X96Max_P2 RAM-root Linux`→`Starting kernel`→`Starting pix-stream`/`pix-logo-weekly`→`x96max-p2 login:`。uptime 36.9s。
