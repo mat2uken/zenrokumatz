@@ -245,17 +245,22 @@ encode_with_features() {
     FEAT_ARGS="$FEAT_ARGS --feature-black-file $PIX_LOG_DIR/pix-ff1.log"
     FEAT_ARGS="$FEAT_ARGS --feature-max-mb $PIX_FEATURE_MAX_MB"
     export FEAT_ARGS
+    # The analysis outputs must come before the recording output. Listed after
+    # it, ffmpeg reports "Filter signalstats has output 1 (aux) unconnected" and
+    # refuses to start, which is a recording outage rather than a missing
+    # sideband.
     # The analysis branches end in the null muxer; without an explicit encoder
     # ffmpeg reuses the v4l2m2m one from the main stream and fails.
     exec ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
         -f mpegts -i pipe:0 \
-        -filter_complex "$FC" -map "[main]" \
-        -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
-        -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
+        -filter_complex "$FC" \
         -map "[aux]" -c:v rawvideo -f null /dev/null \
         -map 0:a:0 -c:a pcm_s16le -ar 48000 -ac 2 \
         -af "astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level+Number_of_samples,ametadata=mode=print:file=/dev/shm/pix/feat-a.log" \
         -f null /dev/null \
+        -map "[main]" \
+        -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
+        -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
         2>/tmp/pix-ff1.log
 }
 

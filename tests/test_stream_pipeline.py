@@ -344,6 +344,20 @@ class SimpleLauncherFeatures(unittest.TestCase):
         self.assertIn("PIX_FEATURES=0", loop)
         self.assertIn('FEAT_ARGS=""', loop)
 
+    def test_analysis_outputs_precede_the_recording_output(self):
+        """ffmpeg rejects an unconnected filter output listed after the main one.
+
+        With -map "[aux]" placed after the recording output, ffmpeg reports
+        "Filter signalstats has output 1 (aux) unconnected" and refuses to
+        start, so the unit would stop recording instead of losing the sideband.
+        """
+        body = self.text()
+        helper = body[body.index("encode_with_features() {"):]
+        helper = helper[:helper.index("\n}\n")]
+        self.assertLess(helper.index('-map "[aux]"'),
+                        helper.index('-map "[main]"'),
+                        "the analysis output must be mapped before the recording one")
+
     def test_the_analysis_uses_a_downscaled_copy(self):
         body = self.text()
         helper = body[body.index("encode_with_features() {"):]

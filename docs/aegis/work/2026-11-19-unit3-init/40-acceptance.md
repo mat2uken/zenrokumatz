@@ -440,3 +440,54 @@ ELF 本体に含まれる文字列:
 6. コストは実時間の 31 倍の余裕（round 90）
 
 **残るのは、NAS が `features=v1` を要求するかの実機確認のみ。**
+
+## 追記（round 92）: 実装バグを発見・修正（ffmpeg の出力順序）
+
+### 発見
+
+Mac の ffmpeg で `encode_with_features` の構成を実際に流したところ、**起動時に
+拒否された**:
+
+```
+[fc#0] Filter 'signalstats:default' has output 1 (aux) unconnected
+Error binding filtergraph inputs/outputs: Invalid argument
+```
+
+**原因**: `-map "[aux]"` を録画出力（`-map "[main]" ... -f mpegts pipe:1`）の
+**後ろ**に置いていた。ffmpeg は出力を順に解決するため、`[aux]` が未接続のまま
+残るとフィルタグラフのバインドに失敗する。
+
+**影響**: これは「CM が付かない」ではなく、**録画が始まらない**（パイプラインが
+即座に落ちる）。`PIX_FEATURES=1` の3代目で録画が成立しない致命的なバグだった。
+
+### 修正
+
+解析出力（`[aux]` と音声 RMS）を**録画出力より前**に移した。
+
+```sh
+-filter_complex "$FC" \
+-map "[aux]" -c:v rawvideo -f null /dev/null \
+-map 0:a:0 -c:a pcm_s16le ... -f null /dev/null \
+-map "[main]" -c:v h264_v4l2m2m ... -f mpegts pipe:1
+```
+
+### 修正後の実測
+
+AAC 音声の入力（10 秒、1440x1080）で全経路を確認:
+
+```
+入力 TS → [aux] 解析 + [main] H.264 → fMP4
+出力: 7,027,952 バイト
+streams: h264 (video), aac (audio)
+```
+
+**録画経路が通り、fMP4 として正しく多重化される。**
+
+### 回帰テスト
+
+`test_analysis_outputs_precede_the_recording_output` を追加。`-map "[aux]"` が
+`-map "[main]"` より前にあることを検証する。245 テスト通過。
+
+### 成果物
+
+`rootfs.cpio.uboot` = `80763d75…`
