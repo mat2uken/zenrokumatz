@@ -1,0 +1,29 @@
+Some X96Max_P boards wire a fourth USB2 port that the controller does not
+advertise. hcs_params1 reports MaxPorts = 3, yet PORTSC4 shows a connected
+device (CCS = 1, PP = 1, PLS = Polling) that never enumerates because the
+driver stops at port 3. The port register blocks are contiguous at a 0x10
+stride, so reading one more is safe.
+
+Only raise the limit for a device tree that opts in with
+"amlogic,extra-usb-port", and only when the controller really reported fewer
+than four ports.
+
+--- a/drivers/usb/host/xhci.c
++++ b/drivers/usb/host/xhci.c
+@@ -5478,6 +5478,16 @@
+ 	xhci->dma_mask_bits = 64;
+ 	xhci->max_slots = HCS_MAX_SLOTS(hcs_params1);
+ 	xhci->max_ports = HCS_MAX_PORTS(hcs_params1);
++	/*
++	 * Some X96Max_P boards wire a fourth USB2 port that the controller does
++	 * not advertise: hcs_params1 reports MaxPorts = 3, yet PORTSC4 shows a
++	 * connected device that never enumerates because the driver stops at
++	 * port 3. The port register blocks are contiguous at a 0x10 stride, so
++	 * reading one more is safe; only do it when the platform asks.
++	 */
++	if (xhci->max_ports < 4 && dev->of_node &&
++	    of_property_read_bool(dev->of_node, "amlogic,extra-usb-port"))
++		xhci->max_ports = 4;
+ 	/* xhci-plat or xhci-pci might have set max_interrupters already */
+ 	if ((!xhci->max_interrupters) || xhci->max_interrupters > HCS_MAX_INTRS(hcs_params1))
+ 		xhci->max_interrupters = HCS_MAX_INTRS(hcs_params1);
