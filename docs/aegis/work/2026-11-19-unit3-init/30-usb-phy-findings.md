@@ -2077,3 +2077,47 @@ PHY が正しくセットアップされたためと考えられる。
 `pix-usb-reset` が USB コントローラをリセットした際に起きている。
 
 **録画パイプラインを動かす前に、この停止を解消する必要がある。**
+
+## 追記（round 74）: pix-stream 停止は「起動直後に DT295 が未認識」が引き金
+
+### コードの流れ
+
+`pix-stream-simple`:
+
+```
+while [ ! -e STOPFILE ]; do
+    run_worker probe            # broadcast_ready
+    run_worker direct           # 本番
+    if ran < 10s: fast_fail++
+    ...
+    elif fast_fail >= 3: dt295_recover   # ← pix_usb_reset を実行
+```
+
+`dt295_recover()`:
+```
+log "attempting guarded USB controller recovery"
+cleanup_children
+pix_usb_reset   # /sys 経由で dwc3 コントローラを unbind/bind
+```
+
+### round 73 の停止の解釈
+
+round 73 では DT295 が **922 秒後**に認識された。その前に `/etc/init.d/S97pix-stream
+start` を実行したため、起動直後は DT295 未認識 → `fast_fail` が 3 に達する →
+`dt295_recover` → `pix_usb_reset` が USB コントローラをリセット → 機体が無応答。
+
+**つまり、DT295 が起動直後から認識されていれば、この停止は起きない。**
+
+### 起動直後の認識が遅い理由（候補）
+
+- USB の列挙に時間がかかっている（922 秒は異常に長い）
+- `pix-usb-audit` の定期再列挙が効いて初めて認識された
+- DT295 のファームウェア読み込み（`dt295.assets`）に時間がかかる
+
+### 次の確認
+
+起動直後に `lsusb` を繰り返し見て、何秒で認識されるかを測る。認識が遅いなら、
+その原因（USB 列挙のリトライ、PHY の初期化待ち）を特定する。
+
+`pix-stream` を起動する前に `lsusb` で DT295 を確認し、認識されてから起動すれば
+停止を避けられる。
