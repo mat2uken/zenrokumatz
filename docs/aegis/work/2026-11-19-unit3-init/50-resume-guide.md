@@ -331,3 +331,45 @@ size: 1440x1080 | bitrate: 6000000 | gopSec: 2
 | 録画・NAS 保存・CM カット | 未達 |
 
 **DT295 を挿してサービスを再起動するだけで、録画の検証に入れる状態。**
+
+## 追記（round 80）: rootfs 更新の準備が完了（実機検証待ち）
+
+### 書き込むファイル（検証済み）
+
+`output/ramboot-unit3/rootfs.cpio.uboot` = `a230c50bab24ba92…`
+
+中身を直接検証した:
+
+- uImage ヘッダ magic `27051956`（OK）
+- 本体は gzip（`1f8b`）
+- 展開すると 111,633,920 バイト
+- **`wait_for_tuner` が含まれる**（`b"wait_for_tuner" in raw` が True）
+- `rootfs.cpio.gz` 内の `usr/bin/pix-stream-simple` にも 2 箇所
+
+### SD の更新方法（Image を据え置く）
+
+SD 上の `Image` は `b3099f99…`（DT295 認識に成功した実績のある版）。
+最新の `Image` は `6a9b20e4…`（PPC 修正版、未検証）なので、**Image は更新しない**。
+
+```sh
+cd ~/Desktop/work/X96MaxLinuxTSEnc
+/usr/bin/python3 scripts/write-sd.py \
+  --image output/ramboot-unit3/sdcard.img \
+  --device /dev/diskN \
+  --update-boot --only rootfs.cpio.uboot
+```
+
+`--only` は FAT レイアウト検証の後に選択名を検証する。Image の必須チェックは
+`--only` 指定時に外れるので、rootfs 単独更新が可能。
+
+### 次の起動で確認すること
+
+1. 起動直後、`wait_for_tuner` が DT295 を待つログ（`tuner: appeared after Ns`）
+2. `/etc/init.d/S97pix-stream` 起動後も機体が無応答にならないこと
+3. `/v1/status` が応答し、フラグメントが増えること
+4. NAS 側で `state` が `recording`、`stb.status` が `ok` になること
+5. 録画ファイルが NAS に保存されること
+
+### 停止した場合の復旧
+
+機体が無応答になったら電源再投入。SD はそのままでよい。
