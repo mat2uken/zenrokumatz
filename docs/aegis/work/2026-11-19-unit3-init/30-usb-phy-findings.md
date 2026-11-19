@@ -1399,3 +1399,38 @@ round 37 では dwc2 が先に走って成功し、round 54/55 では dwc3 が�
 | `meson-g12a-x96-max-p-gxl-noextra.dtb`（51,133B） | GXL + `usb_ctrl` のみ（round 37 と同サイズ） |
 
 次は `-noextra` で round 37 の条件を再現し、probe 順を観察する。
+
+## 追記（round 59）: 本質的な解決は 0xffe09000 の PHY 初期化を mainline に足すこと
+
+### 整理
+
+この基板での役割分担:
+
+| アドレス | vendor | mainline |
+|---|---|---|
+| `0xffe09000` (0x80) | **USB2 PHY の制御ブロック**（`amlogic-new-usb2-v2` が初期化） | glue（`dwc3-meson-g12a` が触って例外） |
+| `0xff636000` / `0xff63a000` | usb2phy 本体 | `usb2_phy0` / `usb2_phy1`（mainline の PHY ドライバ） |
+
+mainline は `0xff636000` を初期化するが、**`0xffe09000` の初期化が抜ける**。
+
+### 3 つの DTB 方針の結果
+
+| DTB | 結果 |
+|---|---|
+| `-ephy-4g`（G12A glue） | `USB_R1`（`0xffe09084`）書き込みで例外 |
+| `-p-gxl`（GXL glue） | `usb_ctrl` クロックを足すと **round 37 で一度成功**（xhci 登録）、再現せず |
+| `-p-usb`（glue 削除、`snps,dwc3` 直接） | `dwc3_core_probe+0x96c`（`0xff500020`）で例外 |
+
+### 本質的な解決
+
+**vendor の `0xffe09000` 初期化を mainline に移植する。** 具体的には、`phy-meson-g12a-usb2.c` に `0xffe09000`（0x80）を扱う処理を足すか、DTS で PHY に第 2 の reg 領域として持たせる。
+
+mainline の PHY ドライバは `reg` の最初の領域だけを使う。vendor DT の `usb2phy@ffe09000` は `reg` に `0xffe09000`、`0xffd01008`、`0xff636000`、`0xff63a000` の 4 つを持つ。
+
+**DTS で `usb2_phy0` の reg を vendor と同じ 4 領域にし、ドライバが 2 番目以降も初期化するようパッチを入れる**のが一案。ただしドライバの変更が必要。
+
+### 現実的な優先順
+
+1. `-noextra` DTB（round 37 と同条件）で再現試験。probe 順が結果を左右するなら、
+   順序制御が最短。
+2. それで駄目なら `0xffe09000` の初期化を mainline PHY ドライバに足すパッチを書く。
