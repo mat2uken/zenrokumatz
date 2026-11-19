@@ -321,3 +321,48 @@ FEAT_ARGS="--feature-file $PIX_LOG_DIR/pix-ff1.log \
 
 3代目の SD に入っている `stb_streamer` が特徴量対応版かは未確認。`output/stb_streamer`
 と同等かを、起動後に `strings /usr/bin/stb_streamer | grep feature` で確かめる。
+
+## 追記（round 87）: CM 特徴量の ffmpeg 構成を実機外で検証した
+
+### 検証方法
+
+Mac の ffmpeg 8.1.2 で、実装したフィルタ構成をそのまま実行した（v4l2m2m の
+ハードウェアエンコーダは Mac に無いため、同じフィルタ鎖を libx264 で代替）。
+入力は `testsrc` + `sine` から作った 3 秒の MPEG-TS。
+
+### 結果
+
+```sh
+analyze="scale=320:180,signalstats,blackdetect=d=0.1:pix_th=0.125:pic_th=0.98"
+analyze="$analyze,metadata=mode=print:key=lavfi.signalstats.YAVG"
+analyze="$analyze,metadata=mode=print:key=lavfi.signalstats.YDIF"
+FC="[0:v]bwdif=mode=send_frame,format=nv12[enc];[enc]split=2[main][an]"
+FC="$FC;[an]${analyze}[aux]"
+
+ffmpeg ... -filter_complex "$FC" -map "[main]" ... -f mpegts out.ts \
+    -map "[aux]" -c:v rawvideo -f null /dev/null \
+    -map 0:a:0 -c:a pcm_s16le ... -f null /dev/null
+```
+
+- 終了コード **0**
+- `out.ts`（録画ストリーム）510,420 バイト生成
+- `feat-a.log`（音声 RMS）15,388 バイト生成
+- 映像統計の出力を確認:
+
+```
+[Parsed_metadata_6] lavfi.signalstats.YAVG=125.415
+[Parsed_metadata_6] lavfi.signalstats.YAVG=125.466
+```
+
+**フィルタ構成は正しく、統計が生成される。**
+
+### 残る不確定要素
+
+1. **`stb_streamer` が `--feature-file` を読む形式**（`lavfi.signalstats.YAVG=...`
+   の行形式）と一致するか。旧ランチャーが同じフィルタを `pix-ff1.log` へ
+   出していたので、形式は踏襲できているはず。
+2. **ハードウェアエンコーダ（`h264_v4l2m2m`）で実時間を保てるか。** 解析用の
+   縮小コピーを追加するため、負荷が増える。旧ランチャーのコメントでは
+   「320x180 なら 30秒/39.5秒」と余裕があるとされている。
+3. **NAS が `features=v1` を要求するか。** 要求しなければ `stb_streamer` は
+   pixf を差し込まないため、CM 情報は送られない（設計どおり）。
