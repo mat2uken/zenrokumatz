@@ -264,3 +264,60 @@ analyze="$analyze,metadata=mode=print:key=lavfi.signalstats.YAVG"
 録画が成立した後、CM を効かせるには `pix-stream-simple` に特徴量生成を移植する
 必要がある。ただし **まず録画そのものを成立させるのが優先**（NAS が `features=v1`
 を要求した時だけ `stb_streamer` が差し込む設計なので、要求が無ければ不要）。
+
+## 追記（round 85）: CM 特徴量の道具は揃っている。移植先は pix-stream-simple
+
+### stb_streamer は特徴量引数に対応済み
+
+`output/stb_streamer`（56,176 バイト、11月18日）の `strings`:
+
+```
+--feature-file
+--feature-audio-file
+--feature-black-file
+--feature-max-mb
+
+usage: %s [--port N] [--allowed-ip LIST] [--spool-mb N] [--channel NAME]
+          [--display NAME] [--feature-file PATH] [--feature-audio-file PATH]
+          [--feature-black-file PATH] [--feature-max-mb N] [--logo-dir DIR]
+```
+
+`scripts/install-stb-feature.sh` がこれを「feature-aware stb_streamer」として
+2代目（`192.168.99.109`）へ配る仕組み。
+
+### 旧ランチャーの特徴量生成（移植の参考）
+
+```sh
+# 320x180 に縮小（フル解像度は 84秒/39.5秒、これなら 30秒）
+analyze="scale=320:180,signalstats,blackdetect=d=0.1:pix_th=0.125:pic_th=0.98"
+analyze="$analyze,metadata=mode=print:key=lavfi.signalstats.YAVG"
+analyze="$analyze,metadata=mode=print:key=lavfi.signalstats.YDIF"
+
+# 映像と音声を同じクロックに保つ（タイムスタンプを書き換えない）
+FC="[0:v]bwdif=mode=send_frame,format=nv12[enc];[enc]split=2[main][an]"
+FC="$FC;[an]${analyze}[aux]"
+VIDEO_IN="-filter_complex $FC -map [main]"
+
+FEAT_AUX_OUT="-map [aux] -c:v rawvideo -f null /dev/null"
+FEAT_AUDIO_OUT="-map 0:a:0 -c:a pcm_s16le -ar 48000 -ac 2 \
+  -af astats=...,ametadata=mode=print:file=/dev/shm/pix/feat-a.log -f null /dev/null"
+FEAT_ARGS="--feature-file $PIX_LOG_DIR/pix-ff1.log \
+  --feature-audio-file /dev/shm/pix/feat-a.log \
+  --feature-black-file $PIX_LOG_DIR/pix-ff1.log \
+  --feature-max-mb $PIX_FEATURE_MAX_MB"
+```
+
+### 3代目に必要な作業
+
+1. `pix-stream-simple` の `streamer()` に `FEAT_ARGS` 相当を追加する
+2. `run_direct()` / エンコード経路の ffmpeg に `analyze` フィルタを足す
+3. **ただし `stb_streamer` は NAS が `features=v1` を要求した時だけ pixf を
+   差し込む設計**なので、要求が無ければ送られない。
+
+したがって**録画成立を先に確認**し、NAS が `features=v1` を要求するかを見る。
+要求するなら上記を移植する。
+
+### 重要
+
+3代目の SD に入っている `stb_streamer` が特徴量対応版かは未確認。`output/stb_streamer`
+と同等かを、起動後に `strings /usr/bin/stb_streamer | grep feature` で確かめる。
