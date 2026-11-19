@@ -451,3 +451,57 @@ static int dwc3_meson_g12a_usb2_init(struct dwc3_meson_g12a *priv,
 
 DTS は glue を残したまま（`-ephy-4g`）にする。つまり `meson-g12a-x96-max-p-usb.dts`
 ではなく、通常の DTB + このパッチの組み合わせになる。
+
+## 追記（round 28）: DTS だけで u2p 書き込みを避ける案は成立しない
+
+`dwc3_meson_g12a_usb2_init` には `if (!priv->phys[i]) continue;` があり、PHY が
+解決できないインデックスはスキップされる。一見、`phy-names` から usb2 を外せば
+u2p 書き込みを避けられそうに見えた。
+
+しかし同じドライバの後段に:
+
+```c
+#define PHY_COUNT 3
+/* Init PHYs */
+for (i = 0 ; i < PHY_COUNT ; ++i) {
+    ret = phy_init(priv->phys[i]);       // NULL チェックが無い
+    ...
+}
+```
+
+があり、`PHY_COUNT` は固定 3。`phy-names` を減らすと `priv->phys[i]` が NULL に
+なり、`phy_init(NULL)` で別のクラッシュを起こす。**DTS だけで u2p を回避する
+案は成立しない。**
+
+さらに dwc3 の子ノードは `phys` を持たず、PHY の取得と `phy_init` は glu​e 親が
+行う。したがって PHY を親のリストから外すと、USB2 PHY の初期化自体も失われる。
+
+### したがってカーネルパッチ（案 B）が必須
+
+`dwc3_meson_g12a_usb2_init` の u2p ループだけを無効化する。これで:
+
+- 1（u2p 書き込み）を回避
+- 2〜5（USB_R1/R5、usb3_init、USB_R4 のメモリPD解除）は実行される
+- `phy_init`/`phy_power_on` も従来どおり走る
+
+この形にする:
+
+```c
+static int dwc3_meson_g12a_usb2_init(struct dwc3_meson_g12a *priv,
+                                     enum phy_mode mode)
+{
+    /*
+     * This board's 0xffe09000 is the USB2 PHY control block, not the G12A
+     * glue u2p registers; writing it faults with a synchronous external
+     * abort and the rest of the glue sequence (USB_R1/R5, usb3_init,
+     * USB_R4 memory power-down release) never runs. Leave the USB2 PHY
+     * setup to the phy driver at phy@36000/phy@3a000.
+     */
+    return 0;
+}
+```
+
+### ビルドと搬入
+
+`Image` の再ビルドが必要（41MB）。YMODEM では 115200bps で数時間かかるため、
+**SD への書き込みが必要**。`scripts/write-sd.py` を使う（sudo）。
