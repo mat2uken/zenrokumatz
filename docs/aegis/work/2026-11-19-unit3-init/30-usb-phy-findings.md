@@ -587,3 +587,66 @@ glue 経由の u2p アクセスは発生しない。dwc3 子ノードは PHY を
 前回この DTB で `dwc3_core_probe+0x96c` に落ちたが、そのときのカーネルは
 パッチ無しで、glue の初期化が一度も完走していなかった。**今回は条件が違う**
 （PHY は取得済み、glue は完全に無関係）ので、再試行する価値がある。
+
+## 追記（round 35）: mainline には USB メモリPD 制御が無い
+
+### dwc3 コアはクロックとリセットを自分で扱う
+
+`dwc3_probe`（core.c）の順序:
+
+```
+reset_control_deassert(dwc->reset);
+dwc3_clk_enable(dwc);
+dwc3_core_is_valid(dwc);     ← ここで 0xff500020 を読む（前回落ちた箇所）
+```
+
+候補 DTB は `clocks = <&clkc CLKID_USB>`、`resets = <&reset RESET_USB>` を持って
+いるので、この 2 つは実行される。それでも `dwc3_core_is_valid` で落ちた。
+
+### CLKID_USB はゲートだけ
+
+`drivers/clk/meson/g12a.c`:
+
+```
+static G12A_PCLK(g12a_usb_general, HHI_GCLK_MPEG1, 26, CLK_IGNORE_UNUSED);
+[CLKID_USB] = &g12a_usb_general.hw;
+```
+
+`HHI_GCLK_MPEG1` の bit 26 を開けるだけの**ゲートクロック**。USB のメモリ
+パワーダウンには触れない。
+
+### mainline にメモリPD制御が存在しない
+
+```
+$ grep -rn "HHI_GCLK_MPEG1\|HHI_MEM_PD\|mem_pd" drivers/usb/dwc3/ drivers/phy/amlogic/
+（該当なし）
+```
+
+vendor DT の `usb2phy@ffe09000` にある:
+
+```
+u2-hhi-mem-pd-mask  = 0x03
+u2-hhi-mem-pd-shift = 0x1e
+```
+
+は、**HHI のとあるレジスタの bit 30-31 を操作して USB2 PHY のメモリ
+パワーダウンを解除する**もの。mainline の PHY ドライバにも dwc3 にも、この処理が
+無い。
+
+HHI のアドレスは `bus@3c000/system-controller@0` = **`0xff63c000`**（サイズ 0x400）。
+
+### 仮説
+
+dwc3 のレジスタ窓（`0xff500000`）が応答しないのは、**この基板の USB が HHI の
+メモリPD に入ったままで、mainline はそれを解除しないから**。クロックゲート
+（CLKID_USB）を開けても、メモリPD が解除されない限りバスは応答しない。
+
+### 次に確認すること
+
+Android（vendor kernel）が起動している状態で、`0xff63c000` 帯のどのレジスタの
+bit 30-31 が立っているかを読む。vendor はこれを解除しているので、Linux で同じ
+値を再現すれば窓が開くはず。
+
+具体的には HHI の USB 関連レジスタ（`HHI_MEM_PD_REG0` 等）をスキャンし、
+bit30-31 が 0 になっているものを探す。それができれば、DTS に syscon 経由の
+レジスタ初期化を入れるか、小さなカーネルパッチで再現する。
