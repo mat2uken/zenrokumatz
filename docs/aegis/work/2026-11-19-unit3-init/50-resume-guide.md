@@ -235,3 +235,53 @@ adb shell su -c "id"      → uid=0(root)
 
 ただし `/dev/block/env` への書き込みは起動設定を壊す危険があるため、シリアルが
 使える状況では行わない。
+
+## 追記（round 40）: DT295 接続後にやること（GXL DTB 構成）
+
+### 現在の Linux の状態
+
+GXL DTB で起動済み。USB ホストコントローラは正常、`VCC_5V` は enabled。
+SSH 可（`root@192.168.99.56`、鍵は `~/.ssh/id_ed25519`）。
+
+DT295 未接続のため、`pix-stream` は次の流れで停止している:
+
+```
+simple: dt295: three quick failures in a row
+simple: dt295: attempting guarded USB controller recovery
+pix-usb-reset: reset budget exhausted/cooling down (max 3 per boot, 300s apart)
+simple: dt295: recovery refused or failed; stopping (manual intervention required)
+```
+
+**これは正しい安全動作**。リセットは起動あたり 3 回・300 秒間隔に制限されており、
+上限に達すると停止する。USB を壊さない設計。
+
+### DT295 を挿したあとの手順
+
+```sh
+# 1. 認識を確認
+ssh root@192.168.99.56 'lsusb | grep 06b8'      # Pixela Corp. PIX-DT295
+
+# 2. サービスを再起動（リセット回数の上限に達しているため必須）
+ssh root@192.168.99.56 '/etc/init.d/S97pix-stream start'
+
+# 3. 配信を確認
+ssh root@192.168.99.56 'wget -qO- http://127.0.0.1:40774/v1/status'
+
+# 4. 段階判定
+python3 tools/check-unit3-acceptance.py --host 192.168.99.56 --channel 17
+```
+
+`pix-usb-reset.state` に `1 31`（回数と時刻）が記録されていた。上限に達した
+状態を解除したい場合は、サービスを再起動するのが最も簡単（状態ファイルは
+起動ごとに初期化される想定）。
+
+### 設定の確認（実機で確認済み）
+
+```
+PIX_TUNER=dt295
+PIX_SYSTEM=terrestrial
+PIX_CHANNEL=17
+```
+
+`pix-usb-reset` の対象は `_PIX_USB_GLUE=ffe09000.usb`。GXL 構成ではこのノードが
+glue なので整合している。
