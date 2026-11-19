@@ -31,4 +31,12 @@
 	 */
 	clocks = <&clkc CLKID_USB>;
 	clock-names = "usb_ctrl";
+	/*
+	 * hcs_params1 reports MaxPorts = 3, but this board wires a fourth USB2
+	 * port: PORTSC4 shows a connected device (CCS = 1, PP = 1) that never
+	 * enumerates because the driver stops at port 3. The port register
+	 * blocks are contiguous at a 0x10 stride, so one more is readable.
+	 * Opt in to the xhci patch that raises the limit.
+	 */
+	amlogic,extra-usb-port;
 };

@@ -1141,3 +1141,51 @@ PORTSC4 = CCS=1 PP=1             ← DT295 はここ
 vendor（Android）で `hcs_params1` と `maxchild` を読めば、ベンダーが何ポート
 として扱っているか分かる。ベンダーも 3 なら「4 番目は想定外の配線」であり、
 ポート 1〜3 を使うべき。ベンダーが 4 なら mainline 側の問題。
+
+## 追記（round 50）: vendor では DT295 が認識されている
+
+### Android（vendor kernel）での実測
+
+```
+# lsusb
+Bus 001 Device 001: ID 1d6b:0002
+Bus 001 Device 002: ID 06b8:103b      ← PIX-DT295 が認識されている
+Bus 002 Device 001: ID 1d6b:0003
+
+# /sys/bus/usb/devices/usb1/maxchild = 2
+
+# /sys/bus/usb/devices/
+1-0:1.0  1-1  1-1:1.0  2-0:1.0  usb1  usb2
+
+# /sys/bus/usb/devices/1-1/speed = 480   （High Speed）
+# idVendor 06b8 / idProduct 103b
+```
+
+**vendor では DT295 が `1-1`（ポート 1）に接続され、480Mbps で認識されている。**
+`maxchild = 2` なので、**vendor は 2 ポートで足りている**。
+
+### Linux との食い違い
+
+| | vendor (Android) | Linux (GXL DTB) |
+|---|---|---|
+| MaxPorts | 2（`maxchild`） | 3（`hcs_params1`） |
+| DT295 の位置 | `1-1`（ポート 1） | **PORTSC4 に CCS=1** |
+| 認識 | **あり** | なし |
+
+**同じ物理接続なのに、Linux では PORTSC4 に見えている。** これは:
+
+- vendor の `1-1` と Linux の PORTSC4 が同じ物理ポート、という可能性
+  （番号付けが実装依存）
+- または Linux 側の PORTSC 読みが別のレジスタを見ている
+
+いずれにせよ、**物理接続は正しく、DT295 も生きている**（vendor で 480Mbps 認識）。
+Linux 側の 3 ポート制限（`hcs_params1` の MaxPorts=3）と、DT295 が PORTSC4 に
+見えることの組み合わせが問題。
+
+### 次の確認
+
+カーネルに `amlogic,extra-usb-port` を入れ、`max_ports` を 4 にしたパッチ入り
+イメージで起動すれば、PORTSC4 が監視対象になり認識される見込み。
+
+ビルドを進めている（`0003-xhci-extra-usb-port.patch` と GXL DTS の
+`amlogic,extra-usb-port`）。
