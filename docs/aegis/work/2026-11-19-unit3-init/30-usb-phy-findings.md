@@ -407,3 +407,47 @@ dwc3 コアの `GSNPSID` 系のレジスタで、ドライバが最初に触る�
 Linux 起動時に読む・書く手段を作る。具体的には、dwc3 を無効にした DTB で Linux を
 起動し、`/dev/mem` 相当（`busybox devmem`）で `0xff63c000` 帯の HHI を読み、
 vendor の初期化が何をしているかを推定する。
+
+## 追記（round 27 後半）: 連鎖の全体像が判明
+
+`dwc3_meson_g12a_usb_init_glue` の処理順:
+
+```
+1. dwc3_meson_g12a_usb2_init()        ← u2p_regmap を write → ここで例外（現行）
+2. regmap_update_bits(glue, USB_R1, FLADJ_30MHZ, 0x20)
+3. regmap_update_bits(glue, USB_R5, ID_DIG_EN_0/1/TH)
+4. usb3_init()  (usb3_ports があるとき)
+5. usb_otg_apply_mode()  ← ここで USB_R4 の MEM_PD を触る可能性
+```
+
+**glue ドライバは 1 番目で即死するため、2 以降に到達しない。** つまり:
+
+- `USB_R1`（`0xffe09084`）のフレーム長調整も設定されない
+- `USB_R5` の ID 検出も設定されない
+- `USB_R4`（`0xffe09090`, `MEM_PD_MASK`）の解除もされない
+
+**dwc3 のレジスタ窓が応答しないのは、この手順が最後まで走らないから**という連鎖が
+見えてきた。候補 DTB（glue 削除）は 1 の例外を避けたが、2〜5 の初期化も
+一緒に失ったため、dwc3 が応答しないまま `dwc3_core_probe` で落ちる。
+
+### 取るべき方針（案 B の具体化）
+
+glue ノードは残し、**`dwc3_meson_g12a_usb2_init` の u2p 書き込みだけを回避する**
+カーネルパッチを入れる。そうすれば 2〜5 の初期化が走り、dwc3 のレジスタ窓が
+開いてから子の dwc3 が probe される。
+
+パッチの形:
+
+```c
+static int dwc3_meson_g12a_usb2_init(struct dwc3_meson_g12a *priv,
+                                     enum phy_mode mode)
+{
+    /* This board's 0xffe09000 is the USB2 PHY control block, not the G12A
+       glue u2p registers; writing it faults. Skip the u2p setup and let the
+       PHY driver at phy@36000/phy@3a000 do the USB2 work. */
+    return 0;
+}
+```
+
+DTS は glue を残したまま（`-ephy-4g`）にする。つまり `meson-g12a-x96-max-p-usb.dts`
+ではなく、通常の DTB + このパッチの組み合わせになる。
