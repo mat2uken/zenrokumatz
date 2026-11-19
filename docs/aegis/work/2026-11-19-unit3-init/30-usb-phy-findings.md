@@ -1220,3 +1220,45 @@ PORTSC は `0x10` stride で連続している（`0xff500400` + n*0x10）。xhci
 
 `write-sd.py --update-boot` で 7 ファイルを書き込み、全ハッシュ一致を確認済み
 （sudo 不要）。
+
+## 追記（round 54）: GXL でも usb_init_glue の USB_R1 書き込みで例外
+
+パッチ入り Image（`0c22a1a9…`）と `extra-usb-port` 入り GXL DTB（`d42958c7…`）で
+起動した。
+
+```
+dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+Internal error: synchronous external abort: 0000000096000010 [#1]  SMP
+pc : regmap_mmio_read32le+0x8/0x20
+dwc3_meson_g12a_usb_init_glue.isra.0+0x38/0x190
+dwc3_meson_gxl_usb_init+0x14/0x30        ← GXL 版が選択されている
+dwc3_meson_g12a_probe+0x2f0/0x590
+```
+
+**GXL 版（`dwc3_meson_gxl_usb_init`）が選ばれているにもかかわらず、`usb_init_glue`
+の `+0x38`（`USB_R1` への `regmap_update_bits`）で例外。**
+
+GXL では glue regmap が `base`（`0xffe09000`）そのものなので、`USB_R1` は
+`0xffe09004`。
+
+### これで確定したこと
+
+**`0xffe09000` 帯は、この基板では書き込みできない。** G12A（`0xffe09084`）でも
+GXL（`0xffe09004`）でも同じ結果。vendor はこの領域を PHY の制御ブロックとして
+使っており、mainline の glue ドライバが期待する「USB3 PHY 用 glue」ではない。
+
+以前 round 37 で GXL + `usb_ctrl` クロックのときは例外が出ず、`xhci` まで到達した
+（`USB2 ports: 2` の後、例外なしで `xhci-hcd` が登録された）。**今回は同じ DTB
+構成なのに例外が出た。** 差分は:
+
+- round 37: DTB に `extra-usb-port` なし、Image はパッチなし
+- round 54: DTB に `extra-usb-port` あり、Image は xhci パッチ入り
+
+**xhci パッチが `usb_init_glue` の挙動に影響するとは考えにくい**（別ファイル）。
+むしろ、起動のたびに結果が変わる**不安定さ**がある可能性がある。
+
+### 再確認が必要
+
+round 37 の成功（例外なしで xhci 登録）が再現するか。再現するなら、round 54 の
+例外は偶発的（タイミング依存）であり、`USB_R1` 書き込みが常に失敗するわけではない。
