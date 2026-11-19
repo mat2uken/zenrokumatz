@@ -1050,3 +1050,49 @@ xhci は登録済みの 2 ポート（PORTSC1/2）しか監視しないため、
 
 **DT295 を PORTSC1 か PORTSC2 に挿せば認識される可能性が高い。** これが最も
 簡単な確認方法。物理ポートの対応を確かめる。
+
+## 追記（round 45）: xhci は 2 ポートと申告。実際は 4 ポートある
+
+### 測定
+
+```
+# hcc params = 0x0228fe64
+MaxPorts (bits 24-31) = 2
+MaxSlots (bits 0-7)   = 100
+
+# /sys/bus/usb/devices/usb1/maxchild = 2
+# 監視されているポート: usb1-port1, usb1-port2 のみ
+
+# PORTSC4 = 0x206E1（CCS=1, PP=1, PLS=7 Polling）← ここに DT295
+```
+
+**xhci コントローラの `hcc params` が MaxPorts=2 と申告している。** そのため
+ドライバは PORTSC1/2 しか監視せず、PORTSC4 の接続（DT295）を処理できない。
+
+### 参考: dwc3 のレジスタ
+
+```
+GSNPSID    0xff50c120 = 0x5533320A   （dwc3 v3.30a）
+GHWPARAMS2 0xff50c110 = 0x30C01004
+GHWPARAMS4 0xff50c140 = 0x20208009
+GHWPARAMS5 0xff50c144 = 0x01E0C93B
+```
+
+MaxPorts は dwc3 の HWPARAMS に由来する。vendor DT は `portnum = 2` を持って
+いたので、ベンダーも 2 ポートとして扱っている可能性がある。
+
+### 未確認事項
+
+**vendor（Android）では xhci が何ポートとして登録されるか。** Android で
+`/sys/bus/usb/devices/usb1/maxchild` を読めば分かる。vendor も 2 なら、
+「4 番目のポートはハード的に存在するが、SoC の設定上は 2 ポート扱い」という
+ことになり、DT295 を PORTSC4 に挿すのは誤り（別のポートに挿すべき）。
+
+vendor が 4 ポートと認識しているなら、mainline 側の設定不足。
+
+### 現実的な次の一手
+
+**DT295 を別の物理ポートに挿す。** PORTSC1 か PORTSC2 に挿せば、xhci が監視して
+いるポートなので列挙される可能性が高い。これが最も簡単で確実な確認方法。
+
+物理ポートと PORTSC の対応は自明ではないため、順に試す必要がある。
