@@ -285,3 +285,49 @@ PIX_CHANNEL=17
 
 `pix-usb-reset` の対象は `_PIX_USB_GLUE=ffe09000.usb`。GXL 構成ではこのノードが
 glue なので整合している。
+
+## 追記（round 41）: NAS ノードを enabled にした
+
+### 見つけた問題
+
+3代目の NAS ノードが `enabled: false` だった。この状態では NAS が録画を開始しない。
+登録しただけで有効化されていなかった（round 20 で登録したが、その後の確認で
+`enabled` を見落としていた）。
+
+### 対応
+
+`/api/nodes` は既存 ID への POST を 409 で拒否し、PATCH/PUT は 404 だったため、
+DELETE → POST で入れ替えた。
+
+```sh
+curl -X DELETE http://192.168.99.80:40776/api/nodes/192.168.99.56-17
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.99.56","port":40774,"display":"X96Max-P3","channel":"17",
+       "enabled":true,"codec":"avc","width":1440,"height":1080,
+       "bitrate":6000000,"gopSec":2}' \
+  http://192.168.99.80:40776/api/nodes
+```
+
+結果:
+
+```
+enabled: True | state: error | ch: 17 | codec: avc
+size: 1440x1080 | bitrate: 6000000 | gopSec: 2
+```
+
+画質は2代目（`192.168.99.123-BS09_0`）と同値。`state: error` は STB が
+応答しないため（`stbError: unreachable`）。配信が始まれば `recording` になる。
+
+### 現在の到達点（round 41）
+
+| 項目 | 状態 |
+|---|---|
+| Linux RAM 起動（GXL DTB） | 達成。SSH 可 |
+| USB ホストコントローラ | 達成。xhci 稼働、例外 0 |
+| VBUS (VCC_5V) | enabled |
+| 録画設定（ch17/地上波/DT295） | 達成。実機で確認 |
+| NAS ノード | **enabled: true、画質は2代目と同等** |
+| DT295 の認識 | **未達（物理未接続）** |
+| 録画・NAS 保存・CM カット | 未達 |
+
+**DT295 を挿してサービスを再起動するだけで、録画の検証に入れる状態。**
