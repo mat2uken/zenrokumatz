@@ -296,3 +296,43 @@ pll-setting-8 = 0x000e000c
 **判断**: mainline の R17/R18 設定（`MPLL_LAMBDA1/LAMBDA0/FILTER_PVT*`、`LKW_SEL/LK_W/LK_S/...`）は G12A の標準値であり、同じ SoC 系なら妥当と考える。pll-setting-2..8 の差異が実際に問題になるかは**実機で `lsusb` に DT295 が出るかで判定するしかない**。
 
 つまり、これ以上ソフトウェア側で詰められる材料は尽きた。実機検証が唯一の次の手。
+
+## 追記（round 27）: glue 削除は成功、次段階の dwc3 コアで停止
+
+YMODEM で候補 DTB `meson-g12a-x96-max-p-usb.dtb` を実機へ搬入し（CRC32 一致）、
+SD から Image と initramfs を読んで起動した。
+
+### 例外の位置が変わった（前進の証拠）
+
+| DTB | 例外の発生箇所 |
+|---|---|
+| `-p-ephy-4g`（glue あり） | `dwc3_meson_g12a_usb2_init_phy`（glue の PHY 初期化） |
+| **`-p-usb`（glue 削除）** | **`dwc3_core_probe+0x96c/0x1600`** |
+
+**glue ドライバの関与は解消した。** 新しい例外は dwc3 コア自体のプローブ時。
+
+```
+Internal error: synchronous external abort: 0000000096000010 [#1] SMP
+pc : dwc3_core_probe+0x96c/0x1600
+Workqueue: events_unbound deferred_probe_work_func
+```
+
+`synchronous external abort` は、存在しない、または応答しないレジスタへのアクセスで
+起きる。`0xff500000` の dwc3 レジスタに触れた時点で発生していると考えられる。
+
+### 次の仮説
+
+glue を外したことで、`0xff500000` の dwc3 コントローラを**有効化する処理が誰も
+行わなくなった**可能性がある。vendor では `ffe09000.usb2phy` が PHY と一緒に
+dwc3 側の前提（クロック・リセット）を整えていた。
+
+検証には、Android で動いている vendor kernel の初期化順を真似る必要がある。
+
+### 選択肢
+
+1. `dwc3_core_probe` が触るアドレスを特定する（ソース上の +0x96c を逆アセンブル、
+   またはカーネルに printk を入れる）。
+2. vendor の初期化（`amlogic-new-usb2-v2`）を詳しく調べ、DTS で再現する。
+3. glue を残しつつ、u2p 書き込みだけを避けるパッチ（案 B）に戻る。
+
+現実的には 1 で原因を特定してから 2 か 3 を選ぶ。
