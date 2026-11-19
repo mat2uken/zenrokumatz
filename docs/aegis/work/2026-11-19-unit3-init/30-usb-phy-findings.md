@@ -1189,3 +1189,34 @@ Linux 側の 3 ポート制限（`hcs_params1` の MaxPorts=3）と、DT295 が 
 
 ビルドを進めている（`0003-xhci-extra-usb-port.patch` と GXL DTS の
 `amlogic,extra-usb-port`）。
+
+## 追記（round 52）: max_ports を 4 に増やすパッチの安全性確認
+
+`xhci->hw_ports` は `max_ports` 個の配列として確保される:
+
+```c
+/* xhci-mem.c, xhci_alloc_ports() 付近 */
+xhci->hw_ports = kcalloc_node(xhci->max_ports, sizeof(*xhci->hw_ports), ...);
+for (i = 0; i < xhci->max_ports; i++) { ... }
+```
+
+ポートのインデックスは xHCI 拡張ケーパビリティの `port_offset`（1 始まり）から
+`hw_ports[port_offset]` として使われる。`max_ports=4` なら `hw_ports[0..3]` が
+確保され、PORTSC4 は `hw_ports[3]` に対応する。**配列の範囲内で整合する。**
+
+PORTSC は `0x10` stride で連続している（`0xff500400` + n*0x10）。xhci は
+`xhci->cap_regs->port_status_base` から同じ stride で読むので、4 番目を読んでも
+未定義領域には触れない。
+
+したがって `amlogic,extra-usb-port` がある場合だけ `max_ports` を 4 に上げる
+パッチは安全と判断する。実機での確認が残っている。
+
+### 現在の成果物（SD へ書き込み済み）
+
+| ファイル | SHA-256（先頭） | 内容 |
+|---|---|---|
+| `Image` | `0c22a1a9` | xhci パッチ入り |
+| `meson-g12a-x96-max-p-gxl.dtb` | `d42958c7` | GXL glue + `amlogic,extra-usb-port` |
+
+`write-sd.py --update-boot` で 7 ファイルを書き込み、全ハッシュ一致を確認済み
+（sudo 不要）。
