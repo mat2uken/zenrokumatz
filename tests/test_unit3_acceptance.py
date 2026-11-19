@@ -175,3 +175,41 @@ class NasStage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WaitForTuner(unittest.TestCase):
+    """wait-for-dt295.py reports where the reception chain breaks.
+
+    The interesting cases are the failures: no tuner on the bus, and a service
+    that restarts but never pushes anything.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util as loader
+        from pathlib import Path as _Path
+        root = _Path(__file__).resolve().parents[1]
+        spec = loader.spec_from_file_location("waittool", root / "tools/wait-for-dt295.py")
+        cls.tool = loader.module_from_spec(spec)
+        spec.loader.exec_module(cls.tool)
+
+    def test_absent_tuner_fails_at_the_first_step(self):
+        with mock.patch.object(self.tool, "ssh", return_value=""):
+            ok, detail = self.tool.wait_for_usb("192.168.99.56", 0)
+        self.assertFalse(ok)
+        self.assertEqual(detail, "(no output)")
+
+    def test_present_tuner_is_detected_from_lsusb(self):
+        with mock.patch.object(self.tool, "ssh",
+                               return_value="Bus 001 Device 002: ID 06b8:103b Pixela Corp. PIX-DT295"):
+            ok, detail = self.tool.wait_for_usb("192.168.99.56", 0)
+        self.assertTrue(ok)
+        self.assertIn("06b8:103b", detail)
+
+    def test_step_reports_failure_and_success(self):
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertFalse(self.tool.step(1, "no tuner", False, "nothing"))
+        self.assertIn("FAIL 1. no tuner", out.getvalue())
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertTrue(self.tool.step(1, "tuner", True, ""))
+        self.assertIn("OK   1. tuner", out.getvalue())
