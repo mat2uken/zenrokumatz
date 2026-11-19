@@ -1798,3 +1798,60 @@ PPC パッチ（0003）も効いてポート電源制御が有効になる。DT2
 列挙される見込み。
 
 **未検証**: SD への書き込みと実機起動が必要。
+
+## 追記（round 68）: skip-glue-init で例外が消えた。PORTSC3 に接続を確認
+
+`skip-glue-init` パッチ（0004）入りのカーネルで起動した。
+
+### 結果: 例外なしで Linux 起動
+
+```
+[1.313451] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.862226] xhci-hcd xhci-hcd.0.auto: xHCI Host Controller
+[1.871432] xhci-hcd hcc params 0x0228fe64 hci version 0x110
+[1.880660] xhci-hcd irq 17, io mem 0xff500000
+x96max-p3 login:
+```
+
+**`usb_init_glue` の例外が消え、Linux が起動した。** SSH も通る。
+
+### PORTSC の実測（重要）
+
+```
+PORTSC1: CCS=0 PED=0 PP=0 PLS=0
+PORTSC2: CCS=0 PED=0 PP=0 PLS=0
+PORTSC3: CCS=1 PED=0 PP=1 PLS=7     ← DT295 がここ（vendor と同じポート）
+PORTSC4: CCS=0 PED=0 PP=1 PLS=5
+```
+
+**ポート番号が vendor と一致した！** 以前は PORTSC4 だったが、今回は PORTSC3。
+`skip-glue-init` によって glue の初期化がスキップされ、ポート番号の解釈が
+vendor と同じになったと考えられる。
+
+ただし `PED=0, PLS=7`（Polling）で列挙が完了していない。
+
+### PPC がまだ 0
+
+```
+hcc_params = 0x0228FE64   → HCC_PPC = 0（vendor は 0x0228FE6C）
+```
+
+**PPC パッチが発動していない。** 原因は `dev->of_node` が glue ノードではなく、
+`amlogic,port-power-control` が見えていないこと。
+
+glue ノード（`/sys/firmware/devicetree/base/soc/usb@ffe09000`）には
+`amlogic,port-power-control` と `amlogic,skip-glue-init` の両方が入っていることを
+実機で確認した。
+
+### 修正版パッチ（round 68 後半）
+
+PPC パッチを `of_find_compatible_node(NULL, NULL, "amlogic,meson-gxl-usb-ctrl")`
+で glue ノードを探す形に変更した。実ツリーから diff を取り直して生成し、
+4 パッチすべての適用を確認（`Image` = `6a9b20e4`）。
+
+### 期待
+
+PPC=1 になれば、xhci がポート電源を制御できるようになり、`PED=1, PLS=0`（U0）に
+遷移して DT295 が列挙される見込み。vendor の PORTSC3 は `0xE03`（PED=1, PLS=0）。
+
+**未検証**: SD への書き込みと起動。

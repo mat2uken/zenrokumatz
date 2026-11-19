@@ -1,30 +1,35 @@
 Boards that select the GXL glue variant never run usb3_init(), so the glue's
 USB_R1_U3H_HOST_PORT_POWER_CONTROL_PRESENT bit stays clear and HCC_PPC reads 0
-even though the controller really does switch port power.
+although the controller really does switch port power.
 
-Measured on this board: vendor firmware reports hcc_params 0x0228fe6c
-(PPC = 1) while mainline reports 0x0228fe64 (PPC = 0). The only difference is
-bit 3, HCC_PPC.
+Measured on this board: vendor reports hcc_params 0x0228fe6c (PPC = 1),
+mainline reports 0x0228fe64 (PPC = 0). Only bit 3 differs.
 
-Raise PPC for a platform that opts in with "amlogic,port-power-control",
-without writing the glue register (which faults on this board).
+The opt-in sits on the glue node, which is not the device xhci probes for,
+so it is looked up by compatible.
 
---- a/drivers/usb/host/xhci.c
-+++ b/drivers/usb/host/xhci.c
-@@ -5473,6 +5473,16 @@
+diff -ruN a/drivers/usb/host/xhci.c b/drivers/usb/host/xhci.c
+--- a/drivers/usb/host/xhci.c	2026-11-19 22:37:02
++++ b/drivers/usb/host/xhci.c	2026-11-19 22:37:02
+@@ -5474,6 +5474,21 @@
  	xhci->hcc_params = readl(&xhci->cap_regs->hcc_params);
  	if (xhci->hci_version > 0x100)
  		xhci->hcc_params2 = readl(&xhci->cap_regs->hcc_params2);
-+	/*
-+	 * Boards that select the GXL glue variant never run usb3_init(), so the
-+	 * glue's PORT_POWER_CONTROL_PRESENT bit stays clear and HCC_PPC reads 0
-+	 * although the controller does switch port power; vendor firmware on
-+	 * this board reports PPC = 1. Raise it here instead of writing the glue
-+	 * register, which faults on this board.
-+	 */
-+	if (dev->of_node &&
-+	    of_property_read_bool(dev->of_node, "amlogic,port-power-control"))
-+		xhci->hcc_params |= (1 << 3);
++	{
++		/*
++		 * Boards that select the GXL glue variant never run usb3_init(), so
++		 * the glue's PORT_POWER_CONTROL_PRESENT bit stays clear and HCC_PPC
++		 * reads 0 although the controller does switch port power (vendor
++		 * firmware reports PPC = 1). The opt-in lives on the glue node, not
++		 * on the dwc3 child that xhci probes for.
++		 */
++		struct device_node *glue =
++			of_find_compatible_node(NULL, NULL,
++						"amlogic,meson-gxl-usb-ctrl");
++		if (glue && of_property_read_bool(glue,
++						  "amlogic,port-power-control"))
++			xhci->hcc_params |= (1 << 3);
++	}
  
  	xhci->dma_mask_bits = 64;
  	xhci->max_slots = HCS_MAX_SLOTS(hcs_params1);
