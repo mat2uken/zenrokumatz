@@ -1542,3 +1542,56 @@ USB3 PHY が数えられていない。G12A の `meson_g12a_phy_names` は 3 個
 （usb2-phy0, usb2-phy1, usb3-phy0）で `USB3 ports: 1` になる。
 
 **G12A の PHY リストで GXL の regmap を使う組み合わせが必要かもしれない。**
+
+## 追記（round 62）: 決定打。hcc_params の PPC ビットが vendor=1 / Linux=0
+
+### 実測比較
+
+```
+vendor  hcc_params (0xff500010) = 0x0228FE6C
+Linux   hcc_params               = 0x0228FE64
+差分                             = 0x00000008  → bit 3 のみ
+```
+
+| ビット | 意味 | vendor | Linux |
+|---|---|---|---|
+| bit 3 | **PPC (Port Power Control)** | **1** | **0** |
+| bit 2 | CIC | 1 | 1 |
+| 24-31 | MaxPorts | 2 | 2 |
+
+### これが全現象を説明する
+
+xHCI の `PPC`（Port Power Control）は「ハードウェアがポート電源を制御できるか」
+を示す。**PPC=0 のとき、ソフトウェアは PP ビットを操作できず、電源は常時 ON
+とみなされる。** ところが実機の PORTSC は PP=0 なので、実際にはポートに給電され
+ない。
+
+PPC は xHCI の HCCPARAMS1 ではなく、**glue の `USB_R1` の
+`USB_R1_U3H_HOST_PORT_POWER_CONTROL_PRESENT`（bit 17）** から来る。mainline の
+`dwc3_meson_g12a_usb3_init()` がこれを立てるが、GXL 経路では `USB3 ports: 0` の
+ため `usb3_init` が呼ばれず、**ビットが立たない**。
+
+```
+G12A: usb3_ports=1 → usb3_init() → PORT_POWER_CONTROL_PRESENT=1 → PPC=1
+GXL : usb3_ports=0 → usb3_init() を呼ばない → PPC=0 → ポート給電されない
+```
+
+### PORTSC の食い違いも説明できる
+
+vendor では PORTSC3 にデバイスがあり PED=1、PLS=0（U0）。Linux では PORTSC4 に
+見え、PED=0、PLS=7（Polling）。**PPC の有無で電源制御の経路が変わり、ポート
+番号の解釈も変わる**と考えられる。
+
+### 対策（本命）
+
+`usb3_init()` 相当の処理、すなわち `USB_R1` の bit 17 を立てるだけでよい可能性が
+高い。ただし GXL の glue regmap は `base`（`0xffe09000`）で、`USB_R1` は
+`0xffe09004`。round 54/55 ではこの書き込みで例外が出た。**書けるタイミングが
+ある**（round 37 では通った）。
+
+代替案として、`USB_R1` を書かずに xHCI の `hcc_params` の PPC ビットだけを
+ソフトウェアで立てる方法がある。xhci は `hcc_params` を読み取り専用として扱うが、
+`xhci->hcc_params` のキャッシュ値を書き換えることは可能。カーネルパッチで
+`xhci->hcc_params |= HCC_PPC` とすれば、PP を操作できるようになる。
+
+こちらの方が glue レジスタを触らないため安全。
