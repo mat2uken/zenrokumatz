@@ -94,3 +94,43 @@ PIX_CAPTURE_SECONDS=1800
 
 - **NAS に `192.168.99.56-17`（X96Max-Plus2、テレビ静岡）という古いノードが残っている。** 3代目が同じ IP を使うため、登録前に削除が必要。放置すると名前・チャンネル割当が衝突する。
 - 3代目の設定は意図的に2代目と差分がある（地上波・ch17・衛星オプション無し）。「同等」は画質・安定性・保存の成立で判定し、チャンネルとチューナー系の値は合わせない。
+
+## 追記（round 79）: NAS 側の設定は2代目と完全一致
+
+### 比較（`/api/nodes`）
+
+| 項目 | 2代目 `192.168.99.123-BS09_0` | 3代目 `192.168.99.56-17` |
+|---|---|---|
+| codec | avc | avc |
+| width | 1440 | 1440 |
+| height | 1080 | 1080 |
+| bitrate | 6000000 | 6000000 |
+| rateMode | vbr | vbr |
+| gopSec | 2 | 2 |
+| enabled | true | true |
+| recording | **true** | false |
+| state | recording | error |
+| stb | **ok** | **unreachable** |
+
+**画質設定は完全に一致。** 3代目が `error` なのは STB（機体）が停止しているため。
+起動して配信が始まれば `stb: ok` → `recording: true` になる見込み。
+
+### 2代目の正常時の状態（参照値）
+
+```
+recording: true
+stb.status: ok
+stb.capturing: true
+channelName: ＢＳ１１イレブン
+```
+
+3代目で `stb.status: ok` と `stb.capturing: true` が出れば、録画が成立している。
+
+### CM スキップについて
+
+端末側（`board/x96max/overlay/usr/bin/`）に CM 関連のスクリプトは無く、
+`/etc/default/pix-stream-linux` にも CM 設定は無い。NAS 側の API にも
+`api/cm` / `api/chapters` は存在しない（404）。
+
+**CM 処理は NAS の別機能（録画後のバッチ処理など）と考えられる。**
+録画が成立してから、NAS 側で CM が付くかを実際の録画ファイルで確認する。
