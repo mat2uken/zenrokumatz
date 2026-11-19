@@ -32,6 +32,9 @@ exec >>/tmp/pix-simple.log 2>&1
 # pass. Enable it for a unit whose NAS records with CM chapters.
 : "${PIX_FEATURES:=0}"
 : "${PIX_FEATURE_MAX_MB:=384}"
+# Analysis must never take the recording down with it: after this many failed
+# attempts the sideband is dropped for the rest of the run.
+: "${PIX_FEATURE_FAILURES:=3}"
 : "${PIX_LOG_DIR:=/tmp}"
 : "${PIX_TUNER:=dt295}"
 : "${PIX_SYSTEM:=bs}"
@@ -347,6 +350,7 @@ dt295_recover() {
 }
 
 fast_fail=0
+feature_failures=0
 
 # 放送休止（空PAT）では番組が1つも乗らない。始めても黒画面を NAS に
 # 送るだけなので、開始前に短く確かめて待つ。
@@ -492,6 +496,18 @@ while [ ! -e "$STOPFILE" ]; do
         log "dt295: three quick failures in a row"
         dt295_recover || exit 1
         fast_fail=0
+    fi
+    # The sideband is optional. If analysis is what keeps failing, give it up
+    # rather than letting it stop the recording.
+    if [ "$PIX_FEATURES" = "1" ] && grep -qE "Error|error|Invalid|No such" /tmp/pix-ff1.log 2>/dev/null; then
+        feature_failures=$((feature_failures + 1))
+        if [ "$feature_failures" -ge "$PIX_FEATURE_FAILURES" ]; then
+            log "analysis failed ${feature_failures} times; disabling features for this run"
+            PIX_FEATURES=0
+            FEAT_ARGS=""
+        fi
+    else
+        feature_failures=0
     fi
     pause_retry 2
 done

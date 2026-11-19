@@ -330,6 +330,20 @@ class SimpleLauncherFeatures(unittest.TestCase):
         self.assertIn('-c:a copy -copyts -start_at_zero', encode)
         self.assertIn('if [ "$PIX_FEATURES" = "1" ]', encode)
 
+    def test_analysis_failure_drops_the_sideband_instead_of_the_recording(self):
+        """A broken analysis must not cost the recording.
+
+        The old launcher disabled features after PIX_FEATURE_FAILURES failed
+        attempts. Without that valve a filter error would keep failing the whole
+        pipeline, which on this board reaches the USB recovery path.
+        """
+        body = self.text()
+        self.assertIn('PIX_FEATURE_FAILURES:=3', body)
+        loop = body[body.index("while [ ! -e \"$STOPFILE\" ]; do\n    wait_for_tuner"):]
+        self.assertIn("feature_failures", loop)
+        self.assertIn("PIX_FEATURES=0", loop)
+        self.assertIn('FEAT_ARGS=""', loop)
+
     def test_the_analysis_uses_a_downscaled_copy(self):
         body = self.text()
         helper = body[body.index("encode_with_features() {"):]
