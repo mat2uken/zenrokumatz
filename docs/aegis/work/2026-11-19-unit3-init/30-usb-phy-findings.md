@@ -1897,3 +1897,57 @@ Linux の `maxchild=2` は、その範囲解釈の結果と思われる。
 
 PPC パッチの修正版（`Image` = `6a9b20e4`）を SD に書き込んで検証するのが
 最短。SD の接続待ち。
+
+## 追記（round 70）: 決定打。PSI のポート範囲が max_ports を超えて拒否されている
+
+### Linux と vendor の拡張ケーパビリティは完全に同一
+
+```
+0xff5008b0 = 0x02000402   USB2 Supported Protocol, NAME=2, NEXT=4
+0xff5008b8 = 0x00180201   PSI0: PSIV=1, PSIM=2, PSIH=0x18
+0xff5008c0 = 0x03000002   USB3 Supported Protocol, NAME=3, NEXT=0
+```
+
+**ハードウェアの値は vendor と同じ。** 違いはソフトウェアの解釈。
+
+### 原因のコード
+
+`drivers/usb/host/xhci-mem.c`、`xhci_add_in_port()`:
+
+```c
+port_offset = XHCI_EXT_PORT_OFF(temp);      /* = 2  */
+port_count  = XHCI_EXT_PORT_COUNT(temp);    /* = 24 */
+
+if (port_offset == 0 || (port_offset + port_count - 1) > num_ports)
+        /* 範囲外なので、この Protocol ケーパビリティを無視する */
+```
+
+- `XHCI_EXT_PORT_OFF(temp)` = PSI の bits 8-15 = **2**
+- `XHCI_EXT_PORT_COUNT(temp)` = PSI の bits 16-31 = **24**
+- `num_ports` = `xhci->max_ports` = **3**（`hcs_params1` の MaxPorts）
+
+`2 + 24 - 1 = 25 > 3` なので**拒否される**。USB2 の Protocol ケーパビリティが
+無視され、USB2 ロートハブが 2 ポートにならない（`maxchild=2` は USB3 側か、
+別の既定値）。
+
+### なぜ vendor は動くのか
+
+vendor の xhci はこのチェックが緩い、あるいは `num_ports` を 4 以上として
+扱っている可能性がある。vendor の `hcs_params1` も `MaxPorts=3` なので、
+**チェック自体が無いか、PSIH を別解釈している**と考えられる。
+
+### 対策
+
+`num_ports`（`xhci->max_ports`）を PSI の範囲に収まる値へ上げる。
+`2 + 24 - 1 = 25` を満たすには 25 以上必要だが、実際のレジスタは 4 つしかない。
+
+**現実的には、`port_count` の解釈を変えるか、チェックを緩めるパッチ。**
+ただし `port_count=24` は明らかに異常値（実ポートは 3〜4）。
+
+考えられるのは、PSIH の意味の取り違え。xHCI 仕様では PSI の bits 16-31 は
+「プロトコル速度の数」ではなく、ポート範囲の**最高ポート番号**を表す。
+`0x18 = 24` は vendor の DTS の `portnum = 2` と矛盾する。
+
+**vendor のドライバは、この PSI を無視して別の方法でポートを決めている**
+可能性が高い。mainline のチェックを通すには、`max_ports` を 25 以上にするか、
+PSI を読み替える必要がある。
