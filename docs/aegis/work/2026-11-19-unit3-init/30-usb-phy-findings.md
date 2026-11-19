@@ -1306,3 +1306,51 @@ dwc3_meson_g12a_usb_init_glue.isra.0+0x38/0x190
      挙動に影響するとは考えにくいが、検証する価値はある。
    - 出る → round 37 は偶発。Image の差（パッチ）を疑う。
 2. 必要なら、xhci パッチを外した Image で同じ DTB を試す。
+
+## 追記（round 56）: round 37 の成功時は dwc2 が先に初期化されていた
+
+### ログの時刻比較
+
+**round 37（成功）**
+
+```
+[1.322276] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.323384] dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+[1.865640] dwc2 ff400000.usb: supply vusb_d not found, using dummy regulator
+[1.874424] dwc2 ff400000.usb: Configuration mismatch. dr_mode forced to device
+[1.881780] dwc2 ff400000.usb: EPs: 7, dedicated fifos, 712 entries in SPRAM
+[1.892690] xhci-hcd xhci-hcd.0.auto: xHCI Host Controller     ← 例外なし
+```
+
+**round 54/55（失敗）**
+
+```
+[1.305551] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.306626] dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+[1.311960] Internal error: synchronous external abort               ← 5ms 後に例外
+[1.461321] dwc3_meson_g12a_usb_init_glue.isra.0+0x38/0x190
+```
+
+### 差分
+
+round 37 では `USB3 ports: 0` の後 **0.54 秒の間隔**があり、その間に **dwc2 の初期化が完了**してから xhci が登録された。今回はいきなり `usb_init_glue` で例外。
+
+つまり round 37 では `USB_R1` への書き込みが**成功している**。同じコードが同じアドレスに書いて、あるときは成功し、あるときは失敗する。
+
+**考えられる説明:**
+
+1. **dwc2 の初期化が glue レジスタを先に整えていた。** dwc2（`ff400000.usb`）は
+   `usb2_phy1` を使い、その `phy_init` が `0xffe09000` 帯に触れる。これが先に走ると
+   `USB_R1` が書ける状態になる、という依存関係。
+2. round 37 と 54 で **probe の順序が変わった**（カーネル再ビルドによる）。dwc2 が
+   先か dwc3 が先かで結果が変わる。
+3. `extra-usb-port` の追加が DTB のノード順を変え、probe 順に影響した。
+
+### 次の検証（優先順）
+
+1. `-noextra` DTB（51,133 バイト、round 37 と同サイズ）で起動する。probe 順が
+   round 37 と同じになるか、例外が出るかを見る。
+2. 出ないなら `extra-usb-port` の追加が probe 順を変えたことになる。DTB から
+   外し、xhci のポート数は別の方法（カーネル側で固定）で扱う。
+3. 出るなら round 37 の成功は別要因。dwc2 の初期化順を明示的に制御する
+   （DTS の順序、または `dwc2` を確実に先に probe させる）。
