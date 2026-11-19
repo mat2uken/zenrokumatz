@@ -2001,3 +2001,37 @@ USB3 ポート（PORTSC3）に挿さっており、vendor も Linux も同じ番
 
 PPC パッチ（修正版、`Image` = `6a9b20e4`）で PPC=1 にすれば、USB3 ポートの
 電源制御が有効になり、`PED=1, PLS=0` に遷移する見込み。SD への書き込みが必要。
+
+## 追記（round 72）: USB3 ports: 0 が PORTSC3 の有効化を妨げている可能性
+
+### 実測
+
+```
+dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+dwc3-meson-g12a ffe09000.usb: USB3 ports: 0     ← vendor は 1
+
+bus1 (USB2) maxchild = 2
+bus2 (USB3) maxchild = 1
+```
+
+### 原因の候補
+
+`gxl_drvdata` は `meson_a1_phy_names`（`usb2-phy0`, `usb2-phy1` の 2 個）を使う。
+`dwc3_meson_g12a_get_phys` は `phy_names` に "usb3" を含むものだけを
+`usb3_ports` に数えるので、**`usb3-phy0` が無いため `USB3 ports: 0`** になる。
+
+G12A の `meson_g12a_phy_names` は 3 個（`usb3-phy0` を含む）で `USB3 ports: 1`。
+
+### パッチ案とリスク
+
+`meson_a1_phy_names` に `usb3-phy0` を足せば数えられるが、`num_phys` が 3 になり、
+`PHY_COUNT`（固定 3）の `phy_init` ループが `NULL` を踏む危険がある
+（A1 ボードのように USB3 PHY が無い場合）。**共有コードの変更なので採用しない。**
+
+### 優先順位の見直し
+
+既にビルド済みの **PPC 修正版（`Image` = `6a9b20e4`）** が未検証。PPC=1 に
+なれば、xhci がポート電源を制御できるようになり、PORTSC3 が `PED=1, PLS=0` に
+遷移する可能性がある。**まずこれを試す。**
+
+USB3 ports の件は、PPC で解決しない場合の次の候補として保留する。
