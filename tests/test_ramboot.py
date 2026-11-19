@@ -104,11 +104,59 @@ class BootCommands(unittest.TestCase):
     def test_saved_commands_fit_vendor_console(self):
         template = (ROOT / "board/x96max/ramboot-uboot.txt").read_text()
         lines = [line for line in template.splitlines() if line.startswith("setenv ")]
-        self.assertEqual(len(lines), 2)
+        self.assertEqual(len(lines), 3)
         for line in lines:
             self.assertLess(len(line.encode()), 500)
-        self.assertIn("run ram_boot_setup; if usb start; then if fatload", template)
-        self.assertIn("fi; fi; fi; fi'", template)
+        self.assertIn("for ram_try in 1 2 3", template)
+        self.assertIn("if usb start; then sleep 3; run ram_boot_load", template)
+        self.assertIn("fi; fi; fi'", template)
+
+    def mock_saved_boot(self, fail_file="", failing_attempts=0):
+        # Execute the actual hush-compatible recipe with shell boundary mocks.
+        # BOOT represents the non-returning handoff, not a real kernel start.
+        template = (ROOT / "board/x96max/ramboot-uboot.txt").read_text()
+        prefix = r'''
+setenv() { local key=$1; shift; printf -v "$key" '%s' "$*"; }
+run() { eval "${!1}"; }
+attempt=0
+usb() { echo "USB $*"; if [ "$1" = start ]; then attempt=$((attempt+1)); fi; }
+sleep() { echo "WAIT $1"; }
+fatload() {
+    echo "LOAD $attempt $4"
+    [ "$4" != "$FAIL_FILE" ] || [ "$attempt" -gt "$FAILING_ATTEMPTS" ]
+}
+booti() { echo BOOT; exit 0; }
+'''
+        return subprocess.run(["bash", "-c", prefix + template], text=True,
+                              capture_output=True, timeout=5,
+                              env=dict(os.environ, FAIL_FILE=fail_file,
+                                       FAILING_ATTEMPTS=str(failing_attempts)))
+
+    def test_saved_usb_boot_waits_and_recovers_transient_enumeration(self):
+        result = self.mock_saved_boot("Image", 2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("USB start"), 3)
+        self.assertEqual(result.stdout.count("USB reset"), 2)
+        self.assertEqual(result.stdout.count("WAIT 3"), 3)
+        self.assertEqual(result.stdout.count("BOOT"), 1)
+        self.assertIn("LOAD 3 rootfs.cpio.uboot\nBOOT", result.stdout)
+
+    def test_saved_usb_boot_never_uses_partial_or_stale_loads(self):
+        for filename in ("Image", "meson-g12a-x96-max-p-ephy-4g.dtb", "rootfs.cpio.uboot"):
+            with self.subTest(filename=filename):
+                result = self.mock_saved_boot(filename, 3)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("BOOT", result.stdout)
+                self.assertEqual(result.stdout.count("USB start"), 3)
+                self.assertEqual(result.stdout.count("USB reset"), 2)
+                self.assertIn("ERROR: RAM boot failed", result.stdout)
+
+    def test_saved_usb_boot_does_not_reset_after_success(self):
+        result = self.mock_saved_boot()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("USB start"), 1)
+        self.assertNotIn("USB reset", result.stdout)
+        self.assertTrue(result.stdout.endswith("BOOT\n"))
 
     def test_saved_unit1_commands_are_sd_only_and_fit_vendor_console(self):
         template = (ROOT / "board/x96max/ramboot-unit1-uboot.txt").read_text()
@@ -155,6 +203,7 @@ class Startup(unittest.TestCase):
     def run_start(self, tuner, decrypt, card_present=False, expected_status=0):
         with tempfile.TemporaryDirectory() as d, socket.socket(socket.AF_UNIX) as card:
             base = Path(d)
+            (base / 'run').mkdir()
             if card_present:
                 # A local fixture socket only; no receiver or network service.
                 card.bind(str(base / "card.sock"))
@@ -164,15 +213,29 @@ class Startup(unittest.TestCase):
                 "/etc/default/pix-stream-linux": str(base / "defaults"),
                 "/dev/shm/torne/card.sock": str(base / "card.sock"),
                 "/dev/shm/pix": str(base / "pix"),
-                "/var/run/pix-stream.pid": str(base / "pid"),
+                "/var/run/": str(base / "run") + "/",
+                "/tmp/pix-stream.out": str(base / "stream.out"),
+                "/run/pix-usb-reset.lock": str(base / "reset.lock"),
             }.items():
                 text = text.replace(old, new)
             # Report launcher arguments without executing hardware/service code.
             text = text.replace("start-stop-daemon", "mock_daemon")
-            text = text.replace("start() {", 'sleep() { :; }\nmock_daemon() { printf "LAUNCHED %s\\n" "$*"; }\nstart() {', 1)
-            result = subprocess.run(["sh", "-c", text, "startup-test", "start"], capture_output=True, text=True)
-            self.assertEqual(result.returncode, expected_status, result.stderr)
-            return result.stdout
+            trace = base / 'launch.trace'
+            mocks = '''sleep() { :; }
+alive() { [ -n "$1" ]; }
+owned() { return 0; }
+mock_daemon() {
+    printf 'LAUNCHED %s\\n' "$*" >> "$TRACE"
+    printf '12345\\n' > "$PIDFILE"
+    mkdir -p "$OWNER"
+    printf '12345\\n' > "$OWNER/pid"
+}
+start() {'''
+            text = text.replace("start() {", mocks, 1)
+            result = subprocess.run(["sh", "-c", text, "startup-test", "start"], capture_output=True, text=True,
+                                    timeout=5, env=dict(os.environ, TRACE=str(trace)))
+            self.assertEqual(result.returncode, expected_status, result.stderr + result.stdout)
+            return result.stdout + (trace.read_text() if trace.exists() else '')
 
     def test_dt295_internal_card_always_selects_simple(self):
         for present in (False, True):
@@ -183,8 +246,8 @@ class Startup(unittest.TestCase):
                 self.assertNotIn("-x /usr/bin/pix-stream-linux", out)
 
     def test_external_decrypt_still_waits_for_card(self):
-        out = self.run_start("dt295", 1)
-        self.assertIn("skipped", out)
+        out = self.run_start("dt295", 1, expected_status=1)
+        self.assertIn("card socket is still missing", out)
         self.assertNotIn("LAUNCHED", out)
         self.assertIn("-x /usr/bin/pix-stream-simple", self.run_start("dt295", 1, True))
 
@@ -192,12 +255,12 @@ class Startup(unittest.TestCase):
         for tuner in ("pxs1ud", "torne"):
             for decrypt in (0, 1):
                 with self.subTest(tuner=tuner, decrypt=decrypt):
-                    out = self.run_start(tuner, decrypt)
-                    self.assertIn("skipped", out)
+                    out = self.run_start(tuner, decrypt, expected_status=1)
+                    self.assertIn("card socket is still missing", out)
                     self.assertNotIn("LAUNCHED", out)
                     out = self.run_start(tuner, decrypt, True)
                     self.assertIn("LAUNCHED", out)
-                    self.assertIn("-x /usr/bin/pix-stream-linux", out)
+                    self.assertIn("-x /usr/bin/setsid -- /usr/bin/pix-stream-linux", out)
                     self.assertNotIn("-x /usr/bin/pix-stream-simple", out)
 
     def test_unknown_tuner_never_starts_a_daemon(self):
@@ -314,11 +377,16 @@ class Archive(unittest.TestCase):
         self.assertEqual(len(overlay_line.split()), 2)
 
     def test_installed_launchers_match_current_source(self):
-        for name in ("etc/init.d/S96bcas", "etc/init.d/S97pix-stream", "etc/init.d/S98pix-logo",
+        self.assertNotIn("etc/init.d/S95pix-stream", self.entries, "obsolete service survived cached overlay")
+        for name in ("etc/init.d/S41settime", "etc/init.d/S96bcas", "etc/init.d/S97pix-stream", "etc/init.d/S98pix-logo",
+                     "etc/init.d/S99pix-shutdown", "usr/bin/pix-dt295-reset",
                      "usr/bin/pix-stream-linux", "usr/bin/pix-stream-simple", "usr/bin/pix-usb-reset-common",
                      "usr/bin/pix-logo-fetch", "usr/bin/pix-logo-weekly"):
             expected = (ROOT / "board/x96max/overlay" / name).read_bytes()
             self.assertTrue(self.entries[name][1] == expected, f"stale launcher in archive: {name}")
+            self.assertTrue(stat.S_ISREG(self.entries[name][0][1]), name)
+            if name != "usr/bin/pix-usb-reset-common":  # sourced library, not a launcher
+                self.assertTrue(self.entries[name][0][1] & 0o111, f"non-executable launcher: {name}")
 
     def test_services_and_unit_profile(self):
         for name in ("usr/bin/stb_streamer", "usr/bin/eit_watch", "usr/bin/pix-ts-legacy", "usr/bin/ffmpeg", "usr/bin/pix-usb-reset-common"):

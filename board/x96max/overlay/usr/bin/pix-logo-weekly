@@ -19,7 +19,10 @@ export TZ
 DEFAULTS=/etc/default/pix-stream-linux
 LOG=${PIX_LOGO_LOG:-/tmp/pix-logo.log}
 STATE=${PIX_LOGO_DIR:-/var/lib/pix/logos}/.weekly
-FETCH=/usr/bin/pix-logo-fetch
+FETCH=${PIX_LOGO_FETCH:-/usr/bin/pix-logo-fetch}
+OWNER=/var/run/pix-logo-weekly.owner
+STOPFILE=/var/run/pix-logo.stopped
+child=""
 # 2025 年より前は時計が合っていないとみなす (RTC が無いので起動直後は 1970)。
 CLOCK_MIN=1735689600
 # 最小の待ち受け回数。時計が飛んでも指定の時刻帯でだけ走る。
@@ -43,16 +46,63 @@ if [ ! -x "$FETCH" ]; then
     log "$FETCH is missing; nothing to schedule"
 fi
 
+# Keep the child asynchronous so TERM interrupts wait, rather than being
+# deferred until a foreground fetch (up to 900s) or 6-hour sleep completes.
+run_child() {
+    [ ! -e "$STOPFILE" ] || return 1
+    "$@" &
+    child=$!
+    wait "$child"
+    child_status=$?
+    child=""
+    return "$child_status"
+}
+cleanup() {
+    status=$?
+    trap - EXIT
+    trap '' INT TERM
+    failed=0
+    if [ -n "$child" ]; then
+        kill -TERM "$child" 2>/dev/null || true
+        waited=0
+        while kill -0 "$child" 2>/dev/null && [ "$waited" -lt 45 ]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$child" 2>/dev/null; then
+            kill -KILL "$child" 2>/dev/null || true
+            failed=1
+        else
+            wait "$child" 2>/dev/null
+            child_status=$?
+            log "child exited with status $child_status (fetch lock governs tuner exclusion)"
+        fi
+    fi
+    if [ "$failed" = 0 ]; then
+        rm -f "$OWNER/pid"
+        rmdir "$OWNER" || status=1
+    else
+        log "child teardown failed; retaining ownership"
+        status=1
+    fi
+    exit "$status"
+}
+[ ! -e "$STOPFILE" ] || exit 1
+mkdir "$OWNER" 2>/dev/null || { log 'scheduler already owned'; exit 1; }
+trap cleanup EXIT
+trap 'exit 143' INT TERM
+echo "$$" > "$OWNER/pid" || exit 1
+
 log "scheduled for weekday $day at ${hour}時台 (wait ${wait_seconds}s), poll ${SLEEP_SECONDS}s"
 
-while :; do
+while [ ! -e "$STOPFILE" ]; do
     now=$(date +%s 2>/dev/null || echo 0)
     if [ "$now" -lt "$CLOCK_MIN" ]; then
-        sleep "$SLEEP_SECONDS"
+        run_child sleep "$SLEEP_SECONDS"
         continue
     fi
     if [ "${PIX_LOGO_WEEKLY:-1}" != "1" ] || [ ! -x "$FETCH" ]; then
-        sleep "$SLEEP_SECONDS"
+        run_child sleep "$SLEEP_SECONDS"
         continue
     fi
     week=$(date +%G-%V)
@@ -60,10 +110,10 @@ while :; do
     today=$(date +%u)
     this_hour=$(date +%H)
     if [ "$done_week" != "$week" ] && [ "$today" = "$day" ] &&
-       [ "$((10#$this_hour))" = "$((10#$hour))" ]; then
+       [ "$(expr "$this_hour" + 0)" = "$(expr "$hour" + 0)" ]; then
         log "starting the weekly logo fetch (week $week)"
         started=$(date +%s)
-        "$FETCH" --force --wait "$wait_seconds"
+        run_child "$FETCH" --force --wait "$wait_seconds"
         status=$?
         elapsed=$(( $(date +%s) - started ))
         mkdir -p "${PIX_LOGO_DIR:-/var/lib/pix/logos}"
@@ -82,9 +132,9 @@ while :; do
             # 失敗した週は 6 時間後に 1 度だけやり直す (録画への影響を抑えるため
             # 同じ週に何度も止めない: done_week を書かないので条件は満たすが、
             # 時刻帯を外れると走らない)。
-            sleep 21600
+            run_child sleep 21600
             continue
         fi
     fi
-    sleep "$SLEEP_SECONDS"
+    run_child sleep "$SLEEP_SECONDS"
 done

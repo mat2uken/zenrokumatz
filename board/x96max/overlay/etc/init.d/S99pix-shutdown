@@ -1,0 +1,8 @@
+#!/bin/sh
+# rcK stops services in reverse order: inhibit recording restoration before
+# S98 cancels logo fetching, then let S97 perform the actual stream teardown.
+case "$1" in
+    start) exit 0 ;;
+    stop) exec /etc/init.d/S97pix-stream inhibit ;;
+    *) echo "Usage: $0 {start|stop}"; exit 1 ;;
+esac

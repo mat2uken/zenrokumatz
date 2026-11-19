@@ -24,3 +24,5 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-11-18 | plan | docs/aegis/plans/2026-11-18-ram-rootfs.md | 2代目RAM rootfsの既存設計と実機記録 |
 | 2026-11-18 | artifact | docs/aegis/work/2026-11-18-unit1-ram-rootfs/gate-input-pack.json | 2026-11-18-unit1-ram-rootfs gate input pack |
 | 2026-11-18 | work | docs/aegis/work/2026-11-18-unit1-ram-rootfs/proof-bundle.md | 2026-11-18-unit1-ram-rootfs proof bundle |
+| 2026-11-19 | intent | docs/aegis/work/2026-11-18-restart-reliability/10-intent.md | 2台目X96Max 再起動・録画再開信頼性 |
+| 2026-11-19 | checkpoint | docs/aegis/work/2026-11-18-restart-reliability/20-checkpoint.md | native-first終了/native再開検証記録 |

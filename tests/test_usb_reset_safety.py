@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -246,6 +247,75 @@ _pix_usb_write_control() {{
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.events.read_text(), "stop\nunbind\nbind\n")
 
+    def test_term_immediately_after_unbind_still_rebinds_once(self):
+        result = self.shell(prefix=f"""
+_pix_usb_write_control() {{
+    echo "$1" >> {shlex.quote(str(self.events))}
+    if [ "$1" = unbind ]; then
+        # Only this fixture helper's subshell receives TERM, never its group.
+        {shlex.quote(sys.executable)} -c 'import os, signal; os.kill(os.getppid(), signal.SIGTERM)'
+    fi
+}}
+""")
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.events.read_text(), "stop\nunbind\nbind\n")
+        self.assertFalse((self.run / "pix-usb-reset.lock").exists())
+
+    def test_interrupted_unbound_delay_still_rebinds_once(self):
+        result = self.shell(prefix=f"""
+_pix_usb_write_control() {{ echo "$1" >> {shlex.quote(str(self.events))}; }}
+sleep() {{ return 1; }}
+""")
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.events.read_text(), "stop\nunbind\nbind\n")
+        self.assertFalse((self.run / "pix-usb-reset.lock").exists())
+
+    def test_cancel_before_unbind_never_touches_controller(self):
+        result = self.shell(prefix=f"""
+stop_pipeline() {{ {shlex.quote(sys.executable)} -c 'import os, signal; os.kill(os.getppid(), signal.SIGTERM)'; }}
+_pix_usb_write_control() {{ echo "$1" >> {shlex.quote(str(self.events))}; }}
+""")
+        self.assert_refused(result)
+
+    def test_cancel_after_callback_never_repeats_preflight(self):
+        result = self.shell(prefix=f"""
+_pix_usb_guard() {{ echo guard >> {shlex.quote(str(self.events))}; }}
+stop_pipeline() {{ {shlex.quote(sys.executable)} -c 'import os, signal; os.kill(os.getppid(), signal.SIGTERM)'; }}
+_pix_usb_write_control() {{ echo "$1" >> {shlex.quote(str(self.events))}; }}
+""")
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.events.read_text(), 'guard\n')
+        self.assertFalse((self.run / 'pix-usb-reset.lock').exists())
+
+    def test_cancel_before_bind_write_still_completes_one_bind(self):
+        result = self.shell(prefix=f"""
+_pix_usb_write_control() {{
+    if [ "$1" = bind ]; then
+        {shlex.quote(sys.executable)} -c 'import os, signal; os.kill(os.getppid(), signal.SIGTERM)'
+    fi
+    echo "$1" >> {shlex.quote(str(self.events))}
+}}
+""")
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.events.read_text(), 'stop\nunbind\nbind\n')
+        self.assertFalse((self.run / 'pix-usb-reset.lock').exists())
+
+    def test_second_cancel_cannot_interrupt_compensating_bind(self):
+        result = self.shell(prefix=f"""
+sleep() {{ return 1; }}
+_pix_usb_write_control() {{
+    if [ "$1" = bind ]; then
+        echo bind-start >> {shlex.quote(str(self.events))}
+        [ -d {shlex.quote(str(self.run / 'pix-usb-reset.lock'))} ] || return 1
+        {shlex.quote(sys.executable)} -c 'import os, signal; os.kill(os.getppid(), signal.SIGTERM)'
+    fi
+    echo "$1" >> {shlex.quote(str(self.events))}
+}}
+""")
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.events.read_text(), 'stop\nunbind\nbind-start\nbind\n')
+        self.assertFalse((self.run / 'pix-usb-reset.lock').exists())
+
     def test_enumeration_failure_stops(self):
         result = self.shell(prefix='_pix_usb_enumerated() { return 1; }')
         self.assertNotEqual(result.returncode, 0, result.stderr)
@@ -306,7 +376,22 @@ pix_usb_reset stop_pipeline
         self.assert_reset(self.run_manual())
         self.assertEqual(self.events.read_text(), "stop\nstart\n")
 
-    def run_manual(self):
+    def test_manual_stop_failure_does_not_reset_or_restart(self):
+        result = self.run_manual(stop_status=1)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.events.read_text(), "stop\n")
+        self.assertEqual((self.driver / "unbind").read_text(), "")
+        self.assertFalse((self.run / "pix-usb-reset.state").exists())
+
+    def test_manual_reset_preserves_vendor_lock_inode(self):
+        lock = self.run / 'tuner.lock'
+        lock.write_text('the fcntl inode must survive\n')
+        inode = lock.stat().st_ino
+        self.assert_reset(self.run_manual())
+        self.assertEqual(lock.stat().st_ino, inode)
+        self.assertEqual(lock.read_text(), 'the fcntl inode must survive\n')
+
+    def run_manual(self, stop_status=0):
         # Replace only external boundary paths/commands, preserving script flow.
         script = (BIN / "pix-dt295-reset").read_text().replace(
             '. /usr/bin/pix-usb-reset-common || exit 1', self.setup_shell())
@@ -314,7 +399,8 @@ pix_usb_reset stop_pipeline
         script = script.replace('/var/run/pix-stream.pid', str(self.run / "pix-stream.pid"))
         script = script.replace('/tmp/pix-userland-dt295-0.lock', str(self.run / "tuner.lock"))
         service = self.base / "service"
-        service.write_text(f'#!/bin/sh\necho "$1" >> {shlex.quote(str(self.events))}\n')
+        service.write_text(f'#!/bin/sh\necho "$1" >> {shlex.quote(str(self.events))}\n'
+                           f'[ "$1" != stop ] || exit {stop_status}\n')
         service.chmod(0o700)
         prefix = 'id() { echo 0; }; ps() { :; };\n'
         return subprocess.run(["/bin/sh", "-c", prefix + script], text=True,
@@ -325,6 +411,7 @@ pix_usb_reset stop_pipeline
         function = script.split('dt295_recover() {', 1)[1].split('\n}', 1)[0]
         function = 'dt295_recover() {' + function + '\n}\n'
         prefix = f"""
+STOPFILE={shlex.quote(str(self.base / 'service.stopped'))}
 log() {{ :; }}
 cleanup_children() {{ echo cleanup >> {shlex.quote(str(self.events))}; }}
 rm() {{ echo remove-tuner-lock >> {shlex.quote(str(self.events))}; }}
@@ -332,8 +419,8 @@ pix_usb_reset() {{ echo guarded-reset >> {shlex.quote(str(self.events))}; return
 """
         result = self.shell(function + '\ndt295_recover', prefix=prefix)
         self.assertNotEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.events.read_text(), "cleanup\nremove-tuner-lock\nguarded-reset\n")
-        self.assertEqual(script.count('dt295_recover || exit 1'), 2)
+        self.assertEqual(self.events.read_text(), "cleanup\nguarded-reset\n")
+        self.assertNotIn('rm -f /tmp/pix-userland-dt295-0.lock', script)
         self.assertNotIn('usb1-port1', script)
         self.assertNotRegex(script, r'>[^\n]*(?:/unbind|/bind)')
 
@@ -357,7 +444,11 @@ pix_usb_reset() {{ echo guarded-reset >> {shlex.quote(str(self.events))}; return
         tuner = fakebin / 'pix-ts-legacy'
         tuner.write_text("#!/bin/sh\necho 'firmware could not be reset; a cold power cycle is required' >&2\nexit 1\n")
         tuner.chmod(0o700)
-        prefix = f'PATH={shlex.quote(str(fakebin))}:$PATH\\n' + """
+        # Exercise the real supervisor -> worker re-exec; macOS lacks setsid.
+        setsid = fakebin / 'setsid'
+        setsid.write_text(f'#!{sys.executable}\nimport os, sys\nos.setsid()\nos.execv(sys.argv[1], sys.argv[1:])\n')
+        setsid.chmod(0o700)
+        prefix = f'PATH={shlex.quote(str(fakebin))}:$PATH\n' + """
 ps() { :; }
 sleep() { :; }
 ffmpeg() { while IFS= read -r line; do :; done; }
@@ -368,7 +459,10 @@ date() { echo 1000; }
         # setup_shell defines sleep too; make any mistaken 5-minute suspension
         # fail deterministically instead of hanging the test or touching hardware.
         script = script.replace('sleep() { :; }', 'sleep() { [ "$1" != 300 ] || exit 87; }')
-        result = subprocess.run(["/bin/sh", "-c", prefix + script], text=True,
+        launcher = self.base / 'pix-stream-simple-fixture'
+        launcher.write_text('#!/bin/sh\n' + prefix + script)
+        launcher.chmod(0o700)
+        result = subprocess.run([str(launcher)], text=True,
                                 capture_output=True, timeout=15)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         log = (self.base / 'pix-simple.log').read_text()

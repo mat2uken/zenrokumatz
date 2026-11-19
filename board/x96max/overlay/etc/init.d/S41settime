@@ -6,6 +6,14 @@
 #
 # Runs before S40network only if the interface is already up; otherwise the
 # retry loop below covers the short gap while DHCP settles.
+# rcK calls every S?? script with "stop". Never contact the NAS or reset the
+# clock while shutting down; a missing NAS used to delay poweroff for minutes.
+case "${1:-}" in
+    start) ;;
+    stop) exit 0 ;;
+    *) echo "Usage: $0 {start|stop}" >&2; exit 1 ;;
+esac
+
 . /etc/default/pix-stream-linux 2>/dev/null || true
 : "${PIX_TIME_URL:=http://192.168.99.80:40776/api/time}"
 : "${PIX_LOG_DIR:=/tmp}"

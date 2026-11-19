@@ -19,7 +19,8 @@ set -u
 LOG=${PIX_LOGO_LOG:-/tmp/pix-logo.log}
 DEFAULTS=/etc/default/pix-stream-linux
 INIT=${PIX_LOGO_INIT:-/etc/init.d/S97pix-stream}
-PIDFILE=${PIX_LOGO_PIDFILE:-/var/run/pix-stream.pid}
+STOPFILE=/var/run/pix-stream.stopped
+LOGO_STOP=/var/run/pix-logo.stopped
 ASSETS=/usr/share/pix-tuner
 # 差し替えはテスト用 (scripts では既定のまま)
 PARSER=${PIX_LOGO_PARSER:-/usr/bin/pix-dt295-logo}
@@ -28,7 +29,6 @@ out=${PIX_LOGO_DIR:-/var/lib/pix/logos}
 wait_seconds=180
 force=0
 dry_run=0
-started_pipeline=0
 
 usage() {
     cat <<'TEXT'
@@ -57,14 +57,23 @@ done
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') pix-logo-fetch: $*" | tee -a "$LOG" >&2; }
 
-# 途中で殺されても録画を止めっぱなしにしない。止めたのが自分なら必ず戻す。
+# Manual cancellation restores a borrowed tuner; service shutdown never does.
 # restore_note には「何秒失ったか」を入れておく (中断時は空)。
 restore_note=""
 restore_pipeline() {
-    if [ "${started_pipeline:-0}" = "1" ]; then
-        started_pipeline=0
-        log "restarting the pipeline${restore_note:+ ($restore_note)}"
-        "$INIT" start >>"$LOG" 2>&1 || log "restart failed; run $INIT start"
+    # Every released borrowing owner inherits desired-running intent, even if
+    # cancelled before pause. Only S97's desired-stop fence can revoke it.
+    if [ -e "$STOPFILE" ]; then
+        log 'stop requested; leaving the pipeline stopped'
+        return 0
+    fi
+    log "restarting the pipeline${restore_note:+ ($restore_note)}"
+    # resume checks the fence under S97's control lock; a shutdown racing
+    # this check cannot be undone by restoration.
+    if ! "$INIT" resume >>"$LOG" 2>&1; then
+        [ -e "$STOPFILE" ] && return 0
+        log "resume returned nonzero; verify recording before retrying $INIT start"
+        return 1
     fi
 }
 
@@ -88,11 +97,6 @@ for binary in "$PARSER" "$CAPTURE"; do
     fi
 done
 
-pipeline_running() {
-    pid=$(cat "$PIDFILE" 2>/dev/null)
-    [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null
-}
-
 if [ "$dry_run" = "0" ] && [ "$force" = "0" ]; then
     log "recording stops while the logos are fetched; rerun with --force"
     exit 2
@@ -102,10 +106,10 @@ capture_cmd="$CAPTURE --model dt295 --assets $ASSETS -s bs -c $channel --tsid $t
 parse_cmd="$PARSER --out $out --wait $wait_seconds --system bs --tsid $tsid"
 
 if [ "$dry_run" = "1" ]; then
-    echo "1. stop:    $INIT stop   (recording is interrupted)"
+    echo "1. stop:    $INIT pause  (recording is interrupted)"
     echo "2. capture: $capture_cmd \\"
     echo "            | $parse_cmd"
-    echo "3. restart: $INIT start"
+    echo "3. restart: $INIT resume (unless service stop was requested)"
     exit 0
 fi
 
@@ -116,34 +120,89 @@ fi
 
 # Serialize manual and scheduled fetches before either can stop recording.
 fetch_lock=${PIX_LOGO_LOCK:-/var/run/pix-logo-fetch.lock}
-if ! mkdir "$fetch_lock" 2>/dev/null; then
+# Prepare cleanup before acquiring ownership; no successful mkdir may be
+# followed by a default TERM exit before cleanup has been installed.
+# One EXIT trap owns capture teardown, lock release, then restoration.
+# A parser exit must not leave a still-closing tuner behind.
+pipeline=""
+stop_capture() {
+    [ -n "$pipeline" ] || return 0
+    # Native capture handles INT; its forked TS/diagnostic writers ignore INT.
+    # TERM would abort those helpers before the final END/ACK can be emitted.
+    kill -INT -"$pipeline" 2>/dev/null || true
+    kill -INT "$pipeline" 2>/dev/null || true
+    waited=0
+    while kill -0 -"$pipeline" 2>/dev/null || kill -0 "$pipeline" 2>/dev/null; do
+        [ "$waited" -lt 35 ] || break
+        sleep 1
+        waited=$((waited + 1))
+    done
+    result=0
+    if kill -0 -"$pipeline" 2>/dev/null || kill -0 "$pipeline" 2>/dev/null; then
+        kill -KILL -"$pipeline" 2>/dev/null || true
+        kill -KILL "$pipeline" 2>/dev/null || true
+        result=1
+        waited=0
+        while kill -0 -"$pipeline" 2>/dev/null || kill -0 "$pipeline" 2>/dev/null; do
+            [ "$waited" -lt 5 ] || break
+            sleep 1
+            waited=$((waited + 1))
+        done
+    fi
+    if kill -0 -"$pipeline" 2>/dev/null || kill -0 "$pipeline" 2>/dev/null; then
+        return 1
+    fi
+    wait "$pipeline" 2>/dev/null || true
+    pipeline=""
+    return "$result"
+}
+release() {
+    status=$?
+    trap - EXIT
+    # Catch rather than ignore: ignored dispositions survive exec and would
+    # make the resumed init/service inherit an uncatchable ignored TERM.
+    trap ':' INT TERM
+    if stop_capture; then
+        # Once the capture is completely gone, release borrowing exclusion
+        # before resume. Ordinary starts need no exception to that exclusion.
+        if rm -f "$fetch_lock/pid" && rmdir "$fetch_lock" 2>/dev/null; then
+            restore_pipeline || status=1
+        else
+            status=1
+        fi
+    else
+        # Fail closed, not a late recorder restart over a live capture.
+        log 'capture teardown failed; keeping fetch lock and pipeline stopped'
+        status=1
+    fi
+    exit "$status"
+}
+# Defer cancellation only across acquisition and PID publication. Busy/dry-run
+# callers never install the EXIT owner trap and cannot release another owner.
+cancelled=0
+trap 'cancelled=1' INT TERM
+# A group-delivered signal must not kill mkdir after it created the directory
+# but before reporting success. Ignore only in this acquisition-only child.
+if ! (trap '' INT TERM; mkdir "$fetch_lock" 2>/dev/null); then
     log "logo fetch lock is busy; recording was not interrupted"
     exit 1
 fi
-# One EXIT trap for everything: give the recorder back AND drop the lock.
-# (A second `trap ... 0` later would silently replace this one.)
-release() {
-    restore_pipeline
-    rmdir "${fetch_lock:-/nonexistent}" 2>/dev/null || true
-}
-interrupted() {
-    # The capture is a session of its own: kill the whole group, then let the
-    # EXIT trap give the recorder back.
-    [ -n "${pipeline:-}" ] && kill -TERM -"$pipeline" 2>/dev/null
-    [ -n "${pipeline:-}" ] && wait "$pipeline" 2>/dev/null
-    exit 143
-}
 trap release EXIT
-trap interrupted INT TERM
-
+# S98 also cancels manual CLI fetches, which are not children of weekly.
+echo "$$" > "$fetch_lock/pid" || exit 1
+trap 'exit 143' INT TERM
+[ "$cancelled" = 0 ] || exit 143
 mkdir -p "$out" /dev/shm/pix
+if [ -e "$STOPFILE" ] || [ -e "$LOGO_STOP" ]; then
+    log 'service stop requested; tuner was not borrowed'
+    exit 1
+fi
 log "stopping the pipeline (recording is interrupted for up to ${wait_seconds}s)"
-if pipeline_running; then
-    if ! "$INIT" stop >/dev/null 2>&1; then
-        log "pipeline stop failed; tuner was not borrowed"
-        exit 1
-    fi
-    started_pipeline=1
+# A preceding fetch may have released its lock but not resumed yet. Always
+# acquire a successful pause, without inferring intent from transient PIDs.
+if ! "$INIT" pause >/dev/null 2>&1; then
+    log "pipeline stop failed; tuner was not borrowed"
+    exit 1
 fi
 # The tuner is only free once the capture process is gone: its lock would
 # otherwise make the new capture fail with "recording lock is busy".
@@ -159,24 +218,23 @@ fi
 # The capture binary owns its fcntl lock. Never unlink its inode, even when
 # the file remains after an earlier process exited: fcntl releases on close.
 
+if [ -e "$STOPFILE" ] || [ -e "$LOGO_STOP" ]; then
+    log 'service stop requested; capture cancelled'
+    exit 1
+fi
 started=$(date +%s)
 log "capturing BS-15 (929), waiting up to ${wait_seconds}s"
-# Its own process group, so a signal ends the capture now instead of waiting
-# for the tuner command to time out: `wait` is interrupted by the trap, and
-# the group is killed before the recorder is given back.
+# Its own process group lets INT request native teardown without aborting
+# the capture's TS/diagnostic writers. EXIT drains before giving recording back.
 # shellcheck disable=SC2086
-setsid sh -c "$capture_cmd 2>>'$LOG' | $parse_cmd 2>>'$LOG'" &
+setsid sh -c "trap ':' INT TERM; $capture_cmd 2>>'$LOG' | $parse_cmd 2>>'$LOG'; status=\$?; wait; exit \"\$status\"" &
 pipeline=$!
 wait "$pipeline"
 status=$?
 elapsed=$(( $(date +%s) - started ))
 
-if [ "$started_pipeline" = "1" ]; then
-    restore_note="${elapsed}s of recording lost"
-fi
-# Give the recorder back before the summary, so the log reads in order.
-# (The EXIT trap repeats this only when the script was interrupted.)
-restore_pipeline
+restore_note="${elapsed}s of recording lost"
+# EXIT drains and reaps the capture group before considering restoration.
 
 case "$status" in
     0) log "logos stored in $out" ;;

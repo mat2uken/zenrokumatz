@@ -193,6 +193,18 @@ class ProfileContracts(unittest.TestCase):
             "PIX_LOGO_WEEKLY_WAIT": "900",
         })
 
+    def test_usb_boot_rail_preserves_firmware_enabled_state(self):
+        common = (ROOT / 'board/x96max/dts/amlogic/meson-g12a-x96-max-p.dts').read_text()
+        rail = re.search(r'&vcc_5v\s*\{([^}]*)\}', common)
+        self.assertIsNotNone(rail)
+        self.assertIn('regulator-boot-on;', rail[1])
+        self.assertNotIn('regulator-always-on;', rail[1])
+        # Both unit variants inherit this rail policy, not just a generated DTB.
+        external = (ROOT / 'board/x96max/dts/amlogic/meson-g12a-x96-max-p-ephy.dts').read_text()
+        unit2 = (ROOT / 'board/x96max/dts/amlogic/meson-g12a-x96-max-p-ephy-4g.dts').read_text()
+        self.assertIn('#include "meson-g12a-x96-max-p.dts"', external)
+        self.assertIn('#include "meson-g12a-x96-max-p-ephy.dts"', unit2)
+
     def test_genimage_and_checksums_include_both_dtbs(self):
         image = (ROOT / "board/x96max/ramboot-genimage.cfg").read_text()
         post = (ROOT / "board/x96max/ramboot-post-image.sh").read_text()
@@ -239,6 +251,24 @@ class Finalize(unittest.TestCase):
                    'printf "GENERATED\\n" >> "$FIXTURE_LOG"\n'
                    'for arg; do key=$arg; done\nprintf "fixture generated key" > "$key"\n')
         return script, build, stage, common, identity
+
+    def test_obsolete_cached_init_is_not_shipped_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            script, build, stage, common, identity = self.prepare(base)
+            init = stage / 'etc/init.d'
+            init.mkdir()
+            old = init / 'S95pix-stream'
+            old.write_text('obsolete cached launcher\n')
+            current = init / 'S97pix-stream'
+            current.write_text('current launcher\n')
+            unrelated = init / 'S40network'
+            unrelated.write_text('package-owned network service\n')
+            result = self.run_finalize(base, script, build, stage)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(old.exists())
+            self.assertEqual(current.read_text(), 'current launcher\n')
+            self.assertEqual(unrelated.read_text(), 'package-owned network service\n')
 
     def run_finalize(self, base, script, build, root):
         env = fixture_env(base, BUILD_DIR=str(build))

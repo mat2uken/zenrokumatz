@@ -40,17 +40,160 @@ extra=""
 [ -n "$PIX_SAT_SLOT" ] && extra="$extra --slot $PIX_SAT_SLOT"
 for pid in $PIX_PIDS; do extra="$extra -p $pid"; done
 
-# 失敗した回の子が残ると、チューナーが多重に開いたままになる。
+# Each probe/pipeline gets a private session. The supervisor never signals by
+# command name (pipeline function shells also share our name).
+OWNER=/var/run/pix-stream.owner
+STOPFILE=/var/run/pix-stream.stopped
+worker=""
+retry_sleep=""
+cleanup_failed=0
 cleanup_children() {
-    for p in $(ps | grep -E "[p]ix-ts-legacy|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c|[p]ix-reader|[p]ix-producer" | awk '{print $1}'); do
-        kill -TERM "$p" 2>/dev/null
+    # An exit taken inside a trapped command (run_worker's wait, a pipeline)
+    # never assigns the PID to the variable. The worker records its own PID, so
+    # ownership can still be cleaned instead of being retained forever.
+    [ -n "$worker" ] || worker=$(cat "$OWNER/worker."*/worker 2>/dev/null)
+    case "$worker" in ''|*[!0-9]*|0|1) worker=""; return 0 ;; esac
+    # The worker stops native capture first; downstream readers stay alive
+    # until the native parent has exited and published its real wait status.
+    [ "${1:-}" = reaped ] || kill -TERM "$worker" 2>/dev/null || true
+    waited=0
+    while kill -0 -"$worker" 2>/dev/null || kill -0 "$worker" 2>/dev/null; do
+        [ "$waited" -lt 35 ] || break
+        sleep 1
+        waited=$((waited + 1))
     done
-    # DT295 は SIGTERM で約1秒かけて停止する。KILL が早すぎると
-    # ファームウェアが固まり、次の選局が通らなくなる。
-    sleep 5
-    for p in $(ps | grep -E "[p]ix-ts-legacy|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c|[p]ix-reader|[p]ix-producer" | awk '{print $1}'); do
-        kill -9 "$p" 2>/dev/null
+    result=0
+    forced=0
+    if kill -0 -"$worker" 2>/dev/null || kill -0 "$worker" 2>/dev/null; then
+        forced=1
+        log "owned pipeline exceeded 35s TERM budget; forcing shutdown"
+        kill -KILL -"$worker" 2>/dev/null || true
+        kill -KILL "$worker" 2>/dev/null || true
+        result=1
+        waited=0
+        while kill -0 -"$worker" 2>/dev/null || kill -0 "$worker" 2>/dev/null; do
+            [ "$waited" -lt 5 ] || break
+            sleep 1
+            waited=$((waited + 1))
+        done
+    fi
+    # Never enter an unbounded wait on an uninterruptible child.
+    if kill -0 -"$worker" 2>/dev/null || kill -0 "$worker" 2>/dev/null; then
+        cleanup_failed=1
+        return 1
+    fi
+    [ "${1:-}" = reaped ] || wait "$worker" 2>/dev/null || true
+    workdir="$OWNER/worker.$worker"
+    if [ -d "$workdir" ]; then
+        if read_native_exit "$workdir"; then
+            log "native capture exit=$native_rc (process drain is separate from clean capture)"
+        elif [ "$forced" = 0 ] && [ -s "$workdir/pid" ]; then
+            # The native process was started but its real exit is unknown: the
+            # tuner may still be busy, so ownership must stay.
+            log 'native exit acknowledgement missing or invalid; retaining ownership'
+            result=1
+        else
+            # Terminated before native was started, or force-killed: no tuner
+            # was handed over, so the dead worker's metadata is only stale.
+            log 'worker ended before native capture was established; clearing metadata'
+            # Leftover metadata is a known trace, not a reason to keep the whole
+            # service unusable: no tuner was handed over on this path.
+            rm -f "$workdir/pid" "$workdir/exit" "$workdir/worker" 2>/dev/null
+            rmdir "$workdir" 2>/dev/null || log "stale worker metadata left in $workdir"
+            result=0
+        fi
+        if [ "$result" = 0 ] && [ -d "$workdir" ]; then
+            rm -f "$workdir/pid" "$workdir/exit" "$workdir/worker" 2>/dev/null
+            rmdir "$workdir" 2>/dev/null || log "worker metadata remains in $workdir"
+        fi
+    fi
+    worker=""
+    [ "$result" = 0 ] || cleanup_failed=1
+    return "$result"
+}
+
+run_worker() {
+    [ ! -e "$STOPFILE" ] || return 1
+    # Publish the owned PID before cancellation can enter finish().
+    cancelled=0
+    trap 'cancelled=1' INT TERM
+    setsid "$0" --worker "$1" &
+    worker=$!
+    trap 'exit 143' INT TERM
+    [ "$cancelled" = 0 ] || exit 143
+    wait "$worker"
+    worker_status=$?
+    cleanup_children reaped || return 1
+    return "$worker_status"
+}
+
+pause_retry() {
+    [ ! -e "$STOPFILE" ] || return 1
+    sleep "$1" &
+    retry_sleep=$!
+    wait "$retry_sleep"
+    retry_sleep=""
+}
+
+finish() {
+    status=$?
+    trap - EXIT
+    trap '' INT TERM
+    if [ -n "$retry_sleep" ]; then
+        kill -TERM "$retry_sleep" 2>/dev/null || true
+        wait "$retry_sleep" 2>/dev/null || true
+    fi
+    cleanup_children || status=1
+    if [ "$cleanup_failed" = 0 ]; then
+        rm -f "$OWNER/pid"
+        rmdir "$OWNER" || status=1
+    else
+        log "teardown failed; retaining ownership to prevent another capture"
+        status=1
+    fi
+    exit "$status"
+}
+
+read_native_exit() {
+    native_rc=$(cat "$1/exit" 2>/dev/null)
+    case "$native_rc" in ''|*[!0-9]*) return 1;; esac
+    [ "$native_rc" -le 255 ]
+}
+
+# The anonymous pipeline's first stage owns/reaps native, not its writer children.
+capture() {
+    # No inherited caught trap may interrupt wait and publish a false ACK.
+    trap - EXIT INT TERM
+    "$@" &
+    native=$!
+    if ! echo "$native" > "$WORK/pid"; then
+        kill -TERM "$native" 2>/dev/null || true
+        wait "$native" 2>/dev/null
+        return 1
+    fi
+    wait "$native"
+    native_status=$?
+    echo "$native_status" > "$WORK/exit" || return 1
+    return "$native_status"
+}
+
+worker_finish() {
+    role_status=$?
+    trap - EXIT
+    trap ':' INT TERM
+    while [ ! -s "$WORK/pid" ]; do
+        kill -0 "$role_pid" 2>/dev/null || exit 1
+        sleep 0.1
     done
+    native=$(cat "$WORK/pid")
+    case "$native" in ''|*[!0-9]*|0|1) exit 1;; esac
+    [ -s "$WORK/exit" ] || kill -TERM "$native" 2>/dev/null || true
+    # Only the outer supervisor owns the 35+5s deadline and forced group kill.
+    while [ ! -s "$WORK/exit" ]; do sleep 0.1; done
+    read_native_exit "$WORK" || exit 1
+    kill -TERM -"$$" 2>/dev/null || true
+    wait "$role_pid" 2>/dev/null || true
+    exit "$role_status"
 }
 
 encode() {
@@ -58,7 +201,7 @@ encode() {
     # （実測0.65x）。片方だけなら1.2x出る。画質を優先してデインタレースだけを
     # 掛け、解像度は元の1920x1080のまま出す。縞の残る絵をprogressiveとして
     # 符号化するのは避けたい。
-    ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
+    exec ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
         -f mpegts -i pipe:0 \
         -c:v mpeg2_v4l2m2m -vf "bwdif=mode=send_frame,format=nv12" \
         -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
@@ -69,14 +212,14 @@ encode() {
 fragment() {
     # 音声はそのまま写す。AACを符号化し直すと実時間を割り込む（実測0.96x）。
     # 写すだけなら1.19x出るので、こちらを既定にする。
-    ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
+    exec ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
         -f mpegts -i pipe:0 -map 0:v -map 0:a -c copy -bsf:a aac_adtstoasc \
         -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 pipe:1 2>/tmp/pix-ff2.log
 }
 
 
 streamer() {
-    stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
+    exec stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
         --spool-mb "$PIX_SPOOL_MB" --channel "$PIX_CHANNEL" --display "$PIX_DISPLAY" \
         --program-file /dev/shm/pix/program.txt --logo-dir "$PIX_LOGO_DIR" \
         2>/tmp/pix-stb.log
@@ -86,7 +229,7 @@ streamer() {
 # ディスクもRAMも消費せず、番組の途中で切れることもない。
 run_direct() {
     # shellcheck disable=SC2086
-    pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+    capture pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
         -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
         2>/tmp/pix-ts.log \
       | eit_watch --state /dev/shm/pix/program.txt --logo-dir "$PIX_LOGO_DIR" \
@@ -101,7 +244,7 @@ run_buffered() {
     # 復号器の出力は固定長のリングへ入れる。追記型のファイルに書くと
     # 録画の長さだけ育って tmpfs を埋めるが、リングなら一定量で回る。
     # shellcheck disable=SC2086
-    pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+    capture pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
         -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
         2>/tmp/pix-ts.log \
       | torne-b25 --card-socket /dev/shm/torne/card.sock --trace /dev/shm/pix/b25.trace \
@@ -140,13 +283,13 @@ run_buffered() {
 
 # DT295 は強制終了や電源断のあとファームウェアが state 2 / 0xffff に残り、
 # 「firmware boot requires cold state 0 or unauthenticated state 16」で
-# 起動できなくなる。USB ポートの disable/enable では VBUS が切れないので、
-# xhci のグルードライバを unbind/bind してコールドブートさせる。
-# 手で抜き差しする代わりに、このループが自動で行う。
+# 起動できなくなる。安全確認付きの unbind/bind で controller/PHY を
+# 再初期化する（VBUS の電源断やコールドブートは保証しない）。
 dt295_recover() {
     log "dt295: attempting guarded USB controller recovery"
-    cleanup_children
-    rm -f /tmp/pix-userland-dt295-0.lock || return 1
+    cleanup_children || return 1
+    [ ! -e "$STOPFILE" ] || return 1
+    # The capture binary owns its fcntl lock inode. Never unlink that file.
     if ! pix_usb_reset; then
         log "dt295: recovery refused or failed; stopping (manual intervention required)"
         return 1
@@ -160,7 +303,7 @@ fast_fail=0
 # 送るだけなので、開始前に短く確かめて待つ。
 broadcast_ready() {
     # shellcheck disable=SC2086
-    bytes=$(pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+    bytes=$(capture pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
         -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t 6 2>/tmp/pix-tsprobe.log \
         | encode | wc -c)
     # PAT が取れていて番組が0件なら放送休止。ロック前（have_pat 0）は
@@ -182,21 +325,64 @@ broadcast_ready() {
     return 0
 }
 
-while :; do
-    cleanup_children
-    if [ "$PIX_DECRYPT" != "1" ] && ! broadcast_ready; then
+# Internal workers reuse the existing media paths, but never acquire supervisor
+# ownership or retry. Caught signals reset to default in exec'd media children.
+if [ "${1:-}" = --worker ]; then
+    WORK="$OWNER/worker.$$"
+    cancelled=0
+    trap 'cancelled=1' INT TERM
+    mkdir "$WORK" || exit 1
+    # Written only after the directory exists: the outer cleanup uses this
+    # file to find a worker it could not see through its own exit path.
+    if ! echo "$$" > "$WORK/worker"; then
+        rmdir "$WORK"
+        exit 1
+    fi
+    trap worker_finish EXIT
+    # A foreground pipeline defers TERM traps. The builtin wait is interruptible.
+    (
+        trap - EXIT INT TERM
+        case "${2:-}" in
+            probe) broadcast_ready ;;
+            direct) run_direct ;;
+            buffered) run_buffered ;;
+            *) exit 2 ;;
+        esac
+    ) &
+    role_pid=$!
+    trap 'exit 0' INT TERM
+    [ "$cancelled" = 0 ] || exit 0
+    wait "$role_pid"
+    exit $?
+fi
+
+[ ! -e "$STOPFILE" ] || exit 1
+if ! mkdir "$OWNER" 2>/dev/null; then
+    log "another supervisor owns the pipeline (or a failed teardown needs attention)"
+    exit 1
+fi
+trap finish EXIT
+trap 'exit 143' INT TERM
+echo "$$" > "$OWNER/pid" || exit 1
+
+while [ ! -e "$STOPFILE" ]; do
+    if [ "$PIX_DECRYPT" != "1" ] && ! run_worker probe; then
+        [ "$cleanup_failed" = 0 ] || exit 1
+        [ ! -e "$STOPFILE" ] || break
         log "no programme on air (broadcast suspension); waiting 5 minutes"
-        sleep 300
+        pause_retry 300
         continue
     fi
     started=$(date +%s)
     log "starting"
     if [ "$PIX_DECRYPT" = "1" ]; then
-        run_buffered
+        run_worker buffered
     else
         rm -f "$PIX_LIVE_FILE"
-        run_direct
+        run_worker direct
     fi
+    [ "$cleanup_failed" = 0 ] || exit 1
+    [ ! -e "$STOPFILE" ] || break
     ran=$(( $(date +%s) - started ))
     log "pipeline stopped after ${ran}s; restarting"
     if [ "$PIX_DECRYPT" != "1" ] && [ "$ran" -lt 10 ]; then
@@ -214,5 +400,5 @@ while :; do
         dt295_recover || exit 1
         fast_fail=0
     fi
-    sleep 2
+    pause_retry 2
 done

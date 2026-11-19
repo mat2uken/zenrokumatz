@@ -1,79 +1,152 @@
 #!/bin/sh
-# 実放送のライブ配信を開始する。S96bcas が pcscd/bcasd/cardrelay を
-# 立ち上げた後に走る必要があるため、番号は S96 より後ろにする。
-# 実績のある構成（復号結果をファイルへ出し、別プロセスが読む）で動かす。
+# S96bcas must start before this service. Only this controller changes desired
+# state; logo borrowing uses pause/resume and may never undo an explicit stop.
 DAEMON=/usr/bin/pix-stream-simple
 LEGACY=/usr/bin/pix-stream-linux
 PIDFILE=/var/run/pix-stream.pid
+STOPFILE=/var/run/pix-stream.stopped
+CONTROL=/var/run/pix-stream.control
+OWNER=/var/run/pix-stream.owner
+LEGACY_GROUP=/var/run/pix-stream.legacy-group
+FETCH_LOCK=/var/run/pix-logo-fetch.lock
+
+alive() {
+    case "$1" in ''|*[!0-9]*|0|1) return 1;; esac
+    kill -0 "$1" 2>/dev/null
+}
+
+owned() {
+    tr '\000' '\n' < "/proc/$1/cmdline" 2>/dev/null | grep -Fx -e "$DAEMON" -e "$LEGACY" >/dev/null
+}
+
+target_alive() {
+    case "$pid" in ''|*[!0-9]*|0|1) return 1;; esac
+    alive "$pid" || { [ "$legacy_group" = "$pid" ] && kill -0 -"$pid" 2>/dev/null; }
+}
+
+lock_control() {
+    waited=0
+    until mkdir "$CONTROL" 2>/dev/null; do
+        [ "$waited" -lt 60 ] || { echo 'control lock busy'; return 1; }
+        sleep 1
+        waited=$((waited + 1))
+    done
+    trap 'rmdir "$CONTROL" 2>/dev/null' EXIT
+    trap 'exit 1' INT TERM
+}
 
 start() {
     printf 'Starting pix-stream: '
-    mkdir -p /dev/shm/pix
-    # cardrelay creates the socket a moment after S96bcas returns, so a boot
-    # can reach this point with the socket still missing. Wait for it instead
-    # of skipping the start, which used to leave the box idle until someone
-    # started the stream by hand.
+    [ ! -e "$STOPFILE" ] || { echo 'stop requested'; return 1; }
+    [ ! -e /run/pix-usb-reset.lock ] || { echo 'USB reset in progress'; return 1; }
+    [ ! -d "$FETCH_LOCK" ] || { echo 'tuner borrowed for logo fetch'; return 1; }
     . /etc/default/pix-stream-linux 2>/dev/null || true
-    # Preserve the PX-S1UD/torne receiver and CM sideband path on unit 1.
-    # pix-stream-simple speaks the DT295 userland protocol, not siano-ts.
     case "${PIX_TUNER:-pxs1ud}" in
         dt295) daemon=$DAEMON ;;
         pxs1ud|torne) daemon=$LEGACY ;;
         *) echo "unsupported tuner: $PIX_TUNER"; return 1 ;;
     esac
-    waited=0
-    # DT295 uses its internal card; waiting for an external relay prevents
-    # standalone RAM-root boots from ever starting its direct pipeline.
+    pid=$(cat "$PIDFILE" 2>/dev/null)
+    if alive "$pid"; then
+        owned "$pid" || { echo 'PID identity mismatch'; return 1; }
+        echo 'already running'; return 0
+    fi
+    # A failed teardown deliberately retains ownership: do not launch over it.
+    [ ! -d "$OWNER" ] && [ ! -e "$LEGACY_GROUP" ] || { echo 'previous owner not drained'; return 1; }
+    mkdir -p /dev/shm/pix || return 1
     needs_card=1
     [ "${PIX_TUNER:-pxs1ud}" = dt295 ] && [ "${PIX_DECRYPT:-0}" != 1 ] && needs_card=0
+    waited=0
     while [ "$needs_card" = 1 ] && [ ! -S /dev/shm/torne/card.sock ] && [ "$waited" -lt 40 ]; do
+        [ ! -e "$STOPFILE" ] || { echo 'stop requested'; return 1; }
         sleep 0.5
         waited=$((waited + 1))
     done
     if [ "$needs_card" = 1 ] && [ ! -S /dev/shm/torne/card.sock ]; then
-        echo "card socket is still missing (S96bcas); skipped"
-        return 0
+        echo 'card socket is still missing (S96bcas)'; return 1
     fi
-    # kill で落とした後に pid ファイルだけ残ると、start-stop-daemon は
-    # 「動いている」と判断して何も起動しない。生きているか確かめて消す。
-    if [ -f "$PIDFILE" ]; then
-        pid=$(cat "$PIDFILE" 2>/dev/null)
-        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-            rm -f "$PIDFILE"
-        fi
+    [ ! -e "$STOPFILE" ] || { echo 'stop requested'; return 1; }
+    rm -f "$PIDFILE"
+    # Legacy foreground pipelines defer the launcher's trap. A private session
+    # lets stop signal its stages too, without scanning unrelated command names.
+    set -- "$daemon"
+    [ "$daemon" != "$LEGACY" ] || set -- /usr/bin/setsid "$daemon"
+    launcher=$1
+    shift
+    if ! start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$launcher" -- "$@" \
+        </dev/null >>/tmp/pix-stream.out 2>&1; then
+        echo 'FAIL'; return 1
     fi
-    start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$daemon" && echo "OK" || echo "FAIL"
+    # -b reports only the fork, not a successful exec. Verify the launcher
+    # survives startup; DT295 additionally acknowledges its singleton ownership.
+    sleep 1
+    pid=$(cat "$PIDFILE" 2>/dev/null)
+    if ! alive "$pid" || ! owned "$pid"; then echo 'launcher exited or identity mismatch'; return 1; fi
+    if [ "$daemon" = "$LEGACY" ]; then echo "$pid" > "$LEGACY_GROUP" || return 1; fi
+    if [ "$daemon" = "$DAEMON" ] && [ "$(cat "$OWNER/pid" 2>/dev/null)" != "$pid" ]; then
+        echo 'launcher did not acquire ownership'; return 1
+    fi
+    echo 'OK'
 }
 
 stop() {
     printf 'Stopping pix-stream: '
-    start-stop-daemon -K -q -p "$PIDFILE" -R TERM/5/KILL/5 && echo "OK" || echo "not running"
-    for p in $(ps | grep -E "[p]ix-stream-run|[p]ix-stream-linux" | awk '{print $1}'); do
-        kill -TERM "$p" 2>/dev/null
-    done
-    # The launcher shell itself must go too: otherwise it restarts its
-    # children after this stop and two pipelines fight over the tuner.
-    # The DT295 parks itself on SIGTERM; a SIGKILL leaves it in a firmware
-    # state it will not boot from, which needs a physical replug to clear.
-    # eit_watch and the reader/writer shells sit between the tuner and
-    # stb_streamer, so they have to be in this list as well: a leftover
-    # eit_watch keeps the old pipe alive and the next start runs two chains.
-    for p in $(ps | grep -E "[p]ix-stream-simple|[p]ix-stream-linux|[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[p]ix-producer|[p]ix-reader|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c" | awk '{print $1}'); do
-        kill -TERM "$p" 2>/dev/null
-    done
-    sleep 3
-    for p in $(ps | grep -E "[p]ix-stream-simple|[p]ix-stream-linux|[s]iano-ts|[t]orne-c|[t]orne-b25|[p]ix-ts-legacy|[p]ix-producer|[p]ix-reader|[e]it_watch|[f]fmpeg|[s]tb_streamer|[t]ail -f -c" | awk '{print $1}'); do
-        kill -9 "$p" 2>/dev/null
-    done
-    # Give the tuner a moment to drop the old session by itself. `receivers=`
-    # in `siano-ts --list` counts the devices it can see, not open sessions, so
-    # it cannot be used to decide whether the slot is free; rebinding the USB
-    # device here only made the next capture run at half rate.
-    sleep 2
+    pid=$(cat "$PIDFILE" 2>/dev/null)
+    legacy_group=$(cat "$LEGACY_GROUP" 2>/dev/null)
+    if alive "$pid" && ! owned "$pid"; then echo 'PID identity mismatch'; return 1; fi
+    if target_alive; then
+        if [ "$legacy_group" = "$pid" ]; then
+            kill -TERM -"$pid" 2>/dev/null || { echo 'group TERM failed'; return 1; }
+        else
+            kill -TERM "$pid" 2>/dev/null || { echo 'TERM failed'; return 1; }
+        fi
+        waited=0
+        # simple allows 35s protocol teardown + 5s forced drain. Never cut
+        # the 5+5+5s firmware transitions, 3s cancellation and 5s idle wait short.
+        while target_alive && [ "$waited" -lt 45 ]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if target_alive; then
+            if alive "$pid" && ! owned "$pid"; then echo 'PID identity changed'; return 1; fi
+            if [ "$legacy_group" = "$pid" ]; then
+                kill -KILL -"$pid" 2>/dev/null
+            else
+                kill -KILL "$pid" 2>/dev/null
+            fi
+            echo 'timed out (ownership retained)'; return 1
+        fi
+    fi
+    [ ! -d "$OWNER" ] || { echo 'children did not drain (ownership retained)'; return 1; }
+    if [ "$1" != pause ] && [ -d "$FETCH_LOCK" ]; then
+        echo 'logo fetch still owns tuner; cancel/reap it before retrying stop'; return 1
+    fi
+    rm -f "$PIDFILE" "$LEGACY_GROUP"
+    echo 'OK'
 }
 
 case "$1" in
-    start|stop) "$1";;
-    restart) stop; sleep 1; start;;
-    *) echo "Usage: $0 {start|stop|restart}"; exit 1;;
+    start)
+        [ ! -d "$FETCH_LOCK" ] || { echo 'tuner borrowed for logo fetch'; exit 1; }
+        rm -f "$STOPFILE" || exit 1
+        lock_control && start ;;
+    resume)
+        lock_control && start ;;
+    inhibit)
+        # Shutdown fences restoration before S98 cancels an active borrow.
+        # Do not wait for control ownership or drain children here.
+        echo "$$" > "$STOPFILE" ;;
+    stop|restart)
+        # Fence before waiting for a concurrent start/borrow operation.
+        echo "$$" > "$STOPFILE" || exit 1
+        lock_control || exit 1
+        stop "$1" || exit 1
+        if [ "$1" = restart ]; then
+            # Do not erase a newer stop request that arrived during teardown.
+            [ "$(cat "$STOPFILE" 2>/dev/null)" = "$$" ] || exit 1
+            rm -f "$STOPFILE" && start
+        fi ;;
+    pause)
+        lock_control && stop pause ;;
+    *) echo "Usage: $0 {start|stop|restart|pause|resume|inhibit}"; exit 1 ;;
 esac

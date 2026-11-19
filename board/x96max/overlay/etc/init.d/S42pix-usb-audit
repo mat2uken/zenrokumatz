@@ -1,0 +1,20 @@
+#!/bin/sh
+# Start the USB integrity audit before recording. It only reads, and an audit
+# failure must never keep the recorder or the shutdown path down.
+DAEMON=/usr/bin/pix-usb-audit
+
+case "$1" in
+    start)
+        [ -x "$DAEMON" ] || exit 0
+        "$DAEMON" start || true ;;
+    stop)
+        [ -x "$DAEMON" ] || exit 0
+        "$DAEMON" stop || true ;;
+    restart)
+        "$0" stop
+        exec "$0" start ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}" >&2
+        exit 1 ;;
+esac
+exit 0

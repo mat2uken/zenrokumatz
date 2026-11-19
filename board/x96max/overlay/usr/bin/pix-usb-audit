@@ -1,0 +1,210 @@
+#!/bin/sh
+#
+# pix-usb-audit - fingerprint the RAM-boot USB's first MiB and the eMMC
+# environment copy, so a silent zeroing is timestamped rather than guessed.
+#
+# The recording pipeline never writes to either medium, so any change is a
+# signal of the boot-loader/USB-power handoff problem. Records live on the
+# writable RAM filesystem and are printed by "show" for later collection.
+#
+#   start   record the boot fingerprint and start the watcher (S42)
+#   watch   re-record every PIX_USB_AUDIT_INTERVAL seconds (daemon)
+#   check   record one sample and report changes (used by the watcher)
+#   stop    record a final fingerprint and stop the watcher
+#   show    print the records (also used for support)
+set -u
+DEFAULTS=/etc/default/pix-stream-linux
+[ -r "$DEFAULTS" ] && . "$DEFAULTS"
+: "${PIX_USB_AUDIT_DIR:=/tmp/pix-usb-audit}"
+: "${PIX_USB_AUDIT_INTERVAL:=300}"
+: "${PIX_USB_AUDIT_KEEP:=2000}"
+USB_VID=${PIX_USB_AUDIT_VID:-0781}
+USB_PID=${PIX_USB_AUDIT_PID:-5580}
+USB_SERIAL=${PIX_USB_AUDIT_SERIAL:-AA010206130733341409}
+USB_SIZE=${PIX_USB_AUDIT_SIZE:-62533286}
+SOURCE=${PIX_USB_AUDIT_SOURCE:-/dev/sda}
+SYSFS=${PIX_USB_AUDIT_SYSFS:-/sys/bus/usb/devices}
+SIZE_FILE=${PIX_USB_AUDIT_SIZE_FILE:-/sys/block/sda/size}
+ENV_DEV=${PIX_USB_AUDIT_ENV_DEV:-/dev/mmcblk1}
+# 64 KiB environment copy at byte offset 0x4d400000 = 65536-byte block 19776.
+ENV_OFFSET=${PIX_USB_AUDIT_ENV_OFFSET:-19776}
+mkdir -p "$PIX_USB_AUDIT_DIR" 2>/dev/null || exit 1
+STATE="$PIX_USB_AUDIT_DIR/state"
+RECORDS="$PIX_USB_AUDIT_DIR/records.log"
+ENVPREV="$PIX_USB_AUDIT_DIR/env.prev"
+PIDFILE="$PIX_USB_AUDIT_DIR/watcher.pid"
+STOPFLAG="$PIX_USB_AUDIT_DIR/stop"
+WATCHER=/usr/bin/pix-usb-audit
+SCRATCH="$PIX_USB_AUDIT_DIR/scratch"
+
+log() { echo "usb-audit: $*" >&2; }
+
+# Resolve the USB by identity (VID/PID/serial), never by enumeration order.
+usb_device() {
+    for dev in "$SYSFS"/*; do
+        [ -r "$dev/idVendor" ] || continue
+        [ "$(cat "$dev/idVendor" 2>/dev/null)" = "$USB_VID" ] || continue
+        [ "$(cat "$dev/idProduct" 2>/dev/null)" = "$USB_PID" ] || continue
+        [ "$(cat "$dev/serial" 2>/dev/null)" = "$USB_SERIAL" ] || continue
+        printf '%s\n' "${dev##*/}"
+        return 0
+    done
+    return 1
+}
+
+# dd may print a read error on stderr; the hash of what was read is still
+# meaningful, and "unreadable" keeps a short read distinguishable from a match.
+# A pipe pipeline keeps its reader waiting when the writer exits early, and
+# BusyBox sh here inherits that read end. The hash goes through a temporary
+# file instead so a failed read can never leave this script blocked.
+hash_of() {
+    if [ ! -r "$1" ]; then
+        printf 'unreadable\n'
+        return 0
+    fi
+    dd if="$1" of="$SCRATCH.bin" bs=1048576 count=1 iflag=direct 2>/dev/null
+    if sha256sum "$SCRATCH.bin" > "$SCRATCH.sum" 2>/dev/null &&
+        [ -s "$SCRATCH.sum" ]; then
+        cut -d ' ' -f1 "$SCRATCH.sum"
+    else
+        printf 'unreadable\n'
+    fi
+    rm -f "$SCRATCH.bin" "$SCRATCH.sum"
+}
+
+# The saved environment is the 64 KiB copy at the end of the eMMC card.
+env_hash() {
+    if [ ! -r "$ENV_DEV" ]; then
+        printf 'unreadable\n'
+        return 0
+    fi
+    dd if="$ENV_DEV" of="$SCRATCH.bin" bs=65536 skip="$ENV_OFFSET" count=1 \
+        iflag=direct 2>/dev/null
+    if sha256sum "$SCRATCH.bin" > "$SCRATCH.sum" 2>/dev/null && [ -s "$SCRATCH.sum" ]; then
+        cut -d ' ' -f1 "$SCRATCH.sum"
+    else
+        printf 'unreadable\n'
+    fi
+    rm -f "$SCRATCH.bin" "$SCRATCH.sum"
+}
+
+# One row per check; fields are timestamp, USB sysfs name, size match, first-MiB
+# hash. The last row is the newest sample.
+record() {
+    dev=$(usb_device) || dev=absent
+    first=$(hash_of "$SOURCE")
+    size_ok=no
+    if [ "$dev" != absent ] && [ -r "$SIZE_FILE" ] &&
+        [ "$(cat "$SIZE_FILE")" = "$USB_SIZE" ]; then
+        size_ok=yes
+    fi
+    printf '%s usb=%s size_ok=%s mbr=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        "$dev" "$size_ok" "$first" > "$STATE.tmp" 2>/dev/null || return 1
+    # Keep the previous sample for comparison, then publish the new one.
+    cp "$STATE" "$STATE.prev" 2>/dev/null || :
+    mv "$STATE.tmp" "$STATE" 2>/dev/null || return 1
+    return 0
+}
+
+emit() {
+    printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$RECORDS" || return 0
+    # The tail pipeline's status must not leak out: a written record is success
+    # even when rotation is skipped.
+    lines=$(wc -l < "$RECORDS" 2>/dev/null || echo 0)
+    if [ "$lines" -gt "$PIX_USB_AUDIT_KEEP" ]; then
+        { tail -n "$PIX_USB_AUDIT_KEEP" "$RECORDS" > "$RECORDS.tmp" &&
+            mv "$RECORDS.tmp" "$RECORDS"; } 2>/dev/null || :
+    fi
+    return 0
+}
+
+last_hash() {
+    cut -d ' ' -f4 "$STATE" 2>/dev/null
+}
+
+# A change is only reported against a previous sample of this same session;
+# there is no eMMC state that could go stale across boots.
+check() {
+    record || return 0
+    new=$(last_hash)
+    old=$(cut -d ' ' -f4 "$STATE.prev" 2>/dev/null)
+    if [ -n "$old" ] && [ "$old" != "$new" ]; then
+        emit "USB_FIRST_MIB_CHANGED old=$old new=$new"
+        log "USB first MiB changed: $old -> $new"
+    fi
+    # Record an unreadable device once per transition, not every cycle.
+    if [ "$new" = unreadable ] && [ "$old" != unreadable ]; then
+        emit 'USB_FIRST_MIB_UNREADABLE'
+    fi
+    env=$(env_hash)
+    old_env=$(cat "$ENVPREV" 2>/dev/null)
+    if [ -z "$old_env" ]; then
+        printf '%s\n' "$env" > "$ENVPREV"
+    elif [ "$old_env" != "$env" ]; then
+        emit "EMMC_ENV_CHANGED old=$old_env new=$env"
+        log "eMMC environment copy changed: $old_env -> $env"
+        printf '%s\n' "$env" > "$ENVPREV"
+    fi
+    return 0
+}
+
+watch() {
+    while [ ! -e "$STOPFLAG" ]; do
+        # check is terminal so a detected change cannot end the watcher.
+        check || :
+        [ "$PIX_USB_AUDIT_INTERVAL" -gt 0 ] || break
+        sleep "$PIX_USB_AUDIT_INTERVAL" &
+        wait $!
+    done
+}
+
+start() {
+    rm -f "$STOPFLAG"
+    # Seed the first sample so the boot hash itself is never a "change".
+    rm -f "$STATE" "$STATE.prev"
+    record || :
+    printf '%s\n' "$(env_hash)" > "$ENVPREV" 2>/dev/null || :
+    emit "boot $(cut -d ' ' -f2- "$STATE" 2>/dev/null)"
+    if [ "${PIX_USB_AUDIT_DAEMON:-1}" = 1 ]; then
+        # The watcher re-execs its action and must not share this session or
+        # any inherited descriptor: that would keep an ssh caller waiting.
+        setsid "$0" watch </dev/null >/dev/null 2>&1 &
+        watcher=$!
+        echo "$watcher" > "$PIDFILE" || exit 1
+    fi
+    echo "Starting pix-usb-audit: OK"
+}
+
+stop() {
+    touch "$STOPFLAG" 2>/dev/null || true
+    if [ -f "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE" 2>/dev/null)
+        case "$pid" in
+        ''|*[!0-9]*|0|1) ;;
+        *)
+            command=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\000' ' ')
+            case "$command" in
+            *pix-usb-audit*watch*) kill -TERM "$pid" 2>/dev/null || true ;;
+            esac ;;
+        esac
+        rm -f "$PIDFILE"
+    fi
+    check || :
+    echo "Stopping pix-usb-audit: OK"
+}
+
+show() {
+    echo "records: $RECORDS"
+    cat "$RECORDS" 2>/dev/null
+    echo "latest: $STATE"
+    cat "$STATE" 2>/dev/null
+}
+
+case "$1" in
+    start) start ;;
+    watch) watch ;;
+    check) check || : ;;
+    stop) stop ;;
+    show) show ;;
+    *) echo "Usage: $0 {start|watch|check|stop|show}" >&2; exit 1 ;;
+esac

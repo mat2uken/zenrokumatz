@@ -1,13 +1,13 @@
 #!/bin/sh
-# pix-dt295-reset - DT295 を物理的に抜き差しせずにコールドブートさせる。
+# pix-dt295-reset - DT295 のUSBコントローラーとPHYを再初期化する。
 #
 # DT295 は強制終了や電源断のあと、ファームウェアが state 2 / 0xffff に
 # 残ることがある。pix-ts-legacy はパッチでソフトリセット (コマンド3、0x11 は
 # サスペンド→レジューム) を先に試すので、通常はこちらは要らない。
 # それでも「firmware could not be reset; a cold power cycle is required」で
-# 失敗する個体向けの最後の手段。USB ポートの disable/enable では VBUS が
-# 切れないため復旧しないが、xhci のグルードライバ (dwc3-meson-g12a) を
-# unbind/bind すると vbus-supply が落ちてデバイスがコールドブートする。
+# 失敗する個体向けの最後の手段。xhci のグルードライバー
+# (dwc3-meson-g12a) を unbind/bind してコントローラーとPHYを再初期化する。
+# remove() は VBUS を切らないため、物理的な電源断を保証する操作ではない。
 #
 # 実行すると録画は数十秒止まる。パイプラインを止めてから切り替える。
 set -u
@@ -21,17 +21,10 @@ fi
 
 stop_pipeline() {
     echo "pix-dt295-reset: stopping the pipeline"
-    /etc/init.d/S97pix-stream stop >/dev/null 2>&1 || true
-    for i in 1 2 3; do
-        for p in $(ps | grep -E "[p]ix-stream-simple|[p]ix-producer|[p]ix-reader|[e]it_watch|[s]tb_streamer|[f]fmpeg|[t]ail -f -c|[p]ix-ts-legacy" | awk '{print $1}'); do
-            kill -TERM "$p" 2>/dev/null || true
-        done
-        sleep 2
-    done
-    for p in $(ps | grep -E "[p]ix-stream-simple|[p]ix-producer|[p]ix-reader|[e]it_watch|[s]tb_streamer|[f]fmpeg|[t]ail -f -c|[p]ix-ts-legacy" | awk '{print $1}'); do
-        kill -9 "$p" 2>/dev/null || true
-    done
-    rm -f /var/run/pix-stream.pid /tmp/pix-userland-dt295-0.lock
+    # The service owns its process group and reports whether teardown finished.
+    # Do not erase the vendor's fcntl inode or override a failed graceful stop
+    # with machine-wide name matching: another opener could own that inode.
+    /etc/init.d/S97pix-stream stop
 }
 
 # Preflight (including the shared reset budget) precedes pipeline interruption.

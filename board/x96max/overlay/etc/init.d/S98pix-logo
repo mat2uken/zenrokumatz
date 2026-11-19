@@ -1,31 +1,108 @@
 #!/bin/sh
-# 週 1 回の局ロゴ取得を常駐させる。S97pix-stream より後ろで、録画とは独立に動く。
+# The scheduler owns its fetch child, not recording's desired state.
+# S99pix-shutdown fences restoration before shutdown reaches this service.
 DAEMON=/usr/bin/pix-logo-weekly
 PIDFILE=/var/run/pix-logo-weekly.pid
+OWNER=/var/run/pix-logo-weekly.owner
+CONTROL=/var/run/pix-logo-weekly.control
+STOPFILE=/var/run/pix-logo.stopped
+FETCH=/usr/bin/pix-logo-fetch
+FETCH_LOCK=/var/run/pix-logo-fetch.lock
 
+alive() {
+    case "$1" in ''|*[!0-9]*|0|1) return 1;; esac
+    kill -0 "$1" 2>/dev/null
+}
+owned() {
+    tr '\000' '\n' < "/proc/$1/cmdline" 2>/dev/null | grep -Fx -e "${2:-$DAEMON}" >/dev/null
+}
+lock_control() {
+    waited=0
+    until mkdir "$CONTROL" 2>/dev/null; do
+        [ "$waited" -lt 60 ] || { echo 'control lock busy'; return 1; }
+        sleep 1
+        waited=$((waited + 1))
+    done
+    trap 'rmdir "$CONTROL" 2>/dev/null' EXIT
+    trap 'exit 1' INT TERM
+}
 start() {
     printf 'Starting pix-logo-weekly: '
-    mkdir -p /var/lib/pix/logos
-    if [ -f "$PIDFILE" ]; then
-        pid=$(cat "$PIDFILE" 2>/dev/null)
-        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-            rm -f "$PIDFILE"
-        fi
+    [ ! -e "$STOPFILE" ] || { echo 'stop requested'; return 1; }
+    pid=$(cat "$PIDFILE" 2>/dev/null)
+    if alive "$pid"; then
+        owned "$pid" || { echo 'PID identity mismatch'; return 1; }
+        echo 'already running'; return 0
     fi
-    # The daemon outlives this script; keep it off the caller's stdout so a
-    # start over ssh does not hang on a pipe the daemon still holds.
-    start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" \
-        </dev/null >>/tmp/pix-logo-weekly.out 2>&1 && echo "OK" || echo "FAIL"
+    [ ! -d "$OWNER" ] || { echo 'previous owner not drained'; return 1; }
+    mkdir -p /var/lib/pix/logos || return 1
+    rm -f "$PIDFILE"
+    if ! start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" \
+        </dev/null >>/tmp/pix-logo-weekly.out 2>&1; then
+        echo 'FAIL'; return 1
+    fi
+    sleep 1
+    pid=$(cat "$PIDFILE" 2>/dev/null)
+    if ! alive "$pid" || ! owned "$pid" || [ "$(cat "$OWNER/pid" 2>/dev/null)" != "$pid" ]; then
+        echo 'launcher exited or did not acquire ownership'; return 1
+    fi
+    echo 'OK'
 }
-
+stop_manual_fetch() {
+    waited=0
+    # mkdir may be visible before its owner has written pid. LOGO_STOP is
+    # already set, so that owner cannot pass the pre-capture fence check.
+    while [ -d "$FETCH_LOCK" ] && [ ! -s "$FETCH_LOCK/pid" ] && [ "$waited" -lt 45 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    [ -d "$FETCH_LOCK" ] || return 0
+    fetch_pid=$(cat "$FETCH_LOCK/pid" 2>/dev/null)
+    if ! alive "$fetch_pid" || ! owned "$fetch_pid" "$FETCH"; then
+        echo 'fetch PID identity missing or mismatched (ownership retained)'; return 1
+    fi
+    kill -TERM "$fetch_pid" 2>/dev/null || { echo 'fetch TERM failed'; return 1; }
+    # This is not our child: its own EXIT handler reaps the capture group, then
+    # releases the lock. Observe that completion rather than pretending to wait.
+    while [ -d "$FETCH_LOCK" ] && [ "$waited" -lt 45 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    [ ! -d "$FETCH_LOCK" ] || { echo 'fetch drain timed out (ownership retained)'; return 1; }
+}
 stop() {
     printf 'Stopping pix-logo-weekly: '
-    start-stop-daemon -K -q -p "$PIDFILE" -R TERM/5/KILL/5 && echo "OK" || echo "not running"
+    # Drain tuner ownership even if stale scheduler metadata later fails.
+    stop_manual_fetch || return 1
+    pid=$(cat "$PIDFILE" 2>/dev/null)
+    if alive "$pid"; then
+        owned "$pid" || { echo 'PID identity mismatch'; return 1; }
+        if ! kill -TERM "$pid" 2>/dev/null && alive "$pid"; then
+            echo 'TERM failed'; return 1
+        fi
+        waited=0
+        while alive "$pid" && [ "$waited" -lt 50 ]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if alive "$pid"; then
+            owned "$pid" || { echo 'PID identity changed'; return 1; }
+            kill -KILL "$pid" 2>/dev/null
+            echo 'timed out (ownership retained)'; return 1
+        fi
+    fi
+    [ ! -d "$OWNER" ] || { echo 'fetch did not drain (ownership retained)'; return 1; }
     rm -f "$PIDFILE"
+    echo 'OK'
 }
-
 case "$1" in
-    start|stop) "$1";;
-    restart) stop; sleep 1; start;;
-    *) echo "Usage: $0 {start|stop|restart}"; exit 1;;
+    start)
+        rm -f "$STOPFILE" || exit 1
+        lock_control && start ;;
+    stop|restart)
+        : > "$STOPFILE" || exit 1
+        lock_control || exit 1
+        stop || exit 1
+        if [ "$1" = restart ]; then rm -f "$STOPFILE" && start; fi ;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
 esac

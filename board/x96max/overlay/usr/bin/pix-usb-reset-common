@@ -146,8 +146,32 @@ pix_usb_reset() (
     lock=$_PIX_USB_RUN/pix-usb-reset.lock
     state=$_PIX_USB_RUN/pix-usb-reset.state
     mkdir "$lock" 2>/dev/null || { _pix_usb_refuse "reset locked (or stale lock); refusing"; exit 1; }
-    trap 'rmdir "$lock"' 0
-    trap 'exit 1' HUP INT TERM
+    unbound=0
+    changing=0
+    bind_attempted=0
+    cancelled=0
+    finish_reset() {
+        status=$?
+        trap '' HUP INT TERM
+        trap - 0
+        # Once unbound, even a cancelled delay must restore the controller.
+        # Keep the lock until this compensating bind completes; never retry a
+        # failed bind blindly, and never turn cancellation into success.
+        if [ "$unbound" = 1 ] && [ "$bind_attempted" = 0 ]; then
+            bind_attempted=1
+            _pix_usb_write_control bind || {
+                _pix_usb_refuse "cancelled reset could not rebind controller"
+                status=1
+            }
+        fi
+        rmdir "$lock" || status=1
+        exit "$status"
+    }
+    trap finish_reset 0
+    # Only defer signals across a controller write -> bookkeeping gap.
+    # Else exit immediately: continuing into read/guard work after cancellation
+    # is unnecessary and can block in BusyBox ash after an interrupted child.
+    trap 'cancelled=1; [ "$changing" = 1 ] || exit 143' HUP INT TERM
     _pix_usb_guard || exit 1
     now=$(_pix_usb_now) || { _pix_usb_refuse "cannot read monotonic clock"; exit 1; }
     count=0; last=0
@@ -165,11 +189,24 @@ pix_usb_reset() (
     fi
     # Stop/cleanup can take time: never trust a stale preflight for unbind.
     _pix_usb_guard || exit 1
+    [ "$cancelled" = 0 ] || exit 1
     printf '%s %s\n' "$((count + 1))" "$now" > "$state" || exit 1
-    echo "pix-usb-reset: power-cycling $_PIX_USB_GLUE" >&2
+    echo "pix-usb-reset: resetting controller/PHY $_PIX_USB_GLUE (VBUS power-off is not guaranteed)" >&2
+    changing=1
+    [ "$cancelled" = 0 ] || exit 1
     _pix_usb_write_control unbind || { _pix_usb_refuse "unbind failed; stopping"; exit 1; }
+    unbound=1
+    changing=0
+    [ "$cancelled" = 0 ] || exit 1
     sleep 3 || exit 1
+    [ "$cancelled" = 0 ] || exit 1
+    changing=1
+    bind_attempted=1
     _pix_usb_write_control bind || { _pix_usb_refuse "bind failed; stopping (controller may be unbound)"; exit 1; }
+    unbound=0
+    changing=0
+    [ "$cancelled" = 0 ] || exit 1
     sleep 2 || exit 1
+    [ "$cancelled" = 0 ] || exit 1
     _pix_usb_enumerated || { _pix_usb_refuse "DT295 did not re-enumerate; stopping"; exit 1; }
 )

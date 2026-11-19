@@ -5,6 +5,16 @@ root=$1
 [ "$root" = "$BUILD_DIR/buildroot-fs/cpio/target" ] || {
     echo "ramboot-finalize: unexpected staging tree: $root" >&2; exit 1;
 }
+# Overlay rsync is additive: a renamed init script can survive in the cached
+# Buildroot target and otherwise reappear in every new archive. Retire only
+# this known obsolete service, never --delete the package-populated /etc tree.
+obsolete="$root/etc/init.d/S95pix-stream"
+if [ -e "$obsolete" ] || [ -L "$obsolete" ]; then
+    [ -f "$obsolete" ] && [ ! -L "$obsolete" ] || {
+        echo "ramboot-finalize: unexpected obsolete init path: $obsolete" >&2; exit 1;
+    }
+    unlink "$obsolete"
+fi
 key=/identity/dropbear_ed25519_host_key
 if [ ! -s "$key" ]; then
     umask 077

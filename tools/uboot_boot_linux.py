@@ -83,7 +83,8 @@ def ramboot_setup(server=None, ipaddr=None, unit=2):
         setup += ["setenv sddev 0", "mmc dev ${sddev}", "mmc rescan"]
         load = "fatload mmc ${sddev}:1"
     else:
-        setup += ["usb start"]
+        # Match the saved unit-2 recipe's cold-enumeration settling interval.
+        setup += ["usb start", "sleep 3"]
         load = "fatload usb 0:1"
     setup += [
         f"{load} ${{kernel_addr_r}} Image",

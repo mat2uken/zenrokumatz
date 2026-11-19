@@ -58,6 +58,17 @@
  * (PP=0, CCS=0). meson-g12a-u200.dts, which uses the same SoC and does work,
  * wires its 5 V rail into both vbus-supply and the PHY supplies.
  */
+/*
+ * Firmware already enabled this rail to read the USB boot medium. Without
+ * boot-on, fixed-regulator requests the GPIO with an OFF initial value before
+ * the USB/PHY consumers enable it, introducing an unnecessary power transition
+ * during the U-Boot -> Linux handoff. boot-on preserves that initial ON state;
+ * unlike always-on it does not prohibit a later, intentional power-down.
+ */
+&vcc_5v {
+	regulator-boot-on;
+};
+
 &usb {
 	vbus-supply = <&vcc_5v>;
 };
