@@ -1855,3 +1855,45 @@ PPC=1 になれば、xhci がポート電源を制御できるようになり、
 遷移して DT295 が列挙される見込み。vendor の PORTSC3 は `0xE03`（PED=1, PLS=0）。
 
 **未検証**: SD への書き込みと起動。
+
+## 追記（round 69）: maxchild=2 と MaxPorts=3 の不一致
+
+### 実測
+
+```
+hcs_params1 = 0x03000140   → MaxPorts = 3
+hcc_params  = 0x0228FE64   → HCC_PPC = 0
+maxchild    = 2            → ルートハブは 2 ポートしか登録していない
+USB_R1 (0xffe09004) = 0x0000000D   vendor と同じ値
+PORTSC3 = 0x206E1   CCS=1 PED=0 PLS=7 PP=1 CSC=1
+```
+
+### 判明したこと
+
+1. `USB_R1 = 0xD` は vendor と同一。PPC の差は `USB_R1` 由来ではない。
+2. **`maxchild = 2`** なのに `MaxPorts = 3`。xhci は 3 ポート持てるのに、
+   ルートハブには 2 ポートしか登録していない。
+3. PORTSC3（DT295）は CCS=1 だが PED=0, PLS=7。**監視対象外**。
+4. PORTSC への書き込み（PR、PP）は**反映されない**（以前の調査と一致）。
+
+### 解釈
+
+`maxchild = 2` は xhci のポート数ではなく、**Protocol ケーパビリティの
+ポート範囲（PSIM/PSIH）から決まる**可能性がある。vendor の実測では
+USB2 の PSI が `PSIM=2, PSIH=0x18` だった。
+
+xhci は PSI の範囲に基づいて「どのポートが USB2 か」を判断する。
+Linux の `maxchild=2` は、その範囲解釈の結果と思われる。
+
+### 次の一手
+
+`skip-glue-init` で例外が消え、ポート番号も PORTSC3 に揃った。残るは
+「PORTSC3 を xhci の管理下に入れる」こと。
+
+1. **PPC パッチ（修正版）で PPC=1 にする。** maxchild が 3 になる可能性。
+2. `amlogic,extra-usb-port` 相当で `max_ports` を明示する（効果は未確認）。
+3. Protocol ケーパビリティのポート範囲を DTS で上書きする（mainline に
+   その仕組みは無いのでパッチが必要）。
+
+PPC パッチの修正版（`Image` = `6a9b20e4`）を SD に書き込んで検証するのが
+最短。SD の接続待ち。
