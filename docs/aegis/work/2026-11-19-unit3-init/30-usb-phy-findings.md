@@ -1262,3 +1262,47 @@ GXL（`0xffe09004`）でも同じ結果。vendor はこの領域を PHY の制�
 
 round 37 の成功（例外なしで xhci 登録）が再現するか。再現するなら、round 54 の
 例外は偶発的（タイミング依存）であり、`USB_R1` 書き込みが常に失敗するわけではない。
+
+## 追記（round 55）: round 37 の成功は再現せず。extra-usb-port の有無が関与の可能性
+
+### 再現試験
+
+同じ Image（`0c22a1a9…`）と GXL DTB（`d42958c7…`）で 2 回起動したところ、
+**2 回とも `usb_init_glue+0x38` で例外**が出た。
+
+```
+[1.305551] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.311960] Internal error: synchronous external abort
+pc : regmap_mmio_read32le+0x8/0x20
+dwc3_meson_g12a_usb_init_glue.isra.0+0x38/0x190
+```
+
+**round 37 の「例外なしで xhci 登録」は再現しなかった。**
+
+### round 37 と現在の差分
+
+| | round 37 | round 54/55 |
+|---|---|---|
+| Image | パッチなし（`804a534f`） | xhci パッチ入り（`0c22a1a9`） |
+| GXL DTB | 51,133 バイト | 51,168 バイト（`extra-usb-port` 追加） |
+
+差分は 2 つ。切り分けのため、**`extra-usb-port` を除いた 51,133 バイトの DTB** を
+作成した（`meson-g12a-x96-max-p-gxl-noextra.dtb`）。サイズは round 37 と完全一致。
+
+### 注目すべき技術的な問題
+
+`xhci` パッチは `dev->of_node` を参照して `amlogic,extra-usb-port` を探すが、
+この `dev` は **xhci の platform device** であり、DTS の `usb@ffe09000`
+（glue ノード）ではない。**プロパティを glue ノードに書いたので、xhci からは
+見えない。** したがってパッチは実質的に発動していないはず。
+
+それでも round 37 と挙動が違うのは、**カーネル再ビルドで別の部分が変わった**
+可能性がある。または round 37 の成功自体がタイミング依存の偶発事象。
+
+### 次の検証
+
+1. `-noextra` DTB（51,133 バイト、round 37 と同サイズ）で起動し、例外が出るか。
+   - 出ない → `extra-usb-port` の追加が原因。DTB のプロパティ追加が glue の
+     挙動に影響するとは考えにくいが、検証する価値はある。
+   - 出る → round 37 は偶発。Image の差（パッチ）を疑う。
+2. 必要なら、xhci パッチを外した Image で同じ DTB を試す。
