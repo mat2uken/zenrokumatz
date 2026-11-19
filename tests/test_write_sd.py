@@ -298,6 +298,21 @@ class UpdateBootFiles(unittest.TestCase):
                 write_sd.update_boot_files("/dev/disk99", image, digests,
                                            write_sd.hash_file(image))
 
+    def test_selection_is_validated_after_the_fat_layout(self):
+        """--only cannot rescue an image that is not a boot-only FAT image.
+
+        The FAT range is checked before the selection, so a two-partition image
+        is refused with the layout error regardless of --only. This documents
+        that ordering rather than pretending names are checked first.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            image, digests = self.two_partition_image(base)
+            with self.assertRaisesRegex(ValueError, "boot-only FAT volume"):
+                write_sd.update_boot_files("/dev/disk99", image, digests,
+                                           write_sd.hash_file(image),
+                                           only=["rootfs.cpio.uboot"])
+
     def test_refuses_an_empty_boot_list(self):
         with tempfile.TemporaryDirectory() as d:
             base = Path(d)

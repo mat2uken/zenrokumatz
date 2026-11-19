@@ -67,7 +67,7 @@ def boot_partition(image):
     return start * 512, (start + length) * 512
 
 
-def update_boot_files(device, image, manifest, expected):
+def update_boot_files(device, image, manifest, expected, only=None):
     """Replace the boot files on an already-written card, without sudo.
 
     Writing a whole disk image needs root (dd to /dev/rdiskN). Replacing files
@@ -87,8 +87,13 @@ def update_boot_files(device, image, manifest, expected):
                   if name not in (image.name, "rootfs.ext4", "ramboot.img")]
     if not boot_names:
         raise ValueError("SHA256SUMS names no boot files.")
-    if "Image" not in boot_names:
-        raise ValueError("SHA256SUMS names no boot kernel; refusing to update.")
+    if only:
+        unknown = [name for name in only if name not in boot_names]
+        if unknown:
+            raise ValueError("not boot files in this image: " + ", ".join(unknown))
+        boot_names = [name for name in boot_names if name in only]
+    if not boot_names:
+        raise ValueError("nothing selected to update.")
 
     with tempfile.TemporaryDirectory() as scratch:
         extracted = Path(scratch) / "boot.img"
@@ -153,6 +158,8 @@ def main():
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--erase", action="store_true", help="Erase this disk, write the image, and verify it")
     action.add_argument("--verify-only", action="store_true", help="Verify an already written disk without rewriting it")
+    parser.add_argument("--only", action="append", metavar="NAME",
+                        help="with --update-boot, replace just these files (repeatable)")
     action.add_argument("--update-boot", action="store_true",
                         help="Copy only the boot files from the image's FAT volume onto a mounted "
                              "card, then verify their hashes (no sudo, no whole-disk write)")
@@ -179,7 +186,7 @@ def main():
         print("or --update-boot to replace just the boot files on a mounted card.")
         return
     if args.update_boot:
-        return update_boot_files(args.device, image, manifest, expected)
+        return update_boot_files(args.device, image, manifest, expected, args.only)
     raw = args.device.replace("/dev/disk", "/dev/rdisk", 1)
     if args.erase:
         subprocess.run(["diskutil", "unmountDisk", args.device], check=True)
