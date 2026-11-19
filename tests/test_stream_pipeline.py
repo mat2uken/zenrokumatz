@@ -286,5 +286,59 @@ ps() { printf 'PID USER COMMAND\\n4242 root eit_watch --state fixture\\n'; }
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class SimpleLauncherFeatures(unittest.TestCase):
+    """pix-stream-simple must be able to carry the CM feature sideband.
+
+    The old launcher builds the statistics and passes --feature-* to
+    stb_streamer; the simple launcher used by units 2 and 3 did not, so a unit
+    with PIX_FEATURES=1 silently recorded without any CM information. These
+    checks pin the arguments without running ffmpeg.
+    """
+
+    SIMPLE = ROOT / "board/x96max/overlay/usr/bin/pix-stream-simple"
+
+    def text(self):
+        return self.SIMPLE.read_text()
+
+    def test_feature_defaults_are_off(self):
+        body = self.text()
+        self.assertIn('PIX_FEATURES:=0', body)
+        self.assertIn('PIX_FEATURE_MAX_MB:=384', body)
+
+    def test_the_streamer_forwards_the_feature_arguments(self):
+        body = self.text()
+        streamer = body[body.index("streamer() {"):]
+        streamer = streamer[:streamer.index("\n}\n")]
+        self.assertIn("$FEAT_ARGS", streamer)
+
+    def test_the_feature_flags_match_what_stb_streamer_accepts(self):
+        body = self.text()
+        helper = body[body.index("encode_with_features() {"):]
+        helper = helper[:helper.index("\n}\n")]
+        helpers = {flag for flag in
+                   ("--feature-file", "--feature-audio-file",
+                    "--feature-black-file", "--feature-max-mb")
+                   if flag in helper}
+        self.assertEqual(helpers, {"--feature-file", "--feature-audio-file",
+                                   "--feature-black-file", "--feature-max-mb"})
+
+    def test_the_recording_path_stays_without_filters_unless_enabled(self):
+        body = self.text()
+        encode = body[body.index("encode() {"):]
+        encode = encode[:encode.index("\n}\n")]
+        # The plain branch must still copy audio and keep the broadcast clock.
+        self.assertIn('-c:a copy -copyts -start_at_zero', encode)
+        self.assertIn('if [ "$PIX_FEATURES" = "1" ]', encode)
+
+    def test_the_analysis_uses_a_downscaled_copy(self):
+        body = self.text()
+        helper = body[body.index("encode_with_features() {"):]
+        helper = helper[:helper.index("\n}\n")]
+        self.assertIn("scale=320:180", helper)
+        self.assertIn("signalstats", helper)
+        # Picture and sound must keep the broadcast clock.
+        self.assertIn("split=2", helper)
+
+
 if __name__ == "__main__":
     unittest.main()

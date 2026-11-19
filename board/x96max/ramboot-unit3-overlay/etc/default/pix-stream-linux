@@ -22,6 +22,8 @@ PIX_GOP=60
 PIX_DEINTERLACE=1
 PIX_CAPTURE_SECONDS=1800
 # Preserve CM feature sideband; analysis and final cuts remain NAS-owned.
+# pix-stream-simple generates and forwards it (encode_with_features), so this
+# is what makes CM chapters appear on this unit as they do on unit 2.
 PIX_FEATURES=1
 PIX_FEATURE_MAX_MB=384
 PIX_FEATURE_STEP=3

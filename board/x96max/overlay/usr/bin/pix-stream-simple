@@ -27,6 +27,12 @@ exec >>/tmp/pix-simple.log 2>&1
 : "${PIX_RING_MB:=32}"
 : "${PIX_LIVE_MAX_MB:=64}"
 : "${PIX_DECRYPT:=0}"
+# CM feature sideband. Off by default: stb_streamer only inserts pixf when the
+# NAS asks for features=v1, and generating it costs a decode plus an analysis
+# pass. Enable it for a unit whose NAS records with CM chapters.
+: "${PIX_FEATURES:=0}"
+: "${PIX_FEATURE_MAX_MB:=384}"
+: "${PIX_LOG_DIR:=/tmp}"
 : "${PIX_TUNER:=dt295}"
 : "${PIX_SYSTEM:=bs}"
 : "${PIX_CHANNEL:=9}"
@@ -205,11 +211,48 @@ encode() {
     # （実測0.65x）。片方だけなら1.2x出る。画質を優先してデインタレースだけを
     # 掛け、解像度は元の1920x1080のまま出す。縞の残る絵をprogressiveとして
     # 符号化するのは避けたい。
+    if [ "$PIX_FEATURES" = "1" ]; then
+        encode_with_features
+        return
+    fi
     exec ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
         -f mpegts -i pipe:0 \
         -c:v mpeg2_v4l2m2m -vf "bwdif=mode=send_frame,format=nv12" \
         -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
         -map 0:v:0 -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
+        2>/tmp/pix-ff1.log
+}
+
+# CM feature sideband: analyse a small copy of the picture and the audio, and
+# write the statistics the NAS uses to place CM boundaries.
+#
+# The analysis runs on a 320x180 copy because signalstats over full frames cost
+# 84 s per 39.5 s of video (30 s at this size). Picture and sound must share one
+# clock: rewriting the picture timestamps restarted them at zero while the copied
+# sound kept the broadcast clock, which made a long capture's audio undecodable.
+encode_with_features() {
+    mkdir -p /dev/shm/pix
+    analyze="scale=320:180,signalstats,blackdetect=d=0.1:pix_th=0.125:pic_th=0.98"
+    analyze="$analyze,metadata=mode=print:key=lavfi.signalstats.YAVG"
+    analyze="$analyze,metadata=mode=print:key=lavfi.signalstats.YDIF"
+    FC="[0:v]bwdif=mode=send_frame,format=nv12[enc];[enc]split=2[main][an]"
+    FC="$FC;[an]${analyze}[aux]"
+    FEAT_ARGS="--feature-file $PIX_LOG_DIR/pix-ff1.log"
+    FEAT_ARGS="$FEAT_ARGS --feature-audio-file /dev/shm/pix/feat-a.log"
+    FEAT_ARGS="$FEAT_ARGS --feature-black-file $PIX_LOG_DIR/pix-ff1.log"
+    FEAT_ARGS="$FEAT_ARGS --feature-max-mb $PIX_FEATURE_MAX_MB"
+    export FEAT_ARGS
+    # The analysis branches end in the null muxer; without an explicit encoder
+    # ffmpeg reuses the v4l2m2m one from the main stream and fails.
+    exec ffmpeg -hide_banner -nostdin -v info -nostats -probesize 2000000 -analyzeduration 3000000 \
+        -f mpegts -i pipe:0 \
+        -filter_complex "$FC" -map "[main]" \
+        -c:v h264_v4l2m2m -num_capture_buffers 32 -b:v "$PIX_BITRATE" -g "$PIX_GOP" \
+        -map 0:a:0 -c:a copy -copyts -start_at_zero -f mpegts pipe:1 \
+        -map "[aux]" -c:v rawvideo -f null /dev/null \
+        -map 0:a:0 -c:a pcm_s16le -ar 48000 -ac 2 \
+        -af "astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level+Number_of_samples,ametadata=mode=print:file=/dev/shm/pix/feat-a.log" \
+        -f null /dev/null \
         2>/tmp/pix-ff1.log
 }
 
@@ -223,9 +266,11 @@ fragment() {
 
 
 streamer() {
+    # shellcheck disable=SC2086
     exec stb_streamer --port "$PIX_PORT" --allowed-ip "$PIX_ALLOWED_IP" \
         --spool-mb "$PIX_SPOOL_MB" --channel "$PIX_CHANNEL" --display "$PIX_DISPLAY" \
         --program-file /dev/shm/pix/program.txt --logo-dir "$PIX_LOGO_DIR" \
+        $FEAT_ARGS \
         2>/tmp/pix-stb.log
 }
 
