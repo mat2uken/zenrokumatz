@@ -146,3 +146,34 @@ tftpboot コマンドは利用可能
 - YMODEM 転送ツール（SD も sudo も不要。U-Boot がヘッダに ACK を返すことは実機確認済み）
 - 受け入れ検査ツール、225 テスト
 - ビルド設定の欠陥 3 件の修正
+
+## 追記（round 22–24）: 電源投入待ちで停滞中
+
+2026-11-19 20:00 以降、3代目 `192.168.99.56` は応答しない。シリアルも自発出力 0 バイト。他機（1代目 .109、2代目 .123）と NAS は正常。
+
+**3代目の電源投入が、再開に必要な唯一の操作。** 遠隔電源の仕組み（スマートプラグ等）は、この LAN 構成には無い。
+
+### 停滞中に確定した設計上の結論
+
+1. 候補 DTB `meson-g12a-x96-max-p-usb.dtb` の phandle は完全に解決している
+   （`0x54`→`phy@36000`、`0x55`→`phy@3a000`、`0x06`→`phy@46000`）。
+   vendor の `usb-phy = <usb2phy usb3phy>` と等価で、mainline の `phys`/`phy-names` 形式。
+2. YMODEM（`loady_send.py`）は SD も sudo も不要な唯一の搬入経路。実機で
+   U-Boot がヘッダに ACK（0x06）を返すことまでは確認済み。データブロックの
+   途中で機体が停止したため、`probe_ymodem.py` で応答の実パターンを測って
+   から詰める方針にした。
+3. macOS の termios は 230400 bps まで。CP2104 自体は 2Mbps 対応だが API 制約。
+   77MB（Image＋initramfs）の転送は 230400bps で約 56 分。
+
+### 再開したときの最初の一歩
+
+```sh
+# 3代目の電源を入れ、U-Boot か Android が起動したのを確認してから
+/usr/bin/python3 tools/probe_ymodem.py --dev /dev/cu.usbserial-01025FC4 \
+    --file output/ramboot-unit3/meson-g12a-x96-max-p-usb.dtb --address 0x08000000
+```
+
+計測の結果、`C` と ACK の出方を見て `loady_send.py` を確定させる。DTB（50KB）
+なら 230400bps で数秒。それが通れば DTB を `0x08000000` に置き、カーネルと
+initramfs は SD から読む（候補 DTB だけ差し替える）ことで、媒体を書かずに
+USB の検証ができる。
