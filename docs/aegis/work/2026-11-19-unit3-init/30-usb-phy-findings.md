@@ -1595,3 +1595,42 @@ vendor では PORTSC3 にデバイスがあり PED=1、PLS=0（U0）。Linux で
 `xhci->hcc_params |= HCC_PPC` とすれば、PP を操作できるようになる。
 
 こちらの方が glue レジスタを触らないため安全。
+
+## 追記（round 62 後半）: vendor の Protocol ケーパビリティ実測
+
+`aml_reg` で xHCI の拡張ケーパビリティを読んだ（xECP = `hcc_params[31:16] * 4`
+= `0x228 * 4` = `0xff5008a0`）。
+
+```
+0xff5008a0 = 0x00000401   CAP_ID=1 (USB Legacy Support), NEXT=0x04
+0xff5008b0 = 0x02000402   CAP_ID=2 (Supported Protocol), NEXT=0x04
+                          REV=0, NAME=2 (USB 2.0)
+0xff5008b4 = 0x20425355   "USB " (名前文字列)
+0xff5008b8 = 0x00180201   PSI: PSIV=1, PSIM=2, PSIH=0x18
+0xff5008bc = 0x0          PSIC
+0xff5008c0 = 0x03000002   CAP_ID=2, NEXT=0, NAME=3 (USB 3.0)
+```
+
+### USB2 ポート範囲の意味
+
+`PSIM = 2`（開始ポート番号）、`PSIH = 0x18 = 24`（最高ポート番号）。
+つまり vendor は「USB2 はポート 2〜25」と申告している。
+
+### 注目点
+
+`PSIM=2` は**ポート 1 が USB2 の範囲に含まれない**ことを意味する可能性がある。
+vendor の実測では DT295 は `PORTSC3`（0xE03, PED=1, U0）に接続されていた。
+
+**mainline がこの PSI をどう解釈するかで、ポート番号の対応が変わる。**
+Linux で PORTSC4 に見えているのは、mainline の PSI 解釈が vendor と違うためと
+考えられる。
+
+### 次の確認
+
+Linux 側で同じレジスタ（`0xff5008a0` 帯）を読めば、PSI の値が vendor と同じか
+比較できる。ただし Linux では `devmem` は使える（以前 `busybox devmem` で
+`0xff500020` 等を読んだ）。hcc_params も Linux では `0x0228FE64`（PPC=0）だった。
+
+**PPC=0 は、mainline が `PORT_POWER_CONTROL_PRESENT` を立てていないため。**
+vendor は `0x0228FE6C`（PPC=1）。この差がハブディスクリプタの
+「ポート電源スイッチング対応」を変え、ポート番号の解釈にも影響している可能性。
