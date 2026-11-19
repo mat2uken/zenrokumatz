@@ -84,6 +84,11 @@ Path(os.environ['CAPTURE_PID'] + '.parent').write_text(str(os.getppid()))
 if os.environ.get('ONESHOT_CAPTURE') == '1': close(None, None)
 while True: time.sleep(60)
 ''')
+        self.usb = self.base / "usb"
+        device = self.usb / "1-1"
+        device.mkdir(parents=True)
+        (device / "idVendor").write_text("06b8\n")
+        (device / "idProduct").write_text("103b\n")
         for name in ("ffmpeg", "eit_watch", "stb_streamer", "torne-b25", "pix-ring"):
             self.executable(name, "#!" + sys.executable + "\n" + r'''import sys
 sys.stdout.buffer.write(sys.stdin.buffer.read())
@@ -108,6 +113,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             ("/var/lib/pix/logos", str(self.base / "logos")),
             ("/tmp/pix-userland-dt295-0.lock", str(self.vendor)),
             ("/tmp/", str(self.logs) + "/"),
+            # wait_for_tuner() looks the DT295 up here; without a fixture the
+            # supervisor would block for the whole wait budget.
+            ("/sys/bus/usb/devices/", str(self.usb) + "/"),
         )
         # Replace original paths in one pass: on Linux the fixture itself is
         # under /tmp, so sequential replacement would rewrite inserted paths.
@@ -705,6 +713,79 @@ else:
         self.assertNotIn("unexpected-launch", self.calls())
         self.assertFalse((self.run / "pix-logo-fetch.lock").exists())
         self.assertFalse((self.run / "pix-logo-weekly.owner").exists())
+
+
+class TunerWait(unittest.TestCase):
+    """The supervisor waits for the tuner instead of restarting into a panic.
+
+    Starting with no tuner present made the pipeline fail three times in a row,
+    which triggered the guarded USB recovery and left the board unresponsive.
+    wait_for_tuner() must find the device through sysfs, give up boundedly, and
+    never treat a stop request as a reason to keep waiting.
+    """
+
+    def extract(self):
+        """Pull the wait_for_tuner function out of the overlay script."""
+        text = (OVERLAY / "usr/bin/pix-stream-simple").read_text()
+        start = text.index("wait_for_tuner() {")
+        end = text.index("\n}\n", start) + 3
+        return text[start:end]
+
+    def run_wait(self, devices, wait, stop=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, files in devices.items():
+                node = root / "devices" / name
+                node.mkdir(parents=True)
+                for key, value in files.items():
+                    (node / key).write_text(value + "\n")
+            stopfile = root / "stop"
+            if stop:
+                stopfile.write_text("")
+            script = root / "wait.sh"
+            script.write_text(
+                '#!/bin/sh\n'
+                'STOPFILE=%s\n'
+                'PIX_DECRYPT=${PIX_DECRYPT:-0}\n'
+                'PIX_TUNER_WAIT=%d\n'
+                'log() { echo "$*"; }\n'
+                '%s\n'
+                'wait_for_tuner && echo FOUND || echo STOPPED\n'
+                % (stopfile, wait, self.extract().replace(
+                    "/sys/bus/usb/devices/", str(root / "devices") + "/")))
+            script.chmod(0o755)
+            return subprocess.run([str(script)], capture_output=True, text=True, timeout=30)
+
+    def test_finds_the_dt295_by_vendor_and_product(self):
+        result = self.run_wait({"1-1": {"idVendor": "06b8", "idProduct": "103b"}}, 5)
+        self.assertIn("FOUND", result.stdout)
+
+    def test_ignores_other_vendors(self):
+        result = self.run_wait(
+            {"1-1": {"idVendor": "0781", "idProduct": "5580"},
+             "1-2": {"idVendor": "06b8", "idProduct": "103b"}}, 5)
+        self.assertIn("FOUND", result.stdout)
+
+    def test_gives_up_after_the_bound_and_still_starts(self):
+        result = self.run_wait({"1-1": {"idVendor": "0781", "idProduct": "5580"}}, 2)
+        self.assertIn("did not appear within 2s", result.stdout)
+        self.assertIn("FOUND", result.stdout)
+
+    def test_a_stop_request_ends_the_wait(self):
+        result = self.run_wait({"1-1": {"idVendor": "0781", "idProduct": "5580"}},
+                               30, stop=True)
+        self.assertIn("STOPPED", result.stdout)
+
+    def test_decrypt_mode_skips_the_wait(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "w.sh"
+            script.write_text(
+                '#!/bin/sh\nPIX_DECRYPT=1\nlog() { :; }\n%s\n'
+                'wait_for_tuner && echo FOUND\n' % self.extract())
+            script.chmod(0o755)
+            result = subprocess.run([str(script)], capture_output=True, text=True,
+                                    timeout=10)
+        self.assertIn("FOUND", result.stdout)
 
 
 if __name__ == "__main__":

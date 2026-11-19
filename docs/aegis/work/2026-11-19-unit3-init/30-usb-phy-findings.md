@@ -2182,3 +2182,63 @@ SSH が使えるようになった時点から測るので、正確な「起動�
 2. 認識を待ってから `pix-stream` を起動すれば、機体が停止せず録画が始まるか
 
 PPC 修正版（`6a9b20e4`）への更新は、上記で問題が出た場合に回す。
+
+## 追記（round 77）: pix-stream にチューナー認識待ちを追加
+
+### 背景
+
+round 73 で DT295 が認識された後、`/etc/init.d/S97pix-stream start` を実行した
+直後に機体が無応答になった。原因は:
+
+```
+起動直後、DT295 未認識
+  → パイプライン失敗（fast_fail が 3）
+  → dt295_recover → pix_usb_reset（dwc3 を unbind/bind）
+  → 機体が無応答
+```
+
+### 実装
+
+`pix-stream-simple` のメインループ先頭に `wait_for_tuner()` を追加した。sysfs を
+見て VID `06b8` / PID `103b` を探し、見つかるまで（既定 120 秒、`PIX_TUNER_WAIT`
+で変更可）待つ。見つからなくても待機上限で打ち切り、従来どおり起動する。
+
+```sh
+wait_for_tuner() {
+    [ "$PIX_DECRYPT" = "1" ] && return 0
+    wanted=${PIX_TUNER_WAIT:-120}
+    ...
+    for dev in /sys/bus/usb/devices/*/; do
+        read -r vid < "$dev/idVendor" 2>/dev/null || continue
+        [ "$vid" = "06b8" ] || continue
+        read -r pid < "$dev/idProduct" 2>/dev/null || continue
+        [ "$pid" = "103b" ] || continue
+        return 0
+    done
+    ...
+}
+```
+
+`$STOPFILE` を毎秒見るので、停止要求があれば待機を打ち切る。
+
+### テスト
+
+`tests/test_stream_lifecycle.py` の `TunerWait` に 5 件追加:
+
+- VID/PID で DT295 を見つける
+- 他社デバイスを無視する
+- 上限で打ち切って起動する
+- 停止要求で待機を終える
+- `PIX_DECRYPT=1` では待機しない
+
+既存の `StreamLifecycleTests` は偽 sysfs（`self.usb`）を用意するよう更新した。
+**偽 sysfs が無いと待機で 120 秒ブロックし、18 件が失敗した**ため。
+
+### 結果
+
+`236 tests ... OK (skipped=9)`
+
+### 未検証
+
+実機での動作。round 73 と同じ `Image`（`b3099f99`）にこのスクリプト変更を載せる
+必要がある（SD へ書き込み）。
