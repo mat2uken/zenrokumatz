@@ -760,3 +760,68 @@ dwc_otg: usb0: type: 2 speed: 0, config: 0, dma: 0, id: 0, phy: ffe09000, ctrl: 
    amlogic-new-usb2-v2 相当）を mainline 側に足す。カーネルパッチ。
 
 まず 1 を試す。DTB だけなので YMODEM（50KB）で送れる。
+
+## 追記（round 37）: GXL compatible で Linux は起動するが、USB は動かない
+
+`-p-gxl` DTB（`adbc4b92…`、`compatible = "amlogic,meson-gxl-usb-ctrl"`）を
+YMODEM で転送し、SD の Image と initramfs で起動した。
+
+### 得られた結果
+
+**カーネル例外は出ず、Linux はユーザー空間まで起動した。**
+
+```
+B-CAS: DT295 internal card (external relay not needed)
+Starting pix-stream: OK
+Starting pix-logo-weekly: OK
+X96Max_P3 RAM-root Linux
+x96max-p3 login:
+```
+
+RAM rootfs、swap なし、`rootfs` を確認。
+
+### ただし glue ドライバは失敗している
+
+```
+dwc3-meson-g12a ffe09000.usb: error -ENOENT: Failed to get clk 'usb_ctrl'
+dwc3-meson-g12a ffe09000.usb: probe with driver dwc3-meson-g12a failed with error -2
+```
+
+GXL 版は `meson_gxl_clocks` として `usb_ctrl` / `usb_bus` / `xtal_usb_ctrl` を要求する。
+この基板の DTS にはその名前のクロックが無いため probe に失敗し、dwc3 は登録されない。
+
+その結果:
+
+```
+# lsusb
+（何も表示されない）
+```
+
+**DT295 は USB デバイスとして認識されていない。** 「B-CAS: DT295 internal card」の
+表示は、USB 経由ではなく別の判定（設定値の確認など）によるもの。
+
+### まとめ
+
+| DTB | 結果 |
+|---|---|
+| `-ephy-4g`（G12A glue） | `USB_R1` 書き込みで synchronous external abort |
+| `-p-usb`（glue 削除、snps,dwc3 直接） | `dwc3_core_probe` で abort（0xff500020 が応答しない） |
+| **`-p-gxl`（GXL glue）** | **例外なしで起動。ただし `usb_ctrl` クロックが無く glue probe 失敗 → USB デバイス無し** |
+
+### 次の一手
+
+GXL 版が必要とするクロック名を DTS に足せば、glue probe が通り、glue regmap は
+`base`（`0xffe09000`）そのもの、u2p は作られないので例外にならない見込み。
+
+必要なのは:
+
+```dts
+&usb {
+    compatible = "amlogic,meson-gxl-usb-ctrl";
+    clocks = <&clkc CLKID_USB>, <&clkc CLKID_USB1_DDR_BRIDGE>, <&clkc CLKID_USB_PHY>;
+    clock-names = "usb_ctrl", "usb_bus", "xtal_usb_ctrl";
+};
+```
+
+ただし `meson_gxl_clocks` が実際にどの名前を要求するか、カーネルソースで確認する
+必要がある。`CLKID_USB_PHY` が G12A の clkc に存在するかも要確認。
