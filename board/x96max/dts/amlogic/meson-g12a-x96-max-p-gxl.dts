@@ -32,11 +32,12 @@
 	clocks = <&clkc CLKID_USB>;
 	clock-names = "usb_ctrl";
 	/*
-	 * hcs_params1 reports MaxPorts = 3, but this board wires a fourth USB2
-	 * port: PORTSC4 shows a connected device (CCS = 1, PP = 1) that never
-	 * enumerates because the driver stops at port 3. The port register
-	 * blocks are contiguous at a 0x10 stride, so one more is readable.
-	 * Opt in to the xhci patch that raises the limit.
+	 * Vendor firmware reports hcc_params 0x0228fe6c (HCC_PPC = 1) while
+	 * mainline reports 0x0228fe64 (HCC_PPC = 0): the GXL glue variant never
+	 * runs usb3_init(), so the glue's PORT_POWER_CONTROL_PRESENT bit stays
+	 * clear. With PPC = 0 xhci advertises "port power always on" and never
+	 * drives PP, so a plugged device is never brought up. Opt in to the
+	 * xhci patch that raises PPC without touching the glue register.
 	 */
-	amlogic,extra-usb-port;
+	amlogic,port-power-control;
 };

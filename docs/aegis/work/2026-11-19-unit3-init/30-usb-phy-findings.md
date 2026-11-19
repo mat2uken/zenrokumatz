@@ -1634,3 +1634,62 @@ Linux 側で同じレジスタ（`0xff5008a0` 帯）を読めば、PSI の値が
 **PPC=0 は、mainline が `PORT_POWER_CONTROL_PRESENT` を立てていないため。**
 vendor は `0x0228FE6C`（PPC=1）。この差がハブディスクリプタの
 「ポート電源スイッチング対応」を変え、ポート番号の解釈にも影響している可能性。
+
+## 追記（round 63）: PPC ビットをソフトウェアで立てるパッチをビルドした
+
+### 決定打の再掲
+
+```
+vendor  hcc_params = 0x0228FE6C   HCC_PPC (bit 3) = 1
+Linux   hcc_params = 0x0228FE64   HCC_PPC (bit 3) = 0
+                  差分 = 0x8（bit 3 のみ）
+```
+
+`HCC_PPC` は `xhci-hub.c:266` でロートハブディスクリプタの
+「ポート電源スイッチング対応」を決める。PPC=0 だと「電源常時 ON」と申告し、
+xhci は PP を操作しない。
+
+### 実装したパッチ
+
+`board/x96max/patches/linux/0003-xhci-port-power-control.patch`
+
+```c
+xhci->hcc_params = readl(&xhci->cap_regs->hcc_params);
+if (xhci->hci_version > 0x100)
+    xhci->hcc_params2 = readl(&xhci->cap_regs->hcc_params2);
++if (dev->of_node &&
++    of_property_read_bool(dev->of_node, "amlogic,port-power-control"))
++    xhci->hcc_params |= (1 << 3);
+
+xhci->dma_mask_bits = 64;
+```
+
+DTS 側は `&usb { amlogic,port-power-control; }` でオプトイン。glue レジスタ
+（`0xffe09004`）は触らないので、この基板で例外になる書き込みを避けられる。
+
+**注意**: `dev->of_node` は xhci の platform device のもの。プロパティを glue ノード
+（`usb@ffe09000`）に置いたが、xhci は子ノードとして `usb@ff500000` を持つので、
+`dev->of_node` は子のノードになる可能性がある。**プロパティが届かない場合は
+パッチが発動しない。** 実機で PPC が立つか確認する必要がある。
+
+### ビルド結果
+
+```
+Applying 0001-vdec-meson-sm1-codecs.patch using patch:
+Applying 0002-dwc3-meson-skip-u2p.patch using patch:
+Applying 0003-xhci-port-power-control.patch using patch:
+```
+
+| ファイル | SHA-256（先頭） |
+|---|---|
+| `Image` | `fcfaf4a2` |
+| `meson-g12a-x96-max-p-gxl.dtb` | `8dae4c56` |
+
+### 次の確認
+
+SD に書き込み、GXL DTB で起動して:
+
+1. 例外が出ないか（`usb_init_glue` の `USB_R1` 書き込み）
+2. `hcc_params` の PPC ビットが立っているか（`busybox devmem 0xff500010`）
+3. `lsusb` に DT295 が出るか
+4. PORTSC3/4 の状態（PED=1, PLS=0 になれば成功）
