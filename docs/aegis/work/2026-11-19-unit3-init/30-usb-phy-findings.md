@@ -882,3 +882,72 @@ hub 1-0:1.0: 2 ports detected
    `PORT_POWER_CONTROL_PRESENT` が GXL 経路で立っているか要確認。
 3. ポートの状態は `cat /sys/bus/usb/devices/usb1/1-0:1.0/port1/connect` 等で
    読める（今回は未実施）。
+
+## 追記（round 39）: USB バスは健全。DT295 が物理未接続
+
+### 確認したこと
+
+```
+$ ssh root@192.168.99.56 'for d in /sys/class/regulator/*/; do ... done'
+/sys/class/regulator/regulator.2/ VCC_5V enabled     ← VBUS は供給されている
+```
+
+```
+$ lsusb
+Bus 001 Device 001: ID 1d6b:0002 ... 2.0 root hub
+Bus 002 Device 001: ID 1d6b:0003 ... 3.0 root hub     ← root hub のみ
+```
+
+```
+hub 1-0:1.0: 2 ports detected
+hub 2-0:1.0: 1 port detected
+（"new high-speed USB device" のイベントが無い）
+```
+
+`VCC_5V` は enabled、xhci は稼働、ハブはポートを検出している。**それでもデバイス
+接続イベントが一度も出ない。** VBUS とコントローラは正常なので、**DT295 が物理的に
+挿さっていない**と判断する。
+
+### 現在の到達点
+
+| 項目 | 状態 |
+|---|---|
+| Linux RAM 起動（GXL DTB） | **達成**。例外 0、SSH 可、eth0 192.168.99.56 |
+| USB ホストコントローラ | **達成**。xhci が 0xff500000 をマップ、ハブ 2 ポート |
+| VBUS (VCC_5V) | **enabled** |
+| DT295 の認識 | **未達**（物理未接続と判断） |
+| 録画・NAS 保存・CM カット | 未達 |
+
+### 起動に使う DTB（確定）
+
+`meson-g12a-x96-max-p-gxl.dtb`（`compatible = "amlogic,meson-gxl-usb-ctrl"`、
+`clock-names = "usb_ctrl"`）。
+
+これが3代目の正解。理由:
+
+- G12A 解釈は `0xffe09000` を glue とみなすが、実機では USB2 PHY の制御ブロック。
+  書き込みで synchronous external abort になる。
+- GXL 解釈は glue regmap を `base` そのものにし、u2p を作らないため衝突しない。
+- vendor の dwc3 も `cpu-type = "gxl"` と申告している。
+- GXL は `usb_ctrl` という名前のクロックを要求するので、DTS で命名する
+  （mainline の num_clks の誤りにより実際に要求されるのは 1 個だけ）。
+
+### 次にやること
+
+**DT295 を 3代目の USB ポートへ挿す。** それだけで以下を確認できる:
+
+```sh
+ssh root@192.168.99.56 'lsusb | grep 06b8'          # Pixela PIX-DT295
+ssh root@192.168.99.56 'wget -qO- http://127.0.0.1:40774/v1/status'
+python3 tools/check-unit3-acceptance.py --host 192.168.99.56 --channel 17
+```
+
+### 運用上の注意
+
+- `pix-usb-audit` が起動約 31 秒で USB を再列挙する（一度バスが外れて復帰する）。
+  例外は出ておらず、バスも戻るので実害は無いとみられるが、DT295 接続後に
+  録画が途切れないかは確認する。
+- SD の FAT 区画を書き換えれば、sudo 無しで Image/DTB を差し替えられる
+  （`write-sd.py --update-boot`、実機で成功済み）。
+- YMODEM（`tools/loady_send.py`）で DTB を単体で送れる。115200bps 固定、
+  ボーレートを上げると U-Boot が切り替え待ちに入るので不可。
