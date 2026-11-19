@@ -1,5 +1,12 @@
 # 進行状態（2026-11-18 19:40 JST頃）
 
+## 追記（2026-11-19 10:45頃）コミットとUSB反映
+- **commit `950cc77`**（fix: 2台目X96Maxの再起動・電源断で録画が止まる問題の修正、28ファイル）。`package/stb-streamer/src/stb_linux_pipe.c` と `tests/test_program_boundary.py` は別件として**未コミットのまま**。pushはしていない。
+- コミット前にRAMイメージを再ビルド（source snapshotへ最終4点を反映）。新しいCPIOは **`d70e8188dcde567fe97a1bba149fd5d4595584e168b2d5fb784b2bdf8f94f99d`**（35195125B、旧7d142f43..）。Image/2DTBは不変。
+- 検証：host 163PASS（skip1）／target BusyBox 163PASS（skip1）、8本のsh構文検査PASS。テストのarchive照合が旧supervisorで落ちたため、この再ビルドで解消した。
+- **USB反映済み**：[更新log](</Users/kenichim/Desktop/work/X96MaxLinuxTSEnc/work/restart-usb-cpio-update-release.log>)。旧hash `7d142f43..` を前提gateにした[CPIO-only更新](</Users/kenichim/Desktop/work/X96MaxLinuxTSEnc/work/restart-usb-cpio-update.sh>)（.new→hash→rename→sync→unmount）。独立readbackでCPIO=`d70e8188..`、Image/2DTB不変、MBR `b433d6dd..` 不変。gzip展開したCPIO内の8本（simple/audit/S42/S98/weekly/fetch/S97/S99）が作業ツリー（＝コミット済み）と**SHA一致**。録画・NAS・USB監査は継続中（totalPushed増加）。
+- **未確認**：このCPIOで実際に起動すること（次回再起動／電源断時に検証する）。RAM上の実行版はすでに最終sourceなので、起動経路の再確認は次回の任意の再起動で足りる。
+
 ## 追記（2026-11-19 09:20頃）停止中断で所有権が残る欠陥の修正
 - **症状**：native-first化後、停止中の割り込みで `native exit acknowledgement missing or invalid; retaining ownership` となり、exit ACKが無いまま所有権が永久に残る（実機で1回発生）。
 - **根因（2層）**：(1) `worker` PIDはrun_workerの`wait "$worker"`の後に代入され、caught TERMでそのwaitが中断すると変数が未設定のまま`finish`へ入り、`cleanup_children`が即returnしてworkerを追えない。(2) worker死亡後もメタデータの`exit`が無いことを「未drain」と同一視して所有権を保持していた（nativeが起動する前の中断でも同じ）。
