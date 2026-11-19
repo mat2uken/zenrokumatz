@@ -167,3 +167,45 @@ channelName: ＢＳ１１イレブン
 192.168.99.109-17      error      ch=17
 192.168.99.56-17       error      ch=17                ← 3代目（機体停止中）
 ```
+
+## 追記（round 83）: NAS の discovery に 3代目が正しく登録されている
+
+### `/api/discovered` の実測
+
+```json
+{
+ "instance": "pixstb-c0a86338",
+ "name": "X96Max-P3",
+ "host": "192.168.99.56",
+ "port": 40774,
+ "channel": 17,
+ "ageSec": 3331,
+ "online": false,
+ "known": true,
+ "knownId": "192.168.99.56-17",
+ "knownChannel": "17"
+}
+```
+
+**3代目は NAS から `X96Max-P3` として正しく発見・登録されている。**
+`online: false` は機体が停止しているため。起動して `online: true` になれば、
+ノード `192.168.99.56-17`（enabled=true、画質は2代目と同一）で録画が始まる。
+
+`ageSec: 3331` は最後に discovery されてからの経過秒数。
+
+### NAS が提供する API（UI から抽出）
+
+```
+/api/nodes      ノード登録・一覧
+/api/channels   チャンネル一覧
+/api/discovered 自動発見された STB
+```
+
+録画ファイルの一覧や CM チャプターを返す API は無い。録画は NAS 側で
+別途保存・処理されている（UI は「録画管理」と「録画設定」のみ）。
+
+### 次の確認（機体起動後）
+
+1. `/api/discovered` で `online: true` になること
+2. `/api/nodes` で `state: recording`、`stb.status: ok` になること
+3. NAS 上に録画ファイルが現れること
