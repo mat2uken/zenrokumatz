@@ -83,6 +83,31 @@ def set_baud(fd, baud):
     termios.tcflush(fd, termios.TCIFLUSH)
 
 
+def write_all(fd, data, timeout=10.0):
+    """Write every byte to a non-blocking fd.
+
+    The port is opened O_NONBLOCK so reads never stall the control loop; that
+    also makes a large write fail with EAGAIN when the kernel buffer is full,
+    which happened mid-transfer and aborted a run at 79%. Retry until the whole
+    packet is out or the deadline passes.
+    """
+    view = memoryview(data)
+    end = time.time() + timeout
+    while view:
+        try:
+            written = os.write(fd, view)
+        except BlockingIOError:
+            written = 0
+        except InterruptedError:
+            continue
+        if written:
+            view = view[written:]
+        else:
+            if time.time() > end:
+                raise TimeoutError("serial write timed out")
+            time.sleep(0.005)
+
+
 def read_byte(fd, timeout):
     import select
     end = time.time() + timeout
@@ -107,7 +132,7 @@ def send_block(fd, packet, seq, retries=10, accept_c=False):
     A CAN or a NAK triggers a retry of the same block.
     """
     for attempt in range(retries):
-        os.write(fd, packet)
+        write_all(fd, packet)
         end = time.time() + 8.0
         seen = bytearray()
         while time.time() < end:
@@ -166,7 +191,7 @@ def main():
     # single 'C' U-Boot sends after "Ready for binary ... download".
     fd = open_port(args.dev, args.console_baud)
     try:
-        os.write(fd, ("loady %s %d\r" % (args.address, args.baud)).encode())
+        write_all(fd, ("loady %s %d\r" % (args.address, args.baud)).encode())
         banner = read_byte(fd, 3.0)
         if b"Ready for binary" not in banner:
             sys.stderr.write("no download banner: %r\n" % banner[-120:])
@@ -191,12 +216,12 @@ def main():
             seq = (seq + 1) & 0xFF
         # EOT, then the empty header that ends the batch.
         for _ in range(3):
-            os.write(fd, bytes([EOT]))
+            write_all(fd, bytes([EOT]))
             got = read_byte(fd, 5.0)
             if got and ACK in got:
                 break
         wait_for_c(fd, 10.0)
-        os.write(fd, make_packet(0, b""))
+        write_all(fd, make_packet(0, b""))
         read_byte(fd, 5.0)
         print("sent %d bytes" % size, file=sys.stderr)
         return 0

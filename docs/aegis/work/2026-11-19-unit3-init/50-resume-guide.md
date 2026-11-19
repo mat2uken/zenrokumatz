@@ -177,3 +177,61 @@ tftpboot コマンドは利用可能
 なら 230400bps で数秒。それが通れば DTB を `0x08000000` に置き、カーネルと
 initramfs は SD から読む（候補 DTB だけ差し替える）ことで、媒体を書かずに
 USB の検証ができる。
+
+## 追記（round 25–27）: YMODEM 転送が成功。DTB を実機へ搬入できた
+
+**sudo も SD カードも使わずに、DTB を U-Boot へ送り込むことに成功した。**
+
+```
+$ python3 tools/loady_send.py --dev /dev/cu.usbserial-01025FC4 --baud 115200 \
+      --file output/ramboot-unit3/meson-g12a-x96-max-p-usb.dtb --address 0x08000000
+sending header (meson-g12a-x96-max-p-usb.dtb, 50529 bytes)
+sent 50529 bytes
+```
+
+U-Boot 側で検証:
+
+```
+fdt addr 0x08000000; fdt header
+  magic: 0xd00dfeed
+  totalsize: 0xc561 (50529)      ← 送信量と一致
+crc32 0x08000000 0xC561
+  ==> 7c0115d4                   ← ホスト側 zlib.crc32 と一致
+```
+
+### 成功の条件（重要）
+
+1. **ボーレートは 115200 のまま使う。** `loady` に 230400 等を渡すと U-Boot は
+   `## Switch baudrate to N bps` を出して切り替えを待ち、その間は 'C' を返さない。
+   115200 なら即座に `## Ready for binary (ymodem) download to ...` と 'C' が出る。
+2. **ポートは開いたまま使う。** 閉じて開き直すと、U-Boot が送る 1 個の 'C' を失う。
+3. **書き込みは再試行する。** ポートは `O_NONBLOCK` なので、カーネルバッファが
+   満杯になると `BlockingIOError` になる。最初の実装はこれで 79% 地点で落ちた。
+   `write_all()` で書き切るまで再試行するようにして解決した。
+4. **ACK だけで判定しない。** ブロック間の応答が 'C' のことがある。ヘッダへの
+   `0x06`（ACK）を確認し、その後は書き込み完了で進める。
+
+### 所要時間
+
+50KB で約 3〜5 分（115200bps、1 ブロックあたり約 2.6 秒の応答待ちを含む）。
+Image（41MB）と initramfs（35MB）を送る場合は数時間かかるため、**DTB だけを
+差し替え、カーネルと initramfs は SD から読む**運用が現実的。
+
+### 転送中の注意
+
+転送が中断すると U-Boot は YMODEM 受信モードに残る。`CAN`（0x18）を数回送ってから
+`ESC` でプロンプトに戻る。機体が無応答になった場合は、USB シリアルケーブルの
+機体側コネクタが緩んでいることがある（実際に一度発生し、挿し直しで復旧した）。
+
+### 補助経路: ADB
+
+シリアルが落ちても、Android が起動していれば ADB で操作できる。
+
+```
+adb connect 192.168.99.56:5555
+adb shell su -c "id"      → uid=0(root)
+/dev/block/env            → U-Boot 環境の保存領域
+```
+
+ただし `/dev/block/env` への書き込みは起動設定を壊す危険があるため、シリアルが
+使える状況では行わない。
