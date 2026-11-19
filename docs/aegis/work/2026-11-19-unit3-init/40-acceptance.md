@@ -209,3 +209,58 @@ channelName: ＢＳ１１イレブン
 1. `/api/discovered` で `online: true` になること
 2. `/api/nodes` で `state: recording`、`stb.status: ok` になること
 3. NAS 上に録画ファイルが現れること
+
+## 追記（round 84）: CM スキップの仕組みを解明。ただし現行ランチャーでは無効
+
+### CM スキップの設計（判明）
+
+`board/x96max/ramboot-unit3-overlay/etc/default/pix-stream-linux` のコメント:
+
+```
+# Preserve CM feature sideband; analysis and final cuts remain NAS-owned.
+PIX_FEATURES=1
+PIX_FEATURE_MAX_MB=384
+PIX_FEATURE_STEP=3
+PIX_FEATURE_FAILURES=3
+```
+
+つまり:
+
+- **端末が CM 検出用の特徴量（サイドバンド）を生成し、映像と一緒に NAS へ送る**
+- **解析と最終的なカットは NAS 側が行う**
+
+round 82 で「CM 実装が見つからない」と結論したのは誤りだった。`pix-stream-linux`
+に実装がある。
+
+### 決定的な問題: 現行ランチャーは PIX_FEATURES を無視する
+
+`PIX_FEATURES` の使用箇所:
+
+```
+board/x96max/overlay/usr/bin/pix-stream-linux:44    : "${PIX_FEATURES:=0}"
+board/x96max/overlay/usr/bin/pix-stream-linux:171   if [ "$PIX_FEATURES" = "1" ]; then
+board/x96max/overlay/usr/bin/pix-stream-linux:392   if [ "$PIX_FEATURES" = "1" ] && ...
+board/x96max/overlay/etc/default/pix-stream-linux:42  PIX_FEATURES=0
+```
+
+**`board/x96max/overlay/usr/bin/pix-stream-simple` には一切登場しない。**
+
+3代目が使うのは `pix-stream-simple`（`S97pix-stream` が起動する方）なので、
+`PIX_FEATURES=1` を設定しても **CM 特徴量は生成されず、NAS へ送られない**。
+
+### 旧ランチャーの実装内容（移植の参考）
+
+```sh
+# 320x180 に縮小して signalstats で統計を取る（フル解像度だと 84 秒/39.5 秒）
+analyze="scale=320:180,signalstats,blackdetect=d=0.1:pix_th=0.125:pic_th=0.98"
+# シーンスコアは前フレームとの平均絶対差（signalstats YDIF）
+analyze="$analyze,metadata=mode=print:key=lavfi.signalstats.YAVG"
+```
+
+`stb_streamer` に `pixf` を差し込む形で渡している。
+
+### 次の一手
+
+録画が成立した後、CM を効かせるには `pix-stream-simple` に特徴量生成を移植する
+必要がある。ただし **まず録画そのものを成立させるのが優先**（NAS が `features=v1`
+を要求した時だけ `stb_streamer` が差し込む設計なので、要求が無ければ不要）。
