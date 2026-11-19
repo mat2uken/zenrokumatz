@@ -505,3 +505,36 @@ static int dwc3_meson_g12a_usb2_init(struct dwc3_meson_g12a *priv,
 
 `Image` の再ビルドが必要（41MB）。YMODEM では 115200bps で数時間かかるため、
 **SD への書き込みが必要**。`scripts/write-sd.py` を使う（sudo）。
+
+## 追記（round 31）: 「USB_R4 のメモリPD解除」という仮説は誤り
+
+`USB_R4_MEM_PD_MASK`（GENMASK(3,2)）は `dwc3-meson-g12a.c` の 87 行目で
+**定義されているだけで、使用箇所が無い**。
+
+```
+$ grep -n "USB_R4_MEM_PD_MASK" drivers/usb/dwc3/dwc3-meson-g12a.c
+87:	#define USB_R4_MEM_PD_MASK				GENMASK(3, 2)
+```
+
+`otg_apply_mode` が `USB_R4` で触るのは `USB_R4_P21_SLEEP_M0`（bit 1）だけ。
+
+**したがって「glue がメモリPDを解除するので、それを回避すると dwc3 が目覚める」
+という筋書きは成立しない。** 前回の記録は誤りだったので訂正する。
+
+### それでも u2p 回避パッチを試す価値はある
+
+消えるのは「例外を起こす u2p アクセス」だけで、`USB_R1`（フレーム長・
+`PORT_POWER_CONTROL_PRESENT`）、`USB_R5`（ID 検出）、`usb3_init`、
+`USB_R0/R4` の OTG 設定は実行される。ここまで glue の初期化が一度も完走して
+いなかったので、完走させた状態で dwc3 がどう振る舞うかは未観測。
+
+- 通れば: u2p の例外が唯一の障害だったと確定。
+- 落ちるなら: 原因は別（dwc3 のレジスタ窓を開けるのは glue でも PHY でもない、
+  例えば HHI の USB メモリPD を直接操作する必要がある）。
+
+### 次の切り分けに使える材料
+
+vendor DT の `usb2phy@ffe09000` にあった `u2-hhi-mem-pd-mask = 0x03`、
+`u2-hhi-mem-pd-shift = 0x1e` は、**HHI レジスタで USB2 PHY のメモリパワー
+ダウンを制御する**ための値。mainline の PHY ドライバにはこの処理が無い。
+dwc3 が応答しない原因がここなら、PHY ドライバ側に相当する処理を足す必要がある。
