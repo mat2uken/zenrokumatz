@@ -1,5 +1,12 @@
 # 進行状態（2026-11-18 19:40 JST頃）
 
+## 追記（2026-11-19 11:05頃）新CPIOでの再起動確認
+- **再起動1回目は実行されなかった**：helperの`RESTART_ACTION`対応で生成コマンドが壊れ（`+ action + r`が文字列連結されず端末で`not found`）、S99/S98/S97の停止と`sync`のみ実行、poweroff/rebootは走らなかった。録画は停止済みのまま残ったので、原因を直して2回目を実施。
+- **再起動2回目PASS**：S97停止でnative END exit0/state16 → `sync` → `reboot`（UARTで`Board ID = 1`）。UART受動観測で`X96Max_P2 RAM-root Linux`→`Starting kernel`→`Starting pix-stream`/`pix-logo-weekly`→`x96max-p2 login:`。uptime 36.9s。
+- **起動後確認**：`/usr/bin/pix-stream-simple`=851b8aa（コミット版）、`pix-usb-audit`=e022c9b、`S42pix-usb-audit`=63ff163、init順にS42が存在。USBのCPIO=`d70e8188..`・MBR=`b433d6dd..`・先頭1MiB非ゼロ14バイト（劣化なし）。監査recordsに起動時サンプル。capture owner 237、監査watcher稼働。
+- **NAS実成長**：reboot後 `capturing:true/readers:1`、staging inode同一で 27748702→48652800 bytes /25.4秒（[1](</Users/kenichim/Desktop/work/X96MaxLinuxTSEnc/work/restart-nas-recording-after-warm-reboot.json>)/[2](</Users/kenichim/Desktop/work/X96MaxLinuxTSEnc/work/restart-nas-recording-after-warm-reboot-2.json>)）。
+- **移設前の停止**：装置側に`/tmp/poweroff-now.sh`（S99→S98→S97停止とsync→2秒後にpoweroff）を用意済み。移設時に現地で実行してもらえば、録画を正常終了させてから電源が落ちる。
+
 ## 追記（2026-11-19 10:45頃）コミットとUSB反映
 - **commit `950cc77`**（fix: 2台目X96Maxの再起動・電源断で録画が止まる問題の修正、28ファイル）。`package/stb-streamer/src/stb_linux_pipe.c` と `tests/test_program_boundary.py` は別件として**未コミットのまま**。pushはしていない。
 - コミット前にRAMイメージを再ビルド（source snapshotへ最終4点を反映）。新しいCPIOは **`d70e8188dcde567fe97a1bba149fd5d4595584e168b2d5fb784b2bdf8f94f99d`**（35195125B、旧7d142f43..）。Image/2DTBは不変。
