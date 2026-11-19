@@ -825,3 +825,60 @@ GXL 版が必要とするクロック名を DTS に足せば、glue probe が通
 
 ただし `meson_gxl_clocks` が実際にどの名前を要求するか、カーネルソースで確認する
 必要がある。`CLKID_USB_PHY` が G12A の clkc に存在するかも要確認。
+
+## 追記（round 38）: GXL + usb_ctrl クロックで USB コントローラが起動した
+
+`-p-gxl` DTB に `clocks = <&clkc CLKID_USB>; clock-names = "usb_ctrl";` を足して
+YMODEM 転送し、起動した。
+
+### 結果: USB ホストコントローラが動作
+
+```
+dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+xhci-hcd xhci-hcd.0.auto: xHCI Host Controller
+xhci-hcd xhci-hcd.0.auto: irq 17, io mem 0xff500000
+xhci-hcd xhci-hcd.0.auto: new USB bus registered, assigned bus number 1
+hub 1-0:1.0: USB hub found
+hub 1-0:1.0: 2 ports detected
+```
+
+**これまで一度も通らなかった dwc3 の probe が成功し、xhci が `0xff500000` を
+マップして USB バスを登録した。** 例外も出ていない。
+
+`lsusb` でも root hub が見える:
+
+```
+Bus 001 Device 001: ID 1d6b:0002 ... 2.0 root hub
+Bus 002 Device 001: ID 1d6b:0003 ... 3.0 root hub
+```
+
+### 残る問題: デバイスが列挙されない
+
+```
+usb 1-0:1.0 / usb 2-0:1.0   ← root hub のみ
+hub 1-0:1.0: 2 ports detected
+（"new high-speed USB device" のログが無い）
+```
+
+ポートに DT295 が接続されたことを示すイベントが一度も出ていない。つまり
+**物理的に繋がっていないか、VBUS が供給されていない**。
+
+### 観察: 31.7 秒で一度バスが外れる
+
+```
+[31.772936] xhci-hcd xhci-hcd.0.auto: remove, state 4
+[35.633121] hub 1-0:1.0: USB hub found      ← 復帰
+```
+
+31.8 秒に `_regulator_put` の警告も出ており、`pix-usb-audit` による再列挙と
+思われる。**再列挙後はバスが復帰している**ので、これ自体は致命的ではない。
+
+### 確認すべきこと
+
+1. **DT295 が 3代目の USB ポートに挿さっているか。** ログに接続イベントが
+   一切無いのは物理未接続の可能性が高い。
+2. 挿さっているなら VBUS。`VCC_5V` レギュレータは存在するが、`USB_R1` の
+   `PORT_POWER_CONTROL_PRESENT` が GXL 経路で立っているか要確認。
+3. ポートの状態は `cat /sys/bus/usb/devices/usb1/1-0:1.0/port1/connect` 等で
+   読める（今回は未実施）。
