@@ -681,3 +681,47 @@ mainline の glue ドライバは `CLKID_USB`（47）を有効にするが、ven
 
 Android には `/sys/kernel/debug/clk/` があるため、`dwc_general` の実体を
 その場で読める。
+
+## 追記（round 36 後半）: vendor は cpu-type="gxl"、クロックは mainline と同一
+
+### クロックの謎は解けた
+
+Android のクロックツリー:
+
+```
+g12a_usb_general    enable_count 1   ← 有効
+（"dwc_general" という名前のクロックは存在しない）
+```
+
+vendor DT の `clock-names = "dwc_general"` は名前だけで、実体は
+**mainline の `CLKID_USB`（`g12a_usb_general`）と同じ**。クロックの違いは
+原因ではなかった。
+
+### ただし vendor は SoC を GXL として扱っている
+
+```
+/sys/devices/platform/ff500000.dwc3/of_node/cpu-type = "gxl"    (67 78 6c = "gxl")
+/sys/devices/platform/ff500000.dwc3/of_node/clock-src = "usb3.0"
+```
+
+**mainline の `dwc3-meson-g12a.c` には `gxl_drvdata` があり、GXL として扱えば
+regmap の構成が変わる。**
+
+| | G12A（現行 DTS の compatible） | GXL |
+|---|---|---|
+| glue regmap | `base + G12A_GLUE_OFFSET(0x80)` | **`base` そのもの** |
+| u2p regmap | `base + i * 0x20` を作る | **作らない** |
+| usb2_init | u2p に書く（この基板で例外） | `dwc3_meson_gxl_usb2_init_phy`（PHY レジスタ側で処理） |
+
+vendor の配置（`0xffe09000`=usb2phy、`0xffe09080`=usb3phy）は、**glue が `base`
+そのものという GXL の解釈**と整合する。mainline の G12A 解釈（glue=base+0x80）は
+`0xffe09080` を glue とみなしており、この基板の usb3phy と衝突する。
+
+### 試すべきこと
+
+DTS の glue ノードの compatible を `amlogic,meson-gxl-usb-ctrl` に変える。
+`gxl_drvdata` が選ばれ、u2p を作らないので例外が出ない。glue regmap は `base`
+（`0xffe09000`）になり、ここへの `USB_R1`(0x04) 書き込みは `0xffe09004`。
+
+ただし `0xffe09000` 帯が書けるかは未確認（前回 `0xffe09084` で落ちた）。
+`gxl_usb_init` が何を書くかを確認してから判断する。
