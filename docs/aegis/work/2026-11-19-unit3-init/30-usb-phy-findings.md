@@ -538,3 +538,52 @@ vendor DT の `usb2phy@ffe09000` にあった `u2-hhi-mem-pd-mask = 0x03`、
 `u2-hhi-mem-pd-shift = 0x1e` は、**HHI レジスタで USB2 PHY のメモリパワー
 ダウンを制御する**ための値。mainline の PHY ドライバにはこの処理が無い。
 dwc3 が応答しない原因がここなら、PHY ドライバ側に相当する処理を足す必要がある。
+
+## 追記（round 34）: u2p 回避パッチは効いた。次は USB_R1 で停止
+
+パッチ入りカーネル（`Image` = `804a534f…`）を SD の FAT 区画へ直接コピーして起動した
+（sudo 不要。`--update-boot` の原型を作業中に手で実行）。
+
+### 前進した点
+
+```
+dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+dwc3-meson-g12a ffe09000.usb: USB3 ports: 1
+```
+
+**PHY の取得に成功し、u2p ループを通過した。** パッチの効果は出ている。
+従来は `usb2_init_phy` で即死していたが、そこは通った。
+
+### 新しい停止点
+
+```
+Internal error: synchronous external abort
+pc : regmap_mmio_read32le+0x8/0x20
+dwc3_meson_g12a_usb_init_glue.isra.0+0x38/0x190
+```
+
+`+0x38`（`0xffff800080d84708`）の直前で `regmap_update_bits_base` を呼んでおり、
+引数は `w1 = 0x4`。`USB_R1 = 0x04` なので、**glue base + 0x84 = `0xffe09084`** への
+書き込みで落ちている。
+
+つまり `usb_init_glue` の 2 番目の処理（`USB_R1_U3H_FLADJ_30MHZ_REG_MASK`）で
+停止した。**u2p を避けても、glue レジスタ自体が応答しない。**
+
+### これで分かったこと
+
+- `0xffe09000` 帯（glue）は、この基板では**書けない**。u2p も USB_R1 も同じ。
+- vendor DT の `usb2phy@ffe09000` は `0xffe09000`(0x80) を PHY の制御ブロックとして
+  持つが、mainline の glue ドライバが期待する「USB3 PHY 用 glue」とは別物。
+- したがって **mainline の `amlogic,meson-g12a-usb-ctrl` はこの基板では使えない。**
+  どのレジスタを触っても落ちる。
+
+### 次の方針（候補 DTB に戻る）
+
+glue を完全に外し、`snps,dwc3` を直接記述する `-p-usb` DTB（`f508ecc8…`）で、
+**今度はパッチ入りカーネル**を使う。パッチにより `usb2_init` は何もしなくなるので、
+glue 経由の u2p アクセスは発生しない。dwc3 子ノードは PHY を自分で取得し、
+`dwc3_core_probe` が `0xff500020` を読む。
+
+前回この DTB で `dwc3_core_probe+0x96c` に落ちたが、そのときのカーネルは
+パッチ無しで、glue の初期化が一度も完走していなかった。**今回は条件が違う**
+（PHY は取得済み、glue は完全に無関係）ので、再試行する価値がある。

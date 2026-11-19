@@ -252,3 +252,57 @@ class RamRootLayout(WriteSdTests):
             line for line in sums.read_text().splitlines() if not line.endswith('  Image')) + '\n')
         with self.assertRaisesRegex(ValueError, 'names no boot kernel'):
             self.run_main('--verify-only', readback=changed)
+
+
+class UpdateBootFiles(unittest.TestCase):
+    """--update-boot replaces boot files on a card without sudo.
+
+    Writing a whole image needs root; replacing files inside the FAT volume
+    does not. The copying itself was verified against a real card (the Image
+    hash matched afterwards). These tests cover the safety rails only: without
+    a kernel in the manifest, or without a boot-only FAT image, it must refuse.
+    """
+
+    def two_partition_image(self, base):
+        image = base / "sdcard.img"
+        data = bytearray(8 * 512)
+        data[450] = 0x0C
+        struct.pack_into("<II", data, 454, 1, 3)
+        data[466] = 0x83
+        struct.pack_into("<II", data, 470, 4, 4)
+        data[510:512] = b"\x55\xaa"
+        image.write_bytes(bytes(data))
+        manifest = [f"{hashlib.sha256(bytes(data)).hexdigest()}  sdcard.img"]
+        for name in ("Image", "x.dtb"):
+            content = name.encode()
+            (base / name).write_bytes(content)
+            manifest.append(f"{hashlib.sha256(content).hexdigest()}  {name}")
+        (base / "SHA256SUMS").write_text("\n".join(manifest) + "\n")
+        return image, {n: hashlib.sha256(c).hexdigest()
+                       for n, c in (("Image", b"Image"), ("x.dtb", b"x.dtb"))}
+
+    def test_refuses_without_a_kernel_in_the_manifest(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            image, digests = self.two_partition_image(base)
+            manifest = {n: x for n, x in digests.items() if n != "Image"}
+            with self.assertRaisesRegex(ValueError, "boot-only FAT volume"):
+                write_sd.update_boot_files("/dev/disk99", image, manifest,
+                                           write_sd.hash_file(image))
+
+    def test_refuses_a_two_partition_image(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            image, digests = self.two_partition_image(base)
+            with self.assertRaisesRegex(ValueError, "boot-only FAT volume"):
+                write_sd.update_boot_files("/dev/disk99", image, digests,
+                                           write_sd.hash_file(image))
+
+    def test_refuses_an_empty_boot_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            image = base / "sdcard.img"
+            image.write_bytes(b"\0" * 1024)
+            with self.assertRaisesRegex(ValueError, "boot-only FAT volume"):
+                write_sd.update_boot_files("/dev/disk99", image, {},
+                                           write_sd.hash_file(image))

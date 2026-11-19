@@ -4,9 +4,11 @@ import argparse
 import hashlib
 import plistlib
 import re
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -65,6 +67,85 @@ def boot_partition(image):
     return start * 512, (start + length) * 512
 
 
+def update_boot_files(device, image, manifest, expected):
+    """Replace the boot files on an already-written card, without sudo.
+
+    Writing a whole disk image needs root (dd to /dev/rdiskN). Replacing files
+    inside the FAT volume does not: macOS mounts this project's FAT partition
+    as the console user. That makes this the update path when sudo is not
+    available and only the kernel or a DTB changed.
+
+    The files are taken from the image's own FAT partition (attached read-only
+    with hdiutil), so the card ends up with exactly what the image holds. Every
+    copied file is then read back and compared with the manifest.
+    """
+    fat = boot_partition(image)
+    if fat is None or fat[1] != image.stat().st_size:
+        raise ValueError("This image has no boot-only FAT volume; use --erase.")
+    start, end = fat
+    boot_names = [name for name in sorted(manifest)
+                  if name not in (image.name, "rootfs.ext4", "ramboot.img")]
+    if not boot_names:
+        raise ValueError("SHA256SUMS names no boot files.")
+    if "Image" not in boot_names:
+        raise ValueError("SHA256SUMS names no boot kernel; refusing to update.")
+
+    with tempfile.TemporaryDirectory() as scratch:
+        extracted = Path(scratch) / "boot.img"
+        with image.open("rb") as src, extracted.open("wb") as dst:
+            src.seek(start)
+            remaining = end - start
+            while remaining:
+                chunk = src.read(min(4 * 1024 * 1024, remaining))
+                if not chunk:
+                    raise RuntimeError("Image ended inside its FAT partition.")
+                dst.write(chunk)
+                remaining -= len(chunk)
+
+        attach = subprocess.run(["hdiutil", "attach", "-readonly", "-nobrowse",
+                                 "-noverify", str(extracted)],
+                                check=True, capture_output=True, text=True)
+        attached = attach.stdout.split()[0]
+        try:
+            source_volume = Path(attach.stdout.splitlines()[0].split("\t")[-1].strip())
+            if not source_volume.is_dir():
+                raise RuntimeError("The image's FAT volume did not mount.")
+            for name in boot_names:
+                item = source_volume / name
+                if not item.is_file():
+                    raise RuntimeError(f"{name} is missing from the image's FAT volume.")
+                if hash_file(item) != manifest[name]:
+                    raise RuntimeError(f"{name} in the image does not match SHA256SUMS.")
+
+            subprocess.run(["diskutil", "unmountDisk", device], check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["diskutil", "mount", device + "s1"], check=True,
+                           stdout=subprocess.DEVNULL)
+            volume = plistlib.loads(subprocess.check_output(
+                ["diskutil", "info", "-plist", device + "s1"])).get("MountPoint")
+            if not volume:
+                raise RuntimeError("The card's FAT volume did not mount.")
+            target = Path(volume)
+            print(f"Updating {len(boot_names)} boot files on {target}", flush=True)
+            for name in boot_names:
+                shutil.copyfile(source_volume / name, target / name)
+            subprocess.run(["sync"], check=True)
+        finally:
+            subprocess.run(["hdiutil", "detach", attached], check=False,
+                           stdout=subprocess.DEVNULL)
+
+    for name in boot_names:
+        actual = hash_file(target / name)
+        if actual != manifest[name]:
+            raise RuntimeError(f"boot file verification failed: {name}")
+        print(f"Verified boot file: {name} SHA-256={actual}")
+    subprocess.run(["diskutil", "unmountDisk", device], check=True,
+                   stdout=subprocess.DEVNULL)
+    subprocess.run(["diskutil", "eject", device], check=True)
+    print("Boot files updated; card ejected.")
+    return
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, default=Path(__file__).resolve().parents[1] / "output/sdcard.img")
@@ -72,6 +153,9 @@ def main():
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--erase", action="store_true", help="Erase this disk, write the image, and verify it")
     action.add_argument("--verify-only", action="store_true", help="Verify an already written disk without rewriting it")
+    action.add_argument("--update-boot", action="store_true",
+                        help="Copy only the boot files from the image's FAT volume onto a mounted "
+                             "card, then verify their hashes (no sudo, no whole-disk write)")
     args = parser.parse_args()
     if sys.platform != "darwin":
         parser.error("Run this command on macOS.")
@@ -90,9 +174,12 @@ def main():
         raise ValueError("Image SHA-256 does not match SHA256SUMS.")
     print(f"Image: {image} ({size} bytes)")
     print(f"Target: {args.device}, {info.get('MediaName')}, {info['TotalSize']} bytes", flush=True)
-    if not args.erase and not args.verify_only:
-        print("Dry run only. Add --erase to erase this disk and write the image.")
+    if not args.erase and not args.verify_only and not args.update_boot:
+        print("Dry run only. Add --erase to erase this disk and write the image,")
+        print("or --update-boot to replace just the boot files on a mounted card.")
         return
+    if args.update_boot:
+        return update_boot_files(args.device, image, manifest, expected)
     raw = args.device.replace("/dev/disk", "/dev/rdisk", 1)
     if args.erase:
         subprocess.run(["diskutil", "unmountDisk", args.device], check=True)
