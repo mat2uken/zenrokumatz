@@ -491,3 +491,54 @@ streams: h264 (video), aac (audio)
 ### 成果物
 
 `rootfs.cpio.uboot` = `80763d75…`
+
+## 追記（round 93）: encode→fragment のパイプ連結と統計ファイルの形式を検証
+
+### パイプ連結（実機と同じ構造）
+
+`encode_with_features | fragment` を実際に繋いで流した。
+
+```
+入力 TS（AAC、10 秒、1440x1080）
+  → [aux] 解析 + [main] H.264 エンコード
+  → パイプ
+  → fMP4
+
+exit=0
+piped.mp4      7,027,952 バイト
+duration=10.033333   ← 入力 10 秒と一致
+feat-a2.log       57,850 バイト
+```
+
+**録画ストリームが通り、長さも入力と一致する。**
+
+### 統計ファイルの形式
+
+音声（`feat-a.log`）:
+
+```
+frame:0    pts:0       pts_time:0
+lavfi.astats.Overall.RMS_level=-60.848653
+lavfi.astats.Overall.Number_of_samples=1024.000000
+```
+
+映像（stderr 経由）:
+
+```
+[Parsed_metadata_5] lavfi.signalstats.YAVG=125.739
+```
+
+### 注意点: `-v info` が必須
+
+映像統計は `metadata=mode=print` が **stderr に出す**もので、`-v error` では
+抑制される（検証時に 0 バイトになった）。実装は `-v info` を指定しており、
+`2>/tmp/pix-ff1.log` へ落としているので問題ない。
+
+旧ランチャーと同じ構成（`--feature-file $PIX_LOG_DIR/pix-ff1.log`）であることを
+確認した。
+
+### 残る不確定要素
+
+- `stb_streamer` が `pix-ff1.log` をどう解釈するか（行形式のパース）は、
+  バイナリのソースが手元に無いため未確認。ただし**旧ランチャーが同じファイル・
+  同じフィルタで2代目を実運用している**ため、形式は一致しているはず。
