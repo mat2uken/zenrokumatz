@@ -41,6 +41,8 @@ int main(void) {
         {110, 1794991800000LL, 0, 0, 0},
         /* Without a start time only the event id change decides. */
         {109, 0, 0, 0, 1},
+        /* The next programme starts later and is not marked as continuing. */
+        {111, 1795000000000LL, 0, 0, 1},
     };
     for (unsigned i = 1; i < sizeof(cases) / sizeof(cases[0]); i++) {
         ProgramInfo previous = {0}, current = {0};
@@ -220,7 +222,7 @@ class BoundaryDecisionTests(unittest.TestCase):
         for line in result.stdout.splitlines()[1:]:
             self.assertTrue(line.endswith(":1"), line)
         self.assertEqual(result.stdout.count(":same:1"), 4)
-        self.assertEqual(result.stdout.count(":changed:1"), 3)
+        self.assertEqual(result.stdout.count(":changed:1"), 4)
 
 
 class EitMarkerTests(unittest.TestCase):

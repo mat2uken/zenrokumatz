@@ -455,6 +455,7 @@ ffmpeg() { while IFS= read -r line; do :; done; }
 eit_watch() { while IFS= read -r line; do :; done; }
 stb_streamer() { while IFS= read -r line; do :; done; }
 date() { echo 1000; }
+PIX_TUNER_WAIT=1
 """
         # setup_shell defines sleep too; make any mistaken 5-minute suspension
         # fail deterministically instead of hanging the test or touching hardware.

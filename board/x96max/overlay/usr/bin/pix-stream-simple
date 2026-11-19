@@ -380,10 +380,15 @@ echo "$$" > "$OWNER/pid" || exit 1
 # binary matches on (vendor 0x06b8, DT295 product 0x103b).
 wait_for_tuner() {
     [ "$PIX_DECRYPT" = "1" ] && return 0
-    wanted=${PIX_TUNER_WAIT:-120}
-    case "$wanted" in ''|*[!0-9]*) wanted=120 ;; esac
+    # Unset waits until the tuner appears or a stop is requested, because
+    # proceeding without one fails the pipeline three times in a row and that
+    # reaches dt295_recover -> pix_usb_reset, which left the board unresponsive.
+    # A positive PIX_TUNER_WAIT bounds the wait and then continues anyway; that
+    # is for tests and for deliberate one-off diagnostics.
+    wanted=${PIX_TUNER_WAIT:-}
+    case "$wanted" in ''|*[!0-9]*) wanted=0 ;; esac
     i=0
-    while [ "$i" -lt "$wanted" ]; do
+    while :; do
         [ ! -e "$STOPFILE" ] || return 1
         for dev in /sys/bus/usb/devices/*/; do
             [ -r "$dev/idVendor" ] || continue
@@ -394,11 +399,17 @@ wait_for_tuner() {
             [ "$i" -gt 0 ] && log "tuner: appeared after ${i}s"
             return 0
         done
+        if [ "$wanted" -gt 0 ] && [ "$i" -ge "$wanted" ]; then
+            log "tuner: not found within ${wanted}s; starting anyway"
+            return 0
+        fi
+        # Report once a minute so a missing tuner is visible without flooding.
+        if [ "$i" -gt 0 ] && [ $((i % 60)) -eq 0 ]; then
+            log "tuner: still waiting (${i}s)"
+        fi
         sleep 1
         i=$((i + 1))
     done
-    log "tuner: did not appear within ${wanted}s; starting anyway"
-    return 0
 }
 
 while [ ! -e "$STOPFILE" ]; do

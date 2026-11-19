@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import threading
 import time
 import unittest
@@ -731,7 +732,7 @@ class TunerWait(unittest.TestCase):
         end = text.index("\n}\n", start) + 3
         return text[start:end]
 
-    def run_wait(self, devices, wait, stop=False):
+    def run_wait(self, devices, wait, stop=False, stop_after=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name, files in devices.items():
@@ -747,14 +748,23 @@ class TunerWait(unittest.TestCase):
                 '#!/bin/sh\n'
                 'STOPFILE=%s\n'
                 'PIX_DECRYPT=${PIX_DECRYPT:-0}\n'
-                'PIX_TUNER_WAIT=%d\n'
+                'PIX_TUNER_WAIT=%s\n'
                 'log() { echo "$*"; }\n'
                 '%s\n'
                 'wait_for_tuner && echo FOUND || echo STOPPED\n'
                 % (stopfile, wait, self.extract().replace(
                     "/sys/bus/usb/devices/", str(root / "devices") + "/")))
             script.chmod(0o755)
-            return subprocess.run([str(script)], capture_output=True, text=True, timeout=30)
+            if stop_after is None:
+                return subprocess.run([str(script)], capture_output=True,
+                                      text=True, timeout=30)
+            # Let it wait, then ask it to stop so the loop ends on its own.
+            with subprocess.Popen([str(script)], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True) as process:
+                time.sleep(stop_after)
+                stopfile.write_text("")
+                out, _ = process.communicate(timeout=10)
+            return subprocess.CompletedProcess(process.args, process.returncode, out, "")
 
     def test_finds_the_dt295_by_vendor_and_product(self):
         result = self.run_wait({"1-1": {"idVendor": "06b8", "idProduct": "103b"}}, 5)
@@ -766,10 +776,21 @@ class TunerWait(unittest.TestCase):
              "1-2": {"idVendor": "06b8", "idProduct": "103b"}}, 5)
         self.assertIn("FOUND", result.stdout)
 
-    def test_gives_up_after_the_bound_and_still_starts(self):
-        result = self.run_wait({"1-1": {"idVendor": "0781", "idProduct": "5580"}}, 2)
-        self.assertIn("did not appear within 2s", result.stdout)
+    def test_an_explicit_bound_starts_anyway(self):
+        """A positive PIX_TUNER_WAIT is an explicit opt-in to proceed without one.
+
+        The default is to wait, because starting without a tuner fails the
+        pipeline three times and reaches dt295_recover -> pix_usb_reset.
+        """
+        result = self.run_wait({"1-1": {"idVendor": "0781", "idProduct": "5580"}}, 1)
+        self.assertIn("not found within 1s; starting anyway", result.stdout)
         self.assertIn("FOUND", result.stdout)
+
+    def test_the_default_waits_until_stopped(self):
+        result = self.run_wait({"1-1": {"idVendor": "0781", "idProduct": "5580"}},
+                               "", stop_after=3)
+        self.assertIn("STOPPED", result.stdout)
+        self.assertNotIn("FOUND", result.stdout)
 
     def test_a_stop_request_ends_the_wait(self):
         result = self.run_wait({"1-1": {"idVendor": "0781", "idProduct": "5580"}},
