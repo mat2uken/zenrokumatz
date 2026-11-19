@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// Unit 3: drive the USB glue as GXL instead of G12A.
+//
+// The board's vendor device tree reports cpu-type = "gxl" on the dwc3 node, and
+// vendor dmesg shows their USB2 PHY driver initialising 0xffe09000:
+//
+//   amlogic-new-usb2-v2 ffe09000.usb2phy: USB2 phy probe:phy_mem:0xffe09000
+//
+// In mainline the two driver variants interpret the glue base differently:
+//
+//   G12A: glue regmap = base + 0x80, and a u2p regmap per PHY at base + i*0x20
+//   GXL : glue regmap = base,        and no u2p regmap at all
+//
+// With the G12A binding, the driver writes 0xffe09000/0xffe09010 (u2p) and
+// 0xffe09084 (USB_R1) and faults with a synchronous external abort, because on
+// this board 0xffe09000 belongs to the USB2 PHY, not to the glue block.
+// Selecting the GXL variant removes both the u2p registers and the 0x80 offset,
+// which matches where the vendor blocks actually sit.
+#include "meson-g12a-x96-max-p-ephy.dts"
+
+/* Pick gxl_drvdata: glue regmap is the node's own registers, no u2p. */
+&usb {
+	compatible = "amlogic,meson-gxl-usb-ctrl";
+};

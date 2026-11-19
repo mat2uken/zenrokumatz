@@ -9,7 +9,8 @@ set -eu
 dtbs=""
 extra=""
 for dtb in meson-g12a-x96-max-p.dtb meson-g12a-x96-max-p-ephy-4g.dtb \
-           meson-g12a-x96-max-p-nousb.dtb meson-g12a-x96-max-p-usb.dtb; do
+           meson-g12a-x96-max-p-nousb.dtb meson-g12a-x96-max-p-usb.dtb \
+           meson-g12a-x96-max-p-gxl.dtb; do
     [ -f "$BINARIES_DIR/$dtb" ] || continue
     dtbs="$dtbs $dtb"
     case "$dtb" in

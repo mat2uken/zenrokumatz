@@ -5,4 +5,4 @@ BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/overlay $(BR2_EXTER
 # Unit 3 carries two extra DTBs while its USB layout is being settled:
 # -p-usb   dwc3 described directly, without the G12A glue wrapper (candidate)
 # -p-nousb every USB controller disabled (diagnostic, reaches userspace)
-BR2_LINUX_KERNEL_INTREE_DTS_NAME="amlogic/meson-g12a-x96-max-p amlogic/meson-g12a-x96-max-p-ephy amlogic/meson-g12a-x96-max-p-ephy-4g amlogic/meson-g12a-x96-max-p-nousb amlogic/meson-g12a-x96-max-p-usb"
+BR2_LINUX_KERNEL_INTREE_DTS_NAME="amlogic/meson-g12a-x96-max-p amlogic/meson-g12a-x96-max-p-ephy amlogic/meson-g12a-x96-max-p-ephy-4g amlogic/meson-g12a-x96-max-p-nousb amlogic/meson-g12a-x96-max-p-usb amlogic/meson-g12a-x96-max-p-gxl"
