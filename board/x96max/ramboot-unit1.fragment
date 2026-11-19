@@ -2,3 +2,4 @@
 BR2_TARGET_GENERIC_HOSTNAME="x96max-linux"
 BR2_TARGET_GENERIC_ISSUE="X96Max_P RAM-root Linux"
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/overlay $(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/ramboot-unit1-overlay"
+BR2_LINUX_KERNEL_INTREE_DTS_NAME="amlogic/meson-g12a-x96-max-p amlogic/meson-g12a-x96-max-p-ephy amlogic/meson-g12a-x96-max-p-ephy-4g"

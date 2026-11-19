@@ -1,0 +1,16 @@
+# Unit 3 only. All setenv commands below are RAM-only until saveenv.
+# This unit's U-Boot prompt is g12a_u212_v1# and its aml_dt is sm1_ac213_4g,
+# so the board is taken from the prompt. SD is U-Boot mmc0:1, and both DTBs
+# are on the card; u211 keeps the external-PHY DTB.
+# Legacy uImage-wrapped gzip CPIO is required by this vendor U-Boot 2015.01.
+# Each attempt gates booti on all three loads: never boot stale memory.
+# Vendor console accepts at most 511 bytes per line: keep definitions separate.
+setenv ram_boot_setup 'setenv kernel_addr_r 0x01080000; setenv fdt_addr_r 0x08000000; setenv dtb_mem_addr 0x08000000; setenv fdtaddr 0x08000000; setenv ramdisk_addr_r 0x10000000'
+setenv ram_boot_pick_dtb 'setenv ramboot_dtb meson-g12a-x96-max-p.dtb; if test "${board}" = "u211"; then setenv ramboot_dtb meson-g12a-x96-max-p-ephy-4g.dtb; fi; echo RAMBOOT_DTB=${ramboot_dtb}'
+setenv ram_boot_load 'if fatload mmc 0:1 ${kernel_addr_r} Image; then if fatload mmc 0:1 ${fdt_addr_r} ${ramboot_dtb}; then if fatload mmc 0:1 ${ramdisk_addr_r} rootfs.cpio.uboot; then setenv bootargs console=ttyAML0,115200n8 earlycon rdinit=/init; booti ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r}; fi; fi; fi'
+setenv linux_boot_ram 'run ram_boot_setup; run ram_boot_pick_dtb; if mmc dev 0; then if mmc rescan; then run ram_boot_load; fi; fi; echo ERROR: RAM boot failed; false'
+run linux_boot_ram
+# Only AFTER successful one-shot boot, service and recovery checks:
+# setenv bootcmd_before_ramboot 'run storeboot'
+# setenv bootcmd 'run linux_boot_ram'
+# saveenv

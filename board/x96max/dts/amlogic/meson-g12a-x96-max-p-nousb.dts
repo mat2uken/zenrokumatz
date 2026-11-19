@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// Unit 3 diagnostics: keep the USB glue controller (and therefore its clocks)
+// enabled, but keep dwc3 itself disabled.
+//
+// Measured 2026-11-19: with the whole usb node disabled, "clk: Disabling unused
+// clocks" turns g12a_usb_general off (enable_count 0) and every register in the
+// USB region (0xffe09000 glue, 0xff500000 dwc3/xhci) then answers with a Bus
+// error. That Bus error was an artefact of disabling the controller, not
+// evidence about the board.
+//
+// This DTS keeps usb@ffe09000 enabled so the glue clocks stay on and the region
+// can be inspected, while the dwc3 and dwc2 children stay disabled so no PHY
+// setup runs. The glue node's own probe only maps registers and takes clocks;
+// usb_init (which faults) runs only when the parent probes with children.
+#include "meson-g12a-x96-max-p-ephy.dts"
+
+&usb {
+	status = "okay";
+	dr_mode = "host";
+	/* The children stay off; only the parent's clocks are wanted. */
+};
+
+&dwc3 {
+	status = "disabled";
+};
+
+&dwc2 {
+	status = "disabled";
+};
+
+&usb2_phy0 {
+	status = "disabled";
+};
+
+&usb2_phy1 {
+	status = "disabled";
+};

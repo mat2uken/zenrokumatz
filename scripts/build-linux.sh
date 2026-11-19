@@ -6,15 +6,20 @@ profile=${X96MAX_PROFILE:-disk}
 unit=${X96MAX_UNIT:-2}
 # Reject configuration mistakes before probing or starting Docker/Colima.
 case "$unit" in
-    1|2) ;;
-    *) echo "unknown X96MAX_UNIT: $unit (expected 1 or 2)" >&2; exit 1 ;;
+    1|2|3) ;;
+    *) echo "unknown X96MAX_UNIT: $unit (expected 1, 2 or 3)" >&2; exit 1 ;;
 esac
 case "$profile" in
     disk) export_dir="$root/output" ;;
     ramboot)
+        # Unit 2 keeps its original names so the existing scripts and identity
+        # remain valid; units 1 and 3 always carry their number.
         if [[ "$unit" == 1 ]]; then
             export_dir="$root/output/ramboot-unit1"
             identity_dir="$root/work/ramboot-identity-unit1"
+        elif [[ "$unit" == 3 ]]; then
+            export_dir="$root/output/ramboot-unit3"
+            identity_dir="$root/work/ramboot-identity-unit3"
         else
             export_dir="$root/output/ramboot"
             identity_dir="$root/work/ramboot-identity"

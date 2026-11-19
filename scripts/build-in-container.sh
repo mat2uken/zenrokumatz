@@ -4,8 +4,8 @@ profile=${X96MAX_PROFILE:-disk}
 unit=${X96MAX_UNIT:-2}
 # Also validate direct container invocations before downloads or build changes.
 case "$unit" in
-    1|2) ;;
-    *) echo "unknown X96MAX_UNIT: $unit (expected 1 or 2)" >&2; exit 1 ;;
+    1|2|3) ;;
+    *) echo "unknown X96MAX_UNIT: $unit (expected 1, 2 or 3)" >&2; exit 1 ;;
 esac
 case "$profile" in
     disk|ramboot) ;;
@@ -36,8 +36,15 @@ make -C "buildroot-$version" O=/build/output BR2_EXTERNAL=/project -j"${JOBS:-6}
 if [[ $# == 0 ]]; then
     if [[ "$profile" == ramboot ]]; then
         cp /build/output/images/{Image,meson-g12a-x96-max-p.dtb,meson-g12a-x96-max-p-ephy-4g.dtb,rootfs.cpio.gz,rootfs.cpio.uboot,ramboot.img,SHA256SUMS} /export/
+        # Units may build extra DTBs (unit 3 does while its USB layout is being
+        # settled); ship whichever ones this unit actually produced.
+        for dtb in meson-g12a-x96-max-p-nousb.dtb meson-g12a-x96-max-p-usb.dtb; do
+            [[ -f "/build/output/images/$dtb" ]] && cp "/build/output/images/$dtb" /export/
+        done
         if [[ "$unit" == 1 ]]; then
             cp /project/board/x96max/ramboot-unit1-uboot.txt /export/
+        elif [[ "$unit" == 3 ]]; then
+            cp /project/board/x96max/ramboot-unit3-uboot.txt /export/
         else
             cp /project/board/x96max/ramboot-uboot.txt /export/
         fi

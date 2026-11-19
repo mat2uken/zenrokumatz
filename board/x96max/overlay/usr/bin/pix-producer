@@ -15,8 +15,9 @@
 : "${PIX_TUNER:=dt295}"
 : "${PIX_SYSTEM:=bs}"
 : "${PIX_CHANNEL:=9}"
-: "${PIX_SAT_SLOT:=0}"
-: "${PIX_PIDS:=0 17 18 257 273 289 320 321}"
+# Satellite-only options default to none: see pix-stream-simple.
+: "${PIX_SAT_SLOT:=}"
+: "${PIX_PIDS:=}"
 
 extra=""
 [ -n "$PIX_SAT_SLOT" ] && extra="$extra --slot $PIX_SAT_SLOT"

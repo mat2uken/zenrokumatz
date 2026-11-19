@@ -34,14 +34,30 @@ def hash_file(path):
 
 
 def boot_partition(image):
-    """Return the FAT range only for this project's two-partition SD layout."""
+    """Return the FAT range for this project's SD layouts.
+
+    Two layouts are written by this repo: the disk build (FAT boot + ext4 root)
+    and the RAM-root build (a single FAT partition holding kernel, DTB and
+    initramfs). macOS mounts the FAT volume after a write and drops
+    .fseventsd/.Spotlight-V100 into it, so read-back has to treat that range as
+    "filesystem-managed" for either layout. Returning None here means the
+    caller may not excuse any difference at all.
+    """
     with image.open("rb") as source:
         mbr = source.read(512)
     if len(mbr) != 512 or mbr[510:] != b"\x55\xaa":
         return None
     start, length = struct.unpack_from("<II", mbr, 454)
+    if start < 1 or length == 0 or mbr[450] != 0x0c:
+        return None
+    end = (start + length) * 512
+    if any(mbr[478:510]):
+        return None
+    # RAM-root layout: exactly one FAT partition covering the image.
+    if all(byte == 0 for byte in mbr[466:478]):
+        return (start * 512, end) if end == image.stat().st_size else None
     root_start, root_length = struct.unpack_from("<II", mbr, 470)
-    if (mbr[450] != 0x0c or mbr[466] != 0x83 or start < 1 or length == 0
+    if (mbr[466] != 0x83
             or root_start != start + length or root_length == 0
             or (root_start + root_length) * 512 != image.stat().st_size
             or any(mbr[478:510])):
@@ -116,10 +132,16 @@ def main():
     if actual != expected:
         if fat_range is None or not outside_fat_matches:
             raise RuntimeError("SD read-back verification failed: data outside the FAT partition differs.")
-        # Do not ignore FAT differences unless the filesystem and boot files pass.
-        boot_files = ("Image", "meson-g12a-x96-max-p.dtb")
-        if any(name not in manifest for name in boot_files):
+        # Do not ignore FAT differences unless the filesystem and every shipped
+        # boot file pass. The RAM-root image carries Image, several DTBs and the
+        # initramfs, so verify everything the manifest names rather than a fixed
+        # pair that only matches the disk build.
+        boot_files = tuple(sorted(name for name in manifest
+                                  if name not in (image.name, "rootfs.ext4", "ramboot.img")))
+        if not boot_files:
             raise ValueError("Boot file hashes are missing from SHA256SUMS.")
+        if not ({"Image"} <= set(boot_files)):
+            raise ValueError("SHA256SUMS names no boot kernel; refusing to accept FAT differences.")
         subprocess.run(["sudo", "/sbin/fsck_msdos", "-n", raw + "s1"], check=True)
         subprocess.run(["diskutil", "mount", "readOnly", "nobrowse", args.device + "s1"], check=True)
         try:

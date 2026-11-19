@@ -177,3 +177,78 @@ class WriteSdTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RamRootLayout(WriteSdTests):
+    """The RAM-root image is one FAT partition, the disk image is FAT + ext4.
+
+    macOS mounts the FAT volume after a write and adds .fseventsd and
+    .Spotlight-V100, so read-back differs inside that range. Verification must
+    excuse that for either layout, but only after the FAT and every shipped boot
+    file check out. Getting this wrong failed a correct write for the RAM image.
+    """
+
+    def make_ramroot_image(self, extra_dtbs=()):
+        # MBR, one 0x0c partition covering the whole image, like ramboot.img.
+        sectors = 8
+        image = bytearray(sectors * 512)
+        image[450] = 0x0c
+        struct.pack_into('<II', image, 454, 1, sectors - 1)
+        image[510:512] = b'\x55\xaa'
+        self.data = bytes(image)
+        self.image.write_bytes(self.data)
+        self.disk['TotalSize'] = len(self.data)
+        mount = self.image.parent / 'mount'
+        mount.mkdir()
+        manifest = [f'{hashlib.sha256(self.data).hexdigest()}  {self.image.name}']
+        names = ('Image', 'meson-g12a-x96-max-p.dtb', 'rootfs.cpio.uboot', *extra_dtbs)
+        for name in names:
+            contents = f'known {name}'.encode()
+            (mount / name).write_bytes(contents)
+            manifest.append(f'{hashlib.sha256(contents).hexdigest()}  {name}')
+        (self.image.parent / 'SHA256SUMS').write_text('\n'.join(manifest) + '\n')
+        changed = bytearray(self.data)
+        changed[512 + 21] = 1
+        return bytes(changed), mount
+
+    def test_single_fat_partition_is_recognized(self):
+        self.make_ramroot_image()
+        self.assertIsNotNone(write_sd.boot_partition(self.image))
+
+    def test_fat_metadata_on_single_partition_image_is_accepted(self):
+        changed, mount = self.make_ramroot_image(
+            extra_dtbs=('meson-g12a-x96-max-p-nousb.dtb', 'meson-g12a-x96-max-p-usb.dtb'))
+        (mount / '.fseventsd').mkdir()
+        self.run_main('--verify-only', readback=changed)
+        self.assertEqual([call.args[0] for call in self.calls[1].call_args_list], [
+            ['diskutil', 'unmountDisk', '/dev/disk9'],
+            ['sudo', '/sbin/fsck_msdos', '-n', '/dev/rdisk9s1'],
+            ['diskutil', 'mount', 'readOnly', 'nobrowse', '/dev/disk9s1'],
+            ['diskutil', 'unmountDisk', '/dev/disk9'],
+            ['diskutil', 'eject', '/dev/disk9'],
+        ])
+
+    def test_every_manifest_boot_file_is_verified_not_only_two(self):
+        changed, mount = self.make_ramroot_image(
+            extra_dtbs=('meson-g12a-x96-max-p-usb.dtb',))
+        (mount / 'meson-g12a-x96-max-p-usb.dtb').write_bytes(b'corrupted')
+        with self.assertRaisesRegex(RuntimeError,
+                                    'boot file verification failed: meson-g12a-x96-max-p-usb.dtb'):
+            self.run_main('--verify-only', readback=changed)
+        self.assert_no_eject()
+
+    def test_changing_bytes_outside_a_single_partition_is_rejected(self):
+        changed, _ = self.make_ramroot_image()
+        corrupt = bytearray(changed)
+        corrupt[4] = 1  # MBR area, before the partition
+        with self.assertRaisesRegex(RuntimeError, 'outside the FAT partition differs'):
+            self.run_main('--verify-only', readback=bytes(corrupt))
+        self.assert_no_eject()
+
+    def test_image_without_an_Image_entry_is_rejected(self):
+        changed, _ = self.make_ramroot_image()
+        sums = self.image.parent / 'SHA256SUMS'
+        sums.write_text('\n'.join(
+            line for line in sums.read_text().splitlines() if not line.endswith('  Image')) + '\n')
+        with self.assertRaisesRegex(ValueError, 'names no boot kernel'):
+            self.run_main('--verify-only', readback=changed)

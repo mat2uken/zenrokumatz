@@ -1,6 +1,8 @@
 # Common RAM-root setup, followed by exactly one ramboot-unitN.fragment.
+# BR2_LINUX_KERNEL_INTREE_DTS_NAME belongs to the unit fragment: merge_config.sh
+# appends the unit file after this one, so a value here would win and silently
+# drop unit-specific DTBs (unit 3's dwc3-disabled diagnostic DTB).
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/ramboot-post-image.sh"
-BR2_LINUX_KERNEL_INTREE_DTS_NAME="amlogic/meson-g12a-x96-max-p amlogic/meson-g12a-x96-max-p-ephy amlogic/meson-g12a-x96-max-p-ephy-4g"
 BR2_ROOTFS_POST_FAKEROOT_SCRIPT="$(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/ramboot-finalize.sh"
 BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt $(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/ramboot-device-table.txt"
 BR2_TARGET_ROOTFS_CPIO=y

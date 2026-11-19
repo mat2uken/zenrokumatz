@@ -8,3 +8,8 @@ iface lo inet loopback
 auto eth0
 iface eth0 inet dhcp
   pre-up /etc/network/nfs_check
+  # An external RTL8211F needs a few seconds to link. udhcpc gives up after
+  # its first discover if the carrier is not up yet and forked to background
+  # with no lease, which leaves the box unreachable until someone re-runs it.
+  # Wait (bounded) for carrier before asking for a lease.
+  pre-up /etc/network/wait-carrier eth0 15

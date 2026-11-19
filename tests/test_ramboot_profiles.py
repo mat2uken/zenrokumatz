@@ -15,7 +15,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-DTBS = ("meson-g12a-x96-max-p.dtb", "meson-g12a-x96-max-p-ephy-4g.dtb")
+UNIT3_EXTRA_DTBS = ("meson-g12a-x96-max-p-nousb.dtb", "meson-g12a-x96-max-p-usb.dtb")
+DTBS = ("meson-g12a-x96-max-p.dtb", "meson-g12a-x96-max-p-ephy-4g.dtb", *UNIT3_EXTRA_DTBS)
 RAM_FILES = ("Image", *DTBS, "rootfs.cpio.gz", "rootfs.cpio.uboot", "ramboot.img", "SHA256SUMS")
 
 
@@ -45,7 +46,7 @@ class BuildEntry(unittest.TestCase):
                               capture_output=True, text=True)
 
     def test_invalid_settings_fail_before_any_docker_or_directory_change(self):
-        for settings in ({"X96MAX_UNIT": "3"}, {"X96MAX_UNIT": "1; reset"},
+        for settings in ({"X96MAX_UNIT": "4"}, {"X96MAX_UNIT": "1; reset"},
                          {"X96MAX_PROFILE": "unknown"},
                          {"X96MAX_PROFILE": "ramboot", "X96MAX_UNIT": "0"}):
             with self.subTest(settings=settings), tempfile.TemporaryDirectory() as d:
@@ -61,6 +62,7 @@ class BuildEntry(unittest.TestCase):
             (None, "2", "ramboot", "ramboot-identity"),
             ("2", "2", "ramboot", "ramboot-identity"),
             ("1", "1", "ramboot-unit1", "ramboot-identity-unit1"),
+            ("3", "3", "ramboot-unit3", "ramboot-identity-unit3"),
         ):
             with self.subTest(unit=requested), tempfile.TemporaryDirectory() as d:
                 base = Path(d)
@@ -90,7 +92,7 @@ class BuildEntry(unittest.TestCase):
 
 
 class ContainerBuild(unittest.TestCase):
-    def prepare(self, base):
+    def prepare(self, base, diagnostic_dtb=False):
         build = base / "build"
         project = base / "project"
         output = build / "output"
@@ -108,13 +110,17 @@ class ContainerBuild(unittest.TestCase):
             executable(base / "bin" / command, '#!/bin/sh\necho "unexpected external operation" >&2\nexit 99\n')
         for name in (*RAM_FILES, "rootfs.ext4", "sdcard.img"):
             (images / name).write_text(f"fixture {name}\n")
+        # Units 1 and 2 do not build the dwc3-disabled diagnostic DTB.
+        if not diagnostic_dtb:
+            for name in UNIT3_EXTRA_DTBS:
+                (images / name).unlink()
         (output / ".config").write_text("fixture buildroot configuration\n")
         (output / "build/linux-6.18.62").mkdir(parents=True)
         (output / "build/linux-6.18.62/.config").write_text("fixture kernel configuration\n")
         executable(output / "host/bin/aarch64-buildroot-linux-gnu-gcc", '#!/bin/sh\necho fixture-gcc\n')
         board = project / "board/x96max"
         board.mkdir(parents=True)
-        for name in ("ramboot-unit1-uboot.txt", "ramboot-uboot.txt"):
+        for name in ("ramboot-unit1-uboot.txt", "ramboot-uboot.txt", "ramboot-unit3-uboot.txt"):
             (board / name).write_text(f"fixture {name}\n")
         text = (ROOT / "scripts/build-in-container.sh").read_text()
         # Relocate only absolute container paths; every executable build action is mocked.
@@ -125,10 +131,10 @@ class ContainerBuild(unittest.TestCase):
         return script
 
     def test_matching_unit_fragment_and_boot_template_with_both_dtbs(self):
-        for requested, unit in ((None, "2"), ("1", "1"), ("2", "2")):
+        for requested, unit in ((None, "2"), ("1", "1"), ("2", "2"), ("3", "3")):
             with self.subTest(unit=requested), tempfile.TemporaryDirectory() as d:
                 base = Path(d)
-                script = self.prepare(base)
+                script = self.prepare(base, diagnostic_dtb=(unit == "3"))
                 settings = {"X96MAX_PROFILE": "ramboot"}
                 if requested is not None:
                     settings["X96MAX_UNIT"] = requested
@@ -138,9 +144,14 @@ class ContainerBuild(unittest.TestCase):
                 calls = (base / "calls").read_text()
                 merge = next(line for line in calls.splitlines() if line.startswith("merge "))
                 self.assertTrue(merge.endswith(f"ramboot.fragment {base}/project/board/x96max/ramboot-unit{unit}.fragment"))
-                self.assertNotIn(f"ramboot-unit{3 - int(unit)}.fragment", merge)
-                template = "ramboot-unit1-uboot.txt" if unit == "1" else "ramboot-uboot.txt"
+                for other in {1, 2, 3} - {int(unit)}:
+                    self.assertNotIn(f"ramboot-unit{other}.fragment", merge)
+                template = {"1": "ramboot-unit1-uboot.txt",
+                            "3": "ramboot-unit3-uboot.txt"}.get(unit, "ramboot-uboot.txt")
                 expected = {*RAM_FILES, template, "buildroot.config", "linux.config", "toolchain.txt"}
+                if unit != "3":
+                    # The dwc3-disabled diagnostic DTB exists only for unit 3.
+                    expected.difference_update(UNIT3_EXTRA_DTBS)
                 self.assertEqual({p.name for p in (base / "export").iterdir()}, expected)
 
     def test_disk_export_and_no_ramboot_merge(self):
@@ -155,7 +166,7 @@ class ContainerBuild(unittest.TestCase):
                               "buildroot.config", "linux.config", "toolchain.txt"})
 
     def test_direct_container_validation_precedes_build_access(self):
-        for settings in ({"X96MAX_UNIT": "3"}, {"X96MAX_PROFILE": "unknown"}):
+        for settings in ({"X96MAX_UNIT": "4"}, {"X96MAX_PROFILE": "unknown"}):
             with self.subTest(settings=settings), tempfile.TemporaryDirectory() as d:
                 base = Path(d)
                 result = subprocess.run(["bash", str(ROOT / "scripts/build-in-container.sh")],
@@ -168,9 +179,13 @@ class ContainerBuild(unittest.TestCase):
 class ProfileContracts(unittest.TestCase):
     def test_common_fragment_has_no_unit_identity_or_overlay(self):
         common = (ROOT / "board/x96max/ramboot.fragment").read_text()
-        for field in ("BR2_TARGET_GENERIC_HOSTNAME", "BR2_TARGET_GENERIC_ISSUE", "BR2_ROOTFS_OVERLAY"):
+        # INTREE_DTS_NAME belongs to the unit fragment: merge_config.sh applies
+        # the unit file last, so a value here would drop unit-specific DTBs.
+        for field in ("BR2_TARGET_GENERIC_HOSTNAME", "BR2_TARGET_GENERIC_ISSUE",
+                      "BR2_ROOTFS_OVERLAY", "BR2_LINUX_KERNEL_INTREE_DTS_NAME="):
             self.assertNotIn(field, common)
-        for unit, overlay in ((1, "ramboot-unit1-overlay"), (2, "ramboot-overlay")):
+        for unit, overlay in ((1, "ramboot-unit1-overlay"), (2, "ramboot-overlay"),
+                              (3, "ramboot-unit3-overlay")):
             text = (ROOT / f"board/x96max/ramboot-unit{unit}.fragment").read_text()
             line = next(line for line in text.splitlines() if line.startswith("BR2_ROOTFS_OVERLAY="))
             self.assertEqual(line.split('="', 1)[1].rstrip('"').split(),
@@ -193,6 +208,34 @@ class ProfileContracts(unittest.TestCase):
             "PIX_LOGO_WEEKLY_WAIT": "900",
         })
 
+    def test_unit3_uses_dt295_on_gr_channel17_without_external_card(self):
+        fragment = (ROOT / "board/x96max/ramboot-unit3.fragment").read_text()
+        self.assertIn('BR2_TARGET_GENERIC_HOSTNAME="x96max-p3"', fragment)
+        self.assertIn("ramboot-unit3-overlay", fragment)
+        self.assertNotIn("/identity", fragment)
+        text = (ROOT / "board/x96max/ramboot-unit3-overlay/etc/default/pix-stream-linux").read_text()
+        values = dict(line.split("=", 1) for line in text.splitlines() if line.startswith("PIX_"))
+        self.assertEqual(values["PIX_TUNER"], "dt295")
+        self.assertEqual(values["PIX_SYSTEM"], "terrestrial")
+        self.assertEqual(values["PIX_CHANNEL"], "17")
+        self.assertEqual(values["PIX_DISPLAY"], "X96Max-P3")
+        # DT295 decrypts on its internal card: no external reader, no torne-b25.
+        self.assertEqual(values["PIX_DECRYPT"], "0")
+        # Satellite-only options must be absent entirely: the launchers default
+        # them to "--slot 0" plus a BS/CS PID list, and pix-ts rejects that for
+        # terrestrial capture (exit 2, usage). An empty value is not enough.
+        self.assertNotIn("PIX_SAT_SLOT", values)
+        self.assertNotIn("PIX_PIDS", values)
+        self.assertNotIn("PIX_CARD_SOCKET", values)
+        # Unit 2 keeps its satellite slot/PID list from its own defaults file.
+        unit2_defaults = (ROOT / "board/x96max/ramboot-overlay/etc/default/pix-stream-linux").read_text()
+        self.assertIn("PIX_SAT_SLOT=0", unit2_defaults)
+        # The other two units keep their own channel and tuner.
+        unit1 = (ROOT / "board/x96max/ramboot-unit1-overlay/etc/default/pix-stream-linux").read_text()
+        unit2 = (ROOT / "board/x96max/ramboot-overlay/etc/default/pix-stream-linux").read_text()
+        self.assertIn("PIX_CHANNEL=17", unit1)
+        self.assertIn("PIX_CHANNEL=9", unit2)
+
     def test_usb_boot_rail_preserves_firmware_enabled_state(self):
         common = (ROOT / 'board/x96max/dts/amlogic/meson-g12a-x96-max-p.dts').read_text()
         rail = re.search(r'&vcc_5v\s*\{([^}]*)\}', common)
@@ -205,11 +248,16 @@ class ProfileContracts(unittest.TestCase):
         self.assertIn('#include "meson-g12a-x96-max-p.dts"', external)
         self.assertIn('#include "meson-g12a-x96-max-p-ephy.dts"', unit2)
 
-    def test_genimage_and_checksums_include_both_dtbs(self):
+    def test_genimage_template_is_unit_neutral_and_post_image_adds_extras(self):
         image = (ROOT / "board/x96max/ramboot-genimage.cfg").read_text()
         post = (ROOT / "board/x96max/ramboot-post-image.sh").read_text()
-        for dtb in DTBS:
+        # The shared template carries only the DTBs every unit builds; a unit's
+        # extra DTBs are appended by the post-image script when they exist, so
+        # units 1 and 2 keep the image they had.
+        for dtb in DTBS[:2]:
             self.assertIn(f'"{dtb}"', image)
+        for dtb in UNIT3_EXTRA_DTBS:
+            self.assertNotIn(f'"{dtb}"', image)
             self.assertIn(dtb, post)
         self.assertNotIn("rootfs.ext4", image)
 

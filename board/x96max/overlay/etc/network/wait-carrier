@@ -1,0 +1,24 @@
+#!/bin/sh
+# wait-carrier IFACE [SECONDS] - wait (bounded) for eth0 to report a link.
+#
+# The external RTL8211F takes about five seconds to link after the interface is
+# brought up. ifup runs udhcpc straight away, and BusyBox udhcpc forked to the
+# background with no lease when the carrier was still down, so the box stayed
+# without an address until someone re-ran it by hand.
+#
+# Exits 0 when carrier appears or the wait expires (a missing link is not this
+# helper's failure to report; DHCP will show it), 2 on bad usage.
+iface=${1:-}
+seconds=${2:-15}
+[ -n "$iface" ] || { echo "usage: wait-carrier IFACE [SECONDS]" >&2; exit 2; }
+case "$seconds" in ''|*[!0-9]*) echo "wait-carrier: invalid seconds: $seconds" >&2; exit 2 ;; esac
+
+i=0
+while [ "$i" -lt "$seconds" ]; do
+    if [ "$(cat "/sys/class/net/$iface/carrier" 2>/dev/null)" = "1" ]; then
+        exit 0
+    fi
+    sleep 1
+    i=$((i + 1))
+done
+exit 0

@@ -89,15 +89,55 @@ class BootCommands(unittest.TestCase):
         setup, _ = uboot.ramboot_setup("192.168.99.80", "192.168.99.110", unit=1)
         self.assertIn("setenv ipaddr 192.168.99.110", setup)
 
+    def test_unit3_network_boot_needs_no_sd_card(self):
+        """TFTP is the path that works when the SD card cannot be reached.
+
+        Unit 3 used to take the local-medium branch first, so a network boot
+        silently fell back to mmc and failed on a box whose card was not
+        accessible. Network boot must work for unit 3 and must not touch mmc.
+        """
+        setup, boot = uboot.ramboot_setup("192.168.99.25", unit=3)
+        loads = [c for c in setup if c.startswith("tftpboot ")]
+        self.assertEqual(len(loads), 3)
+        self.assertTrue(loads[1].endswith("${ramboot_dtb}"))
+        self.assertIn("setenv ipaddr 192.168.99.56", setup)
+        self.assertIn("setenv serverip 192.168.99.25", setup)
+        joined = " ".join(setup)
+        self.assertNotIn("mmc", joined)
+        self.assertNotIn("fatload", joined)
+        # The DTB is still chosen by board name from the U-Boot prompt.
+        for dtb in ("meson-g12a-x96-max-p.dtb", "meson-g12a-x96-max-p-ephy-4g.dtb"):
+            self.assertIn(dtb, joined)
+        self.assertEqual(boot, "booti ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r}")
+
     def test_board_identity_must_match_selected_unit(self):
         for unit, board in ((1, "g12a_u212_2g"), (2, "g12a_u211_4g")):
             self.assertTrue(uboot.ramboot_board_matches(f"aml_dt={board}\r\n", unit))
             self.assertFalse(uboot.ramboot_board_matches(f"aml_dt={board}\r\n", 3 - unit))
             self.assertFalse(uboot.ramboot_board_matches(f"aml_dt={board}_other\r\n", unit))
+        # Unit 3 is identified by the board name its U-Boot prints, not by an
+        # aml_dt value: this unit reports aml_dt=sm1_ac213_4g, which belongs to
+        # neither unit 1 nor unit 2.
+        for board in ("g12a_u212_v1#", "g12a_u211_v1#"):
+            self.assertTrue(uboot.ramboot_board_matches(board, 3))
+        self.assertFalse(uboot.ramboot_board_matches("aml_dt=sm1_ac213_4g", 3))
         self.assertFalse(uboot.ramboot_board_matches("aml_dt is not defined", 1))
 
+    def test_unit3_boots_sd_and_selects_dtb_from_firmware_identity(self):
+        commands, boot = uboot.ramboot_setup(unit=3)
+        loads = [c for c in commands if c.startswith("fatload ")]
+        self.assertEqual(len(loads), 3)
+        self.assertTrue(all(c.startswith("fatload mmc ${sddev}:1 ") for c in loads))
+        self.assertTrue(loads[1].endswith("${ramboot_dtb}"))
+        self.assertIn("mmc dev ${sddev}", commands)
+        joined = " ".join(commands)
+        self.assertNotIn("usb", joined)
+        for dtb in ("meson-g12a-x96-max-p.dtb", "meson-g12a-x96-max-p-ephy-4g.dtb"):
+            self.assertIn(dtb, joined)
+        self.assertEqual(boot, "booti ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r}")
+
     def test_invalid_unit_is_rejected(self):
-        for unit in (0, 3, "1", "1; reset"):
+        for unit in (0, 4, "1", "1; reset"):
             with self.subTest(unit=unit), self.assertRaises(ValueError):
                 uboot.ramboot_setup(unit=unit)
 

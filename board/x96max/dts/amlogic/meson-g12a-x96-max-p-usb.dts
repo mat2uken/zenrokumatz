@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// Unit 3: USB without the G12A glue driver.
+//
+// Measured from this board's vendor device tree (2026-11-19):
+//   usb2phy@ffe09000  reg = 0xffe09000(0x80), 0xffd01008(0x100),
+//                            0xff636000(0x2000), 0xff63a000(0x2000)
+//   usb3phy@ffe09080  reg = 0xffe09080(0x20), 0xffd01008(0x100)
+// and /proc/iomem on the vendor kernel shows dwc3@ff500000 standing alone,
+// with 0xffe09000 being the USB2 PHY control block, NOT the G12A USB glue
+// the mainline "amlogic,meson-g12a-usb-ctrl" driver expects. That mismatch is
+// why dwc3_meson_g12a_usb2_init_phy faults.
+//
+// So here the glue node is removed entirely and the dwc3 core is described
+// directly, the way a generic SoC DTS would: the snps,dwc3 driver drives the
+// controller and the ordinary g12a usb2 phy driver drives the PHYs at the
+// addresses the vendor DT also uses.
+#include "meson-g12a-x96-max-p-ephy.dts"
+
+/* Drop the G12A glue wrapper and its children; they are re-created below. */
+/delete-node/ &usb;
+
+/ {
+	usb_ctrl: usb@ff500000 {
+		compatible = "snps,dwc3";
+		reg = <0x0 0xff500000 0x0 0x100000>;
+		interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
+		dr_mode = "host";
+		snps,quirk-frame-length-adjustment = <0x20>;
+		snps,parkmode-disable-ss-quirk;
+		/*
+		 * The vendor DT binds dwc3 to both PHYs with its own "usb-phy"
+		 * property: usb-phy = <&usb2phy &usb3phy>. Mainline's snps,dwc3
+		 * only understands phys/phy-names, so the same binding is spelled
+		 * that way here. usb2_phy0/1 come from the board DTS (phy@36000 and
+		 * phy@3a000, i.e. 0xff636000 and 0xff63a000, which the vendor DT
+		 * also lists inside usb2phy); usb3_phy is the SuperSpeed PHY the G12A
+		 * common dtsi already defines at phy@46000 (0xff646000).
+		 */
+		phys = <&usb2_phy0>, <&usb2_phy1>, <&usb3_pcie_phy PHY_TYPE_USB3>;
+		phy-names = "usb2-phy0", "usb2-phy1", "usb3-phy0";
+		status = "okay";
+	};
+};

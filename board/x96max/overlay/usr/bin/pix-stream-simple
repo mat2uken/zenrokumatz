@@ -30,8 +30,12 @@ exec >>/tmp/pix-simple.log 2>&1
 : "${PIX_TUNER:=dt295}"
 : "${PIX_SYSTEM:=bs}"
 : "${PIX_CHANNEL:=9}"
-: "${PIX_SAT_SLOT:=0}"
-: "${PIX_PIDS:=0 17 18 257 273 289 320 321}"
+# Satellite-only options default to none: a terrestrial unit with these set
+# would otherwise pass "--slot 0" and a BS/CS PID list, which pix-ts rejects
+# for terrestrial capture (exit 2, usage). Set them per unit in
+# /etc/default/pix-stream-linux when the unit really receives BS/CS.
+: "${PIX_SAT_SLOT:=}"
+: "${PIX_PIDS:=}"
 : "${PIX_LOGO_DIR:=/var/lib/pix/logos}"
 
 log() { echo "$(date +%H:%M:%S) simple: $*"; }
