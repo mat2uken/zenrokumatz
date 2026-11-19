@@ -542,3 +542,44 @@ lavfi.astats.Overall.Number_of_samples=1024.000000
 - `stb_streamer` が `pix-ff1.log` をどう解釈するか（行形式のパース）は、
   バイナリのソースが手元に無いため未確認。ただし**旧ランチャーが同じファイル・
   同じフィルタで2代目を実運用している**ため、形式は一致しているはず。
+
+## 追記（round 94）: stb_streamer のパーサと実装の出力形式が一致（ソースで確認）
+
+round 93 で「`stb_streamer` のパース形式は未確認」としていた点を、
+`package/stb-streamer/src/feature_tap.c` を読んで確認した。
+
+### パーサが期待する形式
+
+| 期待する文字列 | 出所 | 実装の出力 |
+|---|---|---|
+| `frame:N pts:P pts_time:S` | `tap` の時刻ヘッダ | `frame:0    pts:0       pts_time:0` |
+| `lavfi.signalstats.YAVG` | 平均輝度（CM 判定の b） | `lavfi.signalstats.YAVG=125.739` |
+| `lavfi.signalstats.YDIF` | 前フレーム差（シーンスコア d） | 実装に含む |
+| `lavfi.astats.Overall.RMS_level` | 音声 RMS（b） | `lavfi.astats.Overall.RMS_level=-60.848653` |
+| `lavfi.astats.Overall.Number_of_samples` | サンプル数（a） | 実装に含む |
+| `black_start:` / `black_end:` | 黒区間（type 3） | `blackdetect=...` が出力 |
+
+### 内部の変換（参考）
+
+```c
+tap_value(line, "lavfi.signalstats.YAVG", &value)
+    → pending_video.b = (int32_t)(value * 100.0 + 0.5)      /* 0..1000 相当 */
+tap_value(line, "lavfi.astats.Overall.RMS_level", &value)
+    → pending_audio.b = (int32_t)(value * 100.0 + (value >= 0 ? 0.5 : -0.5))
+strstr(line, "black_start:") → strtod(start + 12) * 1000000.0  /* µs */
+```
+
+`lavfi.blackframe.pblack` も受け付けるが、旧実装も私の実装も `blackdetect` を
+使うので不要。
+
+### 結論
+
+**CM 経路の全要素が、ソースレベルで整合することを確認した。**
+
+1. `pix-stream-simple` が上記の文字列を出力する（ffmpeg で実測済み）
+2. `feature_tap.c` がそれをパースできる（本ラウンドでソース確認）
+3. `--feature-*` の引数名・値が旧実装と一致（round 88）
+4. 実機の `stb_streamer` が特徴量対応版（round 91）
+5. ffmpeg の出力順序バグを修正済み（round 92）
+
+**実機外で確認できる範囲は、これで尽きた。**
