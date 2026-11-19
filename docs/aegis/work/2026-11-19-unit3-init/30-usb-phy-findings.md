@@ -650,3 +650,34 @@ bit 30-31 が立っているかを読む。vendor はこれを解除している
 具体的には HHI の USB 関連レジスタ（`HHI_MEM_PD_REG0` 等）をスキャンし、
 bit30-31 が 0 になっているものを探す。それができれば、DTS に syscon 経由の
 レジスタ初期化を入れるか、小さなカーネルパッチで再現する。
+
+## 追記（round 36）: vendor の dwc3 は "dwc_general" というクロックを使う
+
+Android の sysfs から取得。
+
+```
+/sys/devices/platform/ff500000.dwc3/driver -> .../drivers/dwc3      ← mainline と同じ snps,dwc3
+/sys/devices/platform/ff500000.dwc3/of_node/clock-names = "dwc_general"
+/sys/devices/platform/ff500000.dwc3/of_node/clocks      = <0x02 0x41>
+```
+
+- **ドライバは mainline と同じ `dwc3`（snps,dwc3）**。独自ドライバではない。
+- ただし vendor DT のクロックは `clkc` の ID `0x41` = **65**、名前は `dwc_general`。
+- mainline の `g12a-clkc.h` は `CLKID_USB = 47`（`g12a_usb_general`、`HHT_GCLK_MPEG1` bit 26）で、
+  **ID 65 は定義されていない**（定義は 0〜64）。
+
+### 意味
+
+mainline の glue ドライバは `CLKID_USB`（47）を有効にするが、vendor の dwc3 は
+別のクロック（65, "dwc_general"）を要求する。**この 2 つが別物なら、mainline が
+何を開けても dwc3 のレジスタ窓は目覚めない。**
+
+### 次に確認すること（Android で実行可能）
+
+1. `0x41`（65）が vendor のクロックツリーで何を指すか。`/sys/kernel/debug/clk/` の
+   `dwc_general` の親・レート・enable_count を見る。
+2. mainline の `CLKID_USB`（47）と同一かどうか。vendor の clkc は互換でないので、
+   ID の対応は自前で確認する必要がある。
+
+Android には `/sys/kernel/debug/clk/` があるため、`dwc_general` の実体を
+その場で読める。
