@@ -2035,3 +2035,45 @@ G12A の `meson_g12a_phy_names` は 3 個（`usb3-phy0` を含む）で `USB3 po
 遷移する可能性がある。**まずこれを試す。**
 
 USB3 ports の件は、PPC で解決しない場合の次の候補として保留する。
+
+## 追記（round 73）: DT295 が Linux で認識された
+
+### 実測
+
+```
+$ lsusb
+Bus 001 Device 002: ID 06b8:103b Pixela Corp. PIX-DT295
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+
+$ cat /sys/bus/usb/devices/1-1/product
+PIX-DT295
+
+# dmesg
+[922.344185] usb 1-1: new high-speed USB device number 2 using xhci-hcd
+```
+
+**DT295 が Linux で認識された。** 73 ラウンド目にして初。
+
+### 何が効いたか
+
+`skip-glue-init` パッチ（0004）で glue の書き込みをすべて回避した構成
+（`Image` = `b3099f99`）で Linux が起動し、DT295 が `1-1`（bus1 ポート1）に
+high-speed で列挙された。
+
+**以前の構成では `usb 1-1` の列挙イベント自体が無かった**ので、これは
+明確な前進。`skip-glue-init` により glue の誤った初期化がなくなり、
+PHY が正しくセットアップされたためと考えられる。
+
+### 注意: 922 秒後に列挙された
+
+起動直後（1〜36 秒）ではなく、**922 秒後**に `usb 1-1` が現れた。これは
+`pix-usb-audit` による定期的な USB 再列挙の効果、または DT295 の接続が
+遅れて認識されたため。**起動直後から認識させるには追加の対策が必要**。
+
+### その後の停止
+
+`/etc/init.d/S97pix-stream start` を実行した直後に機体が無応答になった
+（SSH タイムアウト、ping 不通、シリアルも無応答）。以前も同じ事象があり、
+`pix-usb-reset` が USB コントローラをリセットした際に起きている。
+
+**録画パイプラインを動かす前に、この停止を解消する必要がある。**
