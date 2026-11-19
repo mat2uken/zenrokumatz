@@ -1951,3 +1951,53 @@ vendor の xhci はこのチェックが緩い、あるいは `num_ports` を 4 
 **vendor のドライバは、この PSI を無視して別の方法でポートを決めている**
 可能性が高い。mainline のチェックを通すには、`max_ports` を 25 以上にするか、
 PSI を読み替える必要がある。
+
+## 追記（round 71）: 以前の PSI 解読は誤り。PORTSC3 は USB3 ポートだった
+
+### マクロの正しい定義（`xhci-ext-caps.h`）
+
+```c
+#define XHCI_EXT_PORT_PSIC(x)  (((x) >> 28) & 0x0f)
+#define XHCI_EXT_PORT_OFF(x)   ((x) & 0xff)          /* 下位 8 bit */
+#define XHCI_EXT_PORT_COUNT(x) (((x) >> 8) & 0xff)   /* bits 8-15 */
+```
+
+round 70 では OFF を bits 8-15、COUNT を bits 16-31 と誤解していた。正しくは
+OFF が下位 8 bit、COUNT が bits 8-15。
+
+### 正しい解読
+
+```
+USB2: 0xff5008b8 = 0x00180201
+  OFF   = 0x01 = 1
+  COUNT = 0x02 = 2
+  → ポート 1〜2 が USB2（off+count-1 = 2 ≤ max_ports 3、範囲内で受理）
+
+USB3: 0xff5008c8 = 0x00000103
+  OFF   = 0x03 = 3
+  COUNT = 0x01 = 1
+  → ポート 3 が USB3
+```
+
+**PSI は拒否されていない。** USB2 は 2 ポート、USB3 は 1 ポートとして正しく
+登録されている（`maxchild` は USB2 の 2）。
+
+### 決定的な意味
+
+**PORTSC3 は USB3 ポート。** DT295 は USB2 の high-speed デバイスなのに、
+USB3 ポートに挿さっている。
+
+vendor の PORTSC3 = `0xE03` は `Speed=3`（High Speed）で、USB3 ポートに USB2
+デバイスが挿さった状態として整合する（USB3 ポートは USB2 デバイスも受け付ける）。
+
+### つまり
+
+これまでの「ポート番号がずれている」という理解は誤り。**DT295 は最初から
+USB3 ポート（PORTSC3）に挿さっており、vendor も Linux も同じ番号で見ている。**
+問題は `PED=0, PLS=7`（Polling）で止まることで、これは PPC=0 による電源制御の
+欠落が原因と考えられる。
+
+### 修正した方針
+
+PPC パッチ（修正版、`Image` = `6a9b20e4`）で PPC=1 にすれば、USB3 ポートの
+電源制御が有効になり、`PED=1, PLS=0` に遷移する見込み。SD への書き込みが必要。
