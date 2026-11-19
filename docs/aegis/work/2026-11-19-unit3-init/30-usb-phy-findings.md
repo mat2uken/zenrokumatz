@@ -1693,3 +1693,48 @@ SD に書き込み、GXL DTB で起動して:
 2. `hcc_params` の PPC ビットが立っているか（`busybox devmem 0xff500010`）
 3. `lsusb` に DT295 が出るか
 4. PORTSC3/4 の状態（PED=1, PLS=0 になれば成功）
+
+## 追記（round 65）: PPC パッチは効かない。USB_R1 書き込みが先に例外になる
+
+PPC パッチ入り Image（`fcfaf4a2…`）と `port-power-control` 入り GXL DTB
+（`8dae4c56…`）で起動した。
+
+```
+[1.322487] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.328840] Internal error: synchronous external abort
+[1.478220]  dwc3_meson_g12a_usb_init_glue.isra.0+0x38/0x190
+```
+
+**`usb_init_glue` の `USB_R1` 書き込み（GXL では `0xffe09004`）で例外。**
+PPC パッチは xhci の初期化時に効くものなので、dwc3 の glue probe が先に
+落ちてしまえば意味がない。
+
+### 順序の壁
+
+```
+dwc3_meson_g12a_probe
+  → usb_init_glue
+    → dwc3_meson_g12a_usb2_init（パッチで無効化済み）
+    → USB_R1 への regmap_update_bits  ← ここで例外
+    → （以降の USB_R5、usb3_init、otg_apply_mode には到達しない）
+```
+
+xhci の初期化は dwc3 の子として後から走るので、**glue probe が通らない限り
+PPC パッチは実行されない。**
+
+### 誤検出の記録
+
+round 65 の最初の起動で `hcc params 0x0228fe6c` と `usb 1-1: new high-speed USB
+device` を観測したが、これは **Android（vendor）のログ**だった。booti の前に
+autoboot で Android が起動していた。**Linux の PPC は未確認のまま。**
+
+### 次の一手
+
+`USB_R1`（`0xffe09004`）を**書けるようにする**必要がある。選択肢:
+
+1. **glue の書き込みをすべて回避するパッチ**。`dwc3_meson_g12a_usb_init_glue` を
+   丸ごと `return 0` にする。`USB_R1`/`USB_R5`/`usb3_init`/`otg_apply_mode` を
+   すべて飛ばす。PHY の初期化（`phy_init`）は別途行われるので、PHY は動く。
+   **これが最も単純で、既に `-p-gxl` の DTB で試せる。**
+2. `0xffe09004` が書けるタイミングを探る（probe 順の制御）。
+3. vendor の `amlogic-new-usb2-v2` を移植する。
