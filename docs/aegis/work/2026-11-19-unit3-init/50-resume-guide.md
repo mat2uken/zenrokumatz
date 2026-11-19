@@ -373,3 +373,62 @@ cd ~/Desktop/work/X96MaxLinuxTSEnc
 ### 停止した場合の復旧
 
 機体が無応答になったら電源再投入。SD はそのままでよい。
+
+## 追記（round 89）: 現時点の到達点と再開手順（最新）
+
+### 到達点
+
+| 項目 | 状態 | 根拠 |
+|---|---|---|
+| Linux RAM 起動 | **達成** | `skip-glue-init` で例外が消え、`x96max-p3 login:` まで到達（round 73） |
+| DT295 認識 | **達成** | `lsusb` に `06b8:103b Pixela Corp. PIX-DT295`、`/sys/.../1-1/product = PIX-DT295` |
+| 停止の防止 | **実装** | `wait_for_tuner`（既定は無期限待機） |
+| NAS 登録 | **達成** | `/api/discovered` に `name=X96Max-P3, channel=17, known=true` |
+| NAS 画質設定 | **達成** | codec/解像度/bitrate/rateMode/gopSec が2代目と完全一致 |
+| CM スキップ | **実装** | `encode_with_features` + `--feature-*`。ffmpeg 構成は Mac で動作確認 |
+| **録画の成立** | **未達** | 機体が未接続のため実機確認できず |
+
+### 再開に必要なもの
+
+1. **SD カードを Mac へ**（`/dev/diskN` を `diskutil list external physical` で確認）
+2. **3代目の電源**
+
+### 書き込み（Image は据え置く）
+
+```sh
+cd ~/Desktop/work/X96MaxLinuxTSEnc
+cp output/ramboot-unit3/ramboot.img output/ramboot-unit3/sdcard.img
+H=$(shasum -a 256 output/ramboot-unit3/ramboot.img | cut -d' ' -f1)
+grep -vE "  (sdcard\.img|rootfs\.cpio\.gz|ramboot\.img)$" output/ramboot-unit3/SHA256SUMS > /tmp/s
+echo "$H  sdcard.img" >> /tmp/s && echo "$H  ramboot.img" >> /tmp/s
+cp /tmp/s output/ramboot-unit3/SHA256SUMS
+/usr/bin/python3 scripts/write-sd.py --image output/ramboot-unit3/sdcard.img \
+  --device /dev/diskN --update-boot
+```
+
+**注意**: 最新の `Image` は `6a9b20e4`（PPC 修正版、未検証）。SD 上の実績値は
+`b3099f99`（DT295 認識に成功）。PPC は必須でなかった可能性が高いので、
+`--only rootfs.cpio.uboot` で rootfs だけ更新するのが安全。
+
+### 起動と確認
+
+```sh
+# U-Boot へ（tools/uboot_boot_linux.py の catch_prompt を使う）
+# 起動後
+ssh root@192.168.99.56 'lsusb | grep 06b8'
+ssh root@192.168.99.56 'tail -5 /tmp/pix-simple.log'      # tuner: appeared after Ns
+ssh root@192.168.99.56 'wget -qO- http://127.0.0.1:40774/v1/status'
+python3 tools/check-unit3-acceptance.py --host 192.168.99.56 --channel 17
+curl -s http://192.168.99.80:40776/api/nodes | python3 -m json.tool  # state=recording
+```
+
+### 既知の落とし穴
+
+- **`pix-stream` を DT295 認識前に起動しない。** 3 回失敗すると `dt295_recover`
+  → `pix_usb_reset` で機体が無応答になる。`wait_for_tuner` が既定で待つように
+  したが、起動順序には注意。
+- **SD の FAT 区画はコンソールユーザー所有**なので、`--update-boot` なら sudo 不要。
+- **YMODEM は 115200bps 固定。** 上げると U-Boot が切り替え待ちで止まる。
+- **`pix-usb-audit` は起動メディアの指紋監査**で、DT295 とは無関係。
+- **PORTSC3 は USB3 ポート。** DT295 は `1-1`（USB2 ポート1）で認識される。
+- **CM の安全装置**: 解析が 3 回失敗すると `PIX_FEATURES=0` にして録画を守る。
