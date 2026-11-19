@@ -1,0 +1,40 @@
+diff -ruN a/drivers/usb/dwc3/dwc3-meson-g12a.c b/drivers/usb/dwc3/dwc3-meson-g12a.c
+--- a/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-19 20:29:15
++++ b/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-19 20:29:19
+@@ -323,20 +323,22 @@
+ static int dwc3_meson_g12a_usb2_init(struct dwc3_meson_g12a *priv,
+ 				     enum phy_mode mode)
+ {
+-	int i, ret;
+-
+-	for (i = 0; i < priv->drvdata->num_phys; ++i) {
+-		if (!priv->phys[i])
+-			continue;
+-
+-		if (!strstr(priv->drvdata->phy_names[i], "usb2"))
+-			continue;
+-
+-		ret = priv->drvdata->usb2_init_phy(priv, i, mode);
+-		if (ret)
+-			return ret;
+-	}
+-
++	/*
++	 * X96Max_P boards reporting aml_dt=sm1_ac213_4g place the USB2 PHY
++	 * control block at 0xffe09000, where the G12A glue driver expects its
++	 * u2p registers. u2p_regmap[i] is base + i * U2P_REG_SIZE, i.e.
++	 * 0xffe09000 and 0xffe09010, and touching them faults with a
++	 * synchronous external abort.
++	 *
++	 * That fault aborts dwc3_meson_g12a_usb_init_glue before it reaches
++	 * USB_R1 (frame length), USB_R5 (ID detect), usb3_init and USB_R4
++	 * (memory power-down release). Without those the dwc3 register window
++	 * never answers, and dwc3_core_probe aborts at dwc3->regs + 0x20.
++	 *
++	 * Skipping only this u2p step lets the rest of the glue sequence run.
++	 * The USB2 PHYs at phy@36000/phy@3a000 are still initialised by their
++	 * own driver through the glue node's phy list.
++	 */
+ 	return 0;
+ }
+ 
