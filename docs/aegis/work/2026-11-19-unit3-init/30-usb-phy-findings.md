@@ -1000,3 +1000,53 @@ G12A 版の `usb3_init` が `USB_R1_U3H_HOST_PORT_POWER_CONTROL_PRESENT`（bit 1
 
 まず 1 を検討する。`USB_R1` は GXL では `base + 0x04` = `0xffe09004`。
 glue ドライバが予約しているので、カーネル内から書く必要がある。
+
+## 追記（round 44）: DT295 は接続されている。列挙が Polling で止まっている
+
+### 決定的な測定
+
+xHCI の PORTSC を全数読んだ（DT295 接続状態、Linux は GXL DTB で稼働中）。
+
+```
+PORTSC1 (0xff500400) = 0x00000000   PP=0 CCS=0
+PORTSC2 (0xff500410) = 0x00000000   PP=0 CCS=0
+PORTSC3 (0xff500420) = 0x000002A0   PP=1 CCS=0
+PORTSC4 (0xff500430) = 0x000206E1   PP=1 CCS=1
+```
+
+`PORTSC4 = 0x206E1` の内訳:
+
+| ビット | 値 | 意味 |
+|---|---|---|
+| CCS (bit 0) | 1 | **デバイスが接続されている** |
+| PED (bit 1) | 0 | ポートが有効化されていない |
+| PLS (bit 5-8) | 7 | **Polling（列挙中で停止）** |
+| PP (bit 9) | 1 | **ポート電源あり** |
+| Speed (10-13) | 1 | Full Speed |
+| CSC (bit 17) | 1 | 接続変化イベントが未処理 |
+
+**DT295 は物理的に接続されており、VBUS も供給されている。** しかし xhci が列挙を
+完了できず、PLS=Polling で止まっている。
+
+### 原因の候補：ポート数の不一致
+
+```
+hub 1-0:1.0: 2 ports detected      ← xhci は 2 ポートとして登録
+PORTSC4 にデバイスが接続           ← 実際は 4 ポートある
+```
+
+glue は `USB2 ports: 2` と報告しており、vendor DT の `portnum = 2` とも一致する。
+しかし実際の PORTSC は 4 つあり、**デバイスは 4 番目に挿さっている**。
+
+xhci は登録済みの 2 ポート（PORTSC1/2）しか監視しないため、PORTSC4 の接続を
+処理できない。これが Polling のまま止まる理由と考えられる。
+
+### 対策
+
+`USB2 ports: 2` の報告を実際のポート数に合わせる必要がある。glue の
+`usb2_ports` は PHY 数から決まる（`dwc3_meson_g12a_get_phys` が `phy_names` の
+うち "usb2" を含むものを数える）。GXL の `meson_a1_phy_names` は
+`{"usb2-phy0", "usb2-phy1"}` の 2 個なので 2 になる。
+
+**DT295 を PORTSC1 か PORTSC2 に挿せば認識される可能性が高い。** これが最も
+簡単な確認方法。物理ポートの対応を確かめる。
