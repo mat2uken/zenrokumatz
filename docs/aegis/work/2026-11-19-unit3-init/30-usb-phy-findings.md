@@ -725,3 +725,38 @@ DTS の glue ノードの compatible を `amlogic,meson-gxl-usb-ctrl` に変え�
 
 ただし `0xffe09000` 帯が書けるかは未確認（前回 `0xffe09084` で落ちた）。
 `gxl_usb_init` が何を書くかを確認してから判断する。
+
+## 追記（round 36 結論）: 0xffe09000 は PHY が初期化する領域。glue とは別物
+
+vendor の dmesg:
+
+```
+amlogic-new-usb2-v2 ffe09000.usb2phy: USB2 phy probe:phy_mem:0xffe09000, iomap phy_base:0xf0ed8000
+dwc_otg: usb0: type: 2 speed: 0, config: 0, dma: 0, id: 0, phy: ffe09000, ctrl: 0
+```
+
+**`amlogic-new-usb2-v2` が `0xffe09000` を PHY のレジスタとして ioremap し、初期化している。**
+その PHY を vendor の dwc3 が `usb-phy`（phandle 0x12）で参照する。
+
+つまりこの基板では:
+
+| アドレス | vendor | mainline G12A |
+|---|---|---|
+| `0xffe09000` | **USB2 PHY の制御ブロック**（amlogic-new-usb2-v2 が初期化） | **glue**（dwc3-meson-g12a が初期化） |
+| `0xffe09080` | usb3phy | glue 内の `USB_R1`（base+0x80） |
+| `0xff636000`/`0xff63a000` | usb2phy の reg の一部 | usb2_phy0/1 |
+
+**PHY の初期化が dwc3 のレジスタ窓を開ける前提**になっており、mainline は PHY を
+`phy@36000`/`phy@3a000` で扱うため、`0xffe09000` の初期化が抜ける。しかも glue
+ドライバが同じ領域を「glue」として触るため例外になる。**同じアドレスを別の意味で
+取り合っているのが本質。**
+
+### まとめ（試す順）
+
+1. **compatible を `amlogic,meson-gxl-usb-ctrl` にする**（GXL 解釈）。glue は `base`
+   そのものになり、u2p を作らない。`USB_R1` は `0xffe09004`。`0xffe09000` 帯が
+   書ければ通る。**DTS の 1 行で試せる。**
+2. 通らなければ、`0xffe09000` を PHY として初期化する処理（vendor の
+   amlogic-new-usb2-v2 相当）を mainline 側に足す。カーネルパッチ。
+
+まず 1 を試す。DTB だけなので YMODEM（50KB）で送れる。
