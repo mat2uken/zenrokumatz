@@ -951,3 +951,52 @@ python3 tools/check-unit3-acceptance.py --host 192.168.99.56 --channel 17
   （`write-sd.py --update-boot`、実機で成功済み）。
 - YMODEM（`tools/loady_send.py`）で DTB を単体で送れる。115200bps 固定、
   ボーレートを上げると U-Boot が切り替え待ちに入るので不可。
+
+## 追記（round 43）: xHCI の PORTSC が 0 = ポート電源が入っていない
+
+DT295 を接続した状態で実機を測定した（Linux は GXL DTB で稼働中）。
+
+### 測定結果
+
+```
+# xHCI PORTSC（0xff500400, 0xff500410）
+port1 PORTSC = 0x00000000
+port2 PORTSC = 0x00000000
+```
+
+**両ポートとも `0x0`。** PORTSC のビット:
+
+- bit 0 CCS（Current Connect Status）= 0 → デバイス未検出
+- **bit 9 PP（Port Power）= 0 → ポートに電源が供給されていない**
+
+USB デバイスを挿しても、ポート給電（PP）が 0 なら列挙されない。DT295 が
+認識されないのはこれが原因。
+
+### 参考: 他のレジスタ
+
+```
+0xffe09080 = 0x0000006A   （usb3phy 制御）
+0xffe09084 = 0x00000000   （G12A の USB_R1 相当。GXL では glue=base なので別）
+0xff636000 = 0x40057000   （usb2_phy0 本体。PHY は生きている）
+0xffe09000/04/08/0c       mmap 拒否（glue ドライバが予約）
+```
+
+`VCC_5V` レギュレータは `enabled`、`num_users=4`。
+
+### 原因の推定
+
+G12A 版の `usb3_init` が `USB_R1_U3H_HOST_PORT_POWER_CONTROL_PRESENT`（bit 17）を
+立てるが、GXL 版は `USB3 ports: 0` のため `usb3_init` を呼ばない。**ポート電源を
+「制御可能」と宣言するビットが立っていない**ため、xhci が PP を立てないと考えられる。
+
+### 対策の候補
+
+1. GXL でも `usb3_init` 相当（`PORT_POWER_CONTROL_PRESENT` の設定）を行う
+   カーネルパッチ。
+2. DTS で `vbus-supply` を確実に効かせ、xhci に PP を立てさせる。既に
+   `&usb { vbus-supply = <&vcc_5v> }` があるが、GXL の glue regmap が変わった
+   ことで消費側の解決が変わった可能性。
+3. `xhci-hcd` の `hcd->power_budget` ではなく、xHCI の PP を直接書く（危険）。
+
+まず 1 を検討する。`USB_R1` は GXL では `base + 0x04` = `0xffe09004`。
+glue ドライバが予約しているので、カーネル内から書く必要がある。
