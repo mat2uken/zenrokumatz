@@ -401,3 +401,42 @@ Mac（ffmpeg 8.1.2）で 20 秒の MPEG-TS（1440x1080/30fps）を処理した�
   実機ではもっと余裕があると見込まれる。
 - 万一実時間を割り込んでも、`PIX_FEATURE_FAILURES` の安全装置で特徴量が
   無効化され、録画は継続する。
+
+## 追記（round 91）: 3代目の stb_streamer が特徴量対応版であることを確認
+
+round 85 で「SD に入っている `stb_streamer` が特徴量対応版かは未確認」と
+していた点を、成果物から直接検証した。
+
+### 方法
+
+`rootfs.cpio.uboot` を uImage ヘッダの後ろから gzip 展開し、cpio 内の
+`usr/bin/stb_streamer` の ELF 本体を検索した。
+
+```
+rootfs: 111,637,504 bytes
+stb_streamer in cpio: True
+ELF header: \x7fELF\x02\x01\x01\x00
+```
+
+ELF 本体に含まれる文字列:
+
+| 文字列 | 含まれる |
+|---|---|
+| `--feature-file` | **True** |
+| `--feature-audio-file` | **True** |
+| `--feature-black-file` | **True** |
+| `--feature-max-mb` | **True** |
+
+**3代目のイメージに入る `stb_streamer` は特徴量対応版。** 追加のインストール
+作業は不要（`scripts/install-stb-feature.sh` は2代目向けの経路）。
+
+### これで CM 経路の全要素が揃った
+
+1. `pix-stream-simple` が特徴量を生成（`encode_with_features`、round 86）
+2. `FEAT_ARGS` が旧実装と同じ 4 引数（round 88 で一致を確認）
+3. `stb_streamer` がそれを受け取れる（本ラウンドで確認）
+4. 解析失敗時は特徴量を無効化して録画を守る（round 88）
+5. ffmpeg のフィルタ構成は動作確認済み（round 87）
+6. コストは実時間の 31 倍の余裕（round 90）
+
+**残るのは、NAS が `features=v1` を要求するかの実機確認のみ。**
