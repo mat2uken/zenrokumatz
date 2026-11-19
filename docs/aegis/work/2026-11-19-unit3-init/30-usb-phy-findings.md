@@ -1434,3 +1434,54 @@ mainline の PHY ドライバは `reg` の最初の領域だけを使う。vendo
 1. `-noextra` DTB（round 37 と同条件）で再現試験。probe 順が結果を左右するなら、
    順序制御が最短。
 2. それで駄目なら `0xffe09000` の初期化を mainline PHY ドライバに足すパッチを書く。
+
+## 追記（round 60）: aml_reg で vendor の 0xffe09000 帯を実測した
+
+Android の `/sys/kernel/debug/aml_reg/paddr` にアドレスを書くと、その値を読める
+ことが分かった（`/dev/mem` は無いが、この debugfs がある）。
+
+```
+echo 0xffe09000 > /sys/kernel/debug/aml_reg/paddr
+cat /sys/kernel/debug/aml_reg/paddr
+[0xffe09000] = 0xB
+```
+
+### 実測値（vendor, DT295 接続・稼働中）
+
+| アドレス | 値 | 解釈 |
+|---|---|---|
+| `0xffe09000` | `0x0000000B` | U2P_R0（port0）: HOST_DEVICE=1, POWER_OK=1, POWER_ON_RESET=1 |
+| `0xffe09004` | `0x0000000D` | U2P_R1（port0）: PHY_READY=1, OTG_SESSION_VALID=1, VBUS_VALID=1 |
+| `0xffe09008` | `0x0` | – |
+| `0xffe09010` | `0x0` | U2P_R0（port1） |
+| `0xffe09020` | `0x0000003B` | U2P_R0（port2）: bit0,1,3,4,5 |
+| `0xffe09024` | `0x0000000D` | U2P_R1（port2） |
+| その他 | `0x0` | – |
+
+### 重要な意味
+
+**vendor の `0xffe09000` の値 `0xB` は、mainline の `U2P_R0` ビット定義と完全に
+整合する。**
+
+```
+U2P_R0_HOST_DEVICE    (bit0) = 1
+U2P_R0_POWER_OK       (bit1) = 1
+U2P_R0_POWER_ON_RESET (bit3) = 1
+```
+
+`0xffe09004 = 0xD` も `U2P_R1` として整合（PHY_READY, OTG_SESSION_VALID,
+VBUS_VALID）。
+
+**つまり mainline の `u2p_regmap` の解釈（`base + i*0x20`）は正しい。**
+`0xffe09000` を U2P レジスタとして扱うのは誤りではない。
+
+問題は「**書けない**」ことではなく、**書き込みが通るタイミングがある**こと。
+round 37 では成功し、round 54/55 では失敗した。probe 順に依存する。
+
+### 次の一手
+
+`aml_reg` は読みだけでなく**書き込みもできる**可能性がある。vendor の値を Linux 側
+から再現できるか試せるが、危険なので最後の手段。
+
+より安全なのは、`-noextra` DTB で round 37 の条件を再現し、probe 順を観察する
+こと。dwc2 が先に走れば成功する見込み。
