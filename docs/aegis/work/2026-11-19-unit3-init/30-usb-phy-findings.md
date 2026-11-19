@@ -1485,3 +1485,60 @@ round 37 では成功し、round 54/55 では失敗した。probe 順に依存�
 
 より安全なのは、`-noextra` DTB で round 37 の条件を再現し、probe 順を観察する
 こと。dwc2 が先に走れば成功する見込み。
+
+## 追記（round 61）: vendor と Linux で DT295 のポート番号が違う
+
+`aml_reg` で vendor（Android）の xHCI レジスタを実測した。DT295 は接続済み。
+
+### vendor の実測値
+
+```
+0xff500004 (hcs_params1) = 0x03000140   MaxPorts = 3
+0xff500400 (PORTSC1)     = 0x00000000   PP=0 CCS=0
+0xff500410 (PORTSC2)     = 0x00000000   PP=0 CCS=0
+0xff500420 (PORTSC3)     = 0x00000E03   PP=1 CCS=1  ← DT295 はここ
+0xff500430 (PORTSC4)     = 0x000002A0   PP=1 CCS=0
+```
+
+PORTSC3 の内訳:
+
+| ビット | 値 | 意味 |
+|---|---|---|
+| CCS (bit 0) | 1 | デバイス接続 |
+| **PED (bit 1)** | **1** | **ポート有効化済み** |
+| PLS (bit 5-8) | 0 | **U0（動作中）** |
+| PP (bit 9) | 1 | 電源あり |
+| Speed (10-13) | 3 | High Speed |
+| CSC (bit 17) | 0 | 変化イベント処理済み |
+
+**vendor ではポートが完全に動作している。**
+
+### Linux との決定的な食い違い
+
+| | vendor | Linux（GXL DTB） |
+|---|---|---|
+| DT295 のポート | **PORTSC3**（範囲内） | **PORTSC4**（範囲外） |
+| 状態 | PED=1, PLS=0（**U0**） | PED=0, PLS=7（Polling） |
+
+`hcs_params1` は両方 `0x03000140` で MaxPorts=3 と申告している。vendor では接続が
+PORTSC3 なので範囲内に収まっているが、**Linux では PORTSC4 に見えている**。
+
+つまり Linux 側で **ポート番号の対応がずれている**。物理的に同じ場所に挿した
+デバイスが、vendor では 3 番目、Linux では 4 番目と認識される。
+
+### 考えられる原因
+
+1. **USB3 ポートの有無による番号のずれ。** vendor は `USB3 ports: 1`、Linux は
+   `USB3 ports: 0`。USB3 のポートが番号に影響している可能性。
+2. xHCI 拡張ケーパビリティ（Protocol ケーパビリティ）の解釈順が違う。
+3. `max_ports` の計算（vendor は実質 4 ポート分のレジスタを見ている）と、
+   申告値 3 の関係。
+
+### 次の一手
+
+vendor の `USB3 ports: 1` と Linux の `USB3 ports: 0` の差を埋めれば、ポート
+番号が揃う可能性がある。GXL の `num_phys` が 2（`meson_a1_phy_names`）なので
+USB3 PHY が数えられていない。G12A の `meson_g12a_phy_names` は 3 個
+（usb2-phy0, usb2-phy1, usb3-phy0）で `USB3 ports: 1` になる。
+
+**G12A の PHY リストで GXL の regmap を使う組み合わせが必要かもしれない。**
