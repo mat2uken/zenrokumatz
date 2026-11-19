@@ -15,6 +15,8 @@
 // controller and the ordinary g12a usb2 phy driver drives the PHYs at the
 // addresses the vendor DT also uses.
 #include "meson-g12a-x96-max-p-ephy.dts"
+#include <dt-bindings/clock/g12a-clkc.h>
+#include <dt-bindings/reset/amlogic,meson-g12a-reset.h>
 
 /* Drop the G12A glue wrapper and its children; they are re-created below. */
 /delete-node/ &usb;
@@ -25,6 +27,15 @@
 		reg = <0x0 0xff500000 0x0 0x100000>;
 		interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
 		dr_mode = "host";
+		/*
+		 * The deleted glue node used to own the USB clock and reset
+		 * (clocks = <&clkc CLKID_USB>, resets = <&reset RESET_USB>). Taking
+		 * them here is what lets the dwc3 register window respond at all;
+		 * without them the first register access faults with a synchronous
+		 * external abort in dwc3_core_probe.
+		 */
+		clocks = <&clkc CLKID_USB>;
+		resets = <&reset RESET_USB>;
 		snps,quirk-frame-length-adjustment = <0x20>;
 		snps,parkmode-disable-ss-quirk;
 		/*

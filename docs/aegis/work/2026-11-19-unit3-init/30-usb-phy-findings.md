@@ -336,3 +336,35 @@ dwc3 側の前提（クロック・リセット）を整えていた。
 3. glue を残しつつ、u2p 書き込みだけを避けるパッチ（案 B）に戻る。
 
 現実的には 1 で原因を特定してから 2 か 3 を選ぶ。
+
+## 追記（round 26）: クロック・リセットを移しても dwc3_core_probe で同じ例外
+
+候補 DTB に、削除した glue ノードが持っていた `clocks = <&clkc CLKID_USB>` と
+`resets = <&reset RESET_USB>` を dwc3 ノードへ移して試した（`f508ecc8…`）。
+YMODEM で転送し（FDT ヘッダの totalsize/off_dt_struct/off_dt_strings/
+size_dt_struct がホスト側と完全一致することを確認）、起動した結果。
+
+```
+Internal error: synchronous external abort: 0000000096000010 [#1] SMP
+pc : dwc3_core_probe+0x96c/0x1600
+```
+
+**クロック・リセットの有無で例外の位置は変わらなかった。** したがって原因は
+そこではない。
+
+### 転送検証の注意
+
+`crc32 0x08000000 50569` の結果がホスト側の `zlib.crc32` と一致しなかったが、
+これは U-Boot のコマンド引数の解釈（終了アドレス）によるもので、データは正しかった。
+実際、`fdt header` の各フィールドは完全一致する。**YMODEM 転送の検証には
+crc32 ではなく `fdt header` か特定アドレスの `md` 比較を使う。**
+
+### 次に調べること
+
+`dwc3_core_probe+0x96c` が触るアドレスを特定する。カーネルを `vmlinux` から
+逆アセンブルすれば、どのレジスタ読み出しで落ちるか分かる。ローカルの
+`output/ramboot-unit3/` には Image しかないため、ビルドツリーの vmlinux を使う。
+
+そのアドレスが `0xff500000` 帯なら、dwc3 コントローラ自体が応答していない
+（vendor の PHY ドライバが別途有効化している）ことになる。案 B（glue のままで
+u2p 書き込みだけ避けるパッチ）へ戻る判断材料になる。
