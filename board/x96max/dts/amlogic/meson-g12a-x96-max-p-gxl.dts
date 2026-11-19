@@ -40,4 +40,11 @@
 	 * xhci patch that raises PPC without touching the glue register.
 	 */
 	amlogic,port-power-control;
+	/*
+	 * This board's 0xffe09000 is the USB2 PHY control area, so every G12A
+	 * glue write faults (USB_R1 via regmap_update_bits, and the u2p
+	 * regmaps). Skip the glue sequence entirely; the PHYs are still set up
+	 * by their own driver through this node's phy list.
+	 */
+	amlogic,skip-glue-init;
 };

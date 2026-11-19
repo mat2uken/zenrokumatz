@@ -1738,3 +1738,63 @@ autoboot で Android が起動していた。**Linux の PPC は未確認のま�
    **これが最も単純で、既に `-p-gxl` の DTB で試せる。**
 2. `0xffe09004` が書けるタイミングを探る（probe 順の制御）。
 3. vendor の `amlogic-new-usb2-v2` を移植する。
+
+## 追記（round 66）: glue 全体をスキップするパッチ（0004）をビルドした
+
+### 0002 では足りなかった理由
+
+0002 は `dwc3_meson_g12a_usb2_init`（u2p 書き込み）だけを無効化した。しかし
+その次の `regmap_update_bits(usb_glue_regmap, USB_R1, ...)` で例外になる。
+`usb_init_glue` の処理順:
+
+```
+1. dwc3_meson_g12a_usb2_init()          ← 0002 で無効化済み
+2. regmap_update_bits(USB_R1, FLADJ)    ← ここで例外
+3. regmap_update_bits(USB_R5, ...)
+4. usb3_init()
+5. otg_apply_mode()
+```
+
+### 0004 の内容
+
+`usb_init_glue` の先頭で、DTS のオプトインがあれば即 return する。
+
+```c
+static int dwc3_meson_g12a_usb_init_glue(struct dwc3_meson_g12a *priv,
+					 enum phy_mode mode)
+{
+	int ret;
+
+	if (of_property_read_bool(priv->dev->of_node, "amlogic,skip-glue-init"))
+		return 0;
+
+	ret = dwc3_meson_g12a_usb2_init(priv, mode);
+	...
+```
+
+DTS 側は `&usb { amlogic,skip-glue-init; }`。
+
+**PHY の初期化は `dwc3_meson_g12a_probe` の `phy_init` / `phy_power_on` ループで
+別途行われる**（`usb_init_glue` の外）。したがって PHY は動く。
+
+### ビルド結果
+
+```
+Applying 0001-vdec-meson-sm1-codecs.patch using patch:
+Applying 0002-dwc3-meson-skip-u2p.patch using patch:
+Applying 0003-xhci-port-power-control.patch using patch:
+Applying 0004-dwc3-meson-skip-glue-init.patch using patch:
+```
+
+| ファイル | SHA-256（先頭） |
+|---|---|
+| `Image` | `b3099f99` |
+| `meson-g12a-x96-max-p-gxl.dtb` | `skip-glue-init` 入り（要確認） |
+
+### 期待
+
+glue の書き込みが一切なくなるので、例外は消えるはず。`xhci` が登録され、
+PPC パッチ（0003）も効いてポート電源制御が有効になる。DT295 が `1-1` として
+列挙される見込み。
+
+**未検証**: SD への書き込みと実機起動が必要。
