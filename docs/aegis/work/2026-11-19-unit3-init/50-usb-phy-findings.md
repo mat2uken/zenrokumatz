@@ -1710,3 +1710,93 @@ VPU を触らないので、ハングしないはず:
 1. **`-c:v libx264` で試す**（ソフトウェアエンコード）
 2. 実時間を保てれば、これで録画パイプラインが完成する
 3. 保てないなら、VPU をデバッグ（`dmesg` を SD に逃がしてハング直前を見る）
+
+# 🎯 根本原因の完全解明（round 157）: この機体は SM1 で、mainline に VPU エンコーダが無い
+
+### 決定的な事実 1: 機体は SM1 (S905X3)
+
+```
+[0.900259] soc soc0: Amlogic Meson SM1 (S905X3) Revision 2b:c (10:2) Detected
+aml_dt soc: sm1 platform: ac213 variant: 4g
+```
+
+これまで **G12A として扱っていたが、実際は SM1 (S905X3)**。
+`MESON_CPU_MAJOR_ID_SM1 = 0x2b` が `Revision 2b` と一致。
+
+### 決定的な事実 2: mainline に Amlogic VPU エンコーダが無い
+
+```
+$ ls drivers/media/platform/amlogic/
+c3  meson-ge2d          ← ISP と 2D エンジンのみ
+
+$ grep -E "HANTRO" .config
+CONFIG_VIDEO_HANTRO=m
+CONFIG_VIDEO_HANTRO_ROCKCHIP=y     ← Rockchip
+CONFIG_VIDEO_HANTRO_IMX8M=y        ← i.MX8M
+CONFIG_VIDEO_HANTRO_SUNXI=y        ← Allwinner
+CONFIG_VIDEO_HANTRO_STM32MP25=y    ← STM32MP25
+（Amlogic の項目は無い）
+```
+
+`h264_v4l2m2m` の実体 `hantro-vpu.ko` は **Rockchip 専用の IP**。
+Amlogic の VPU（HCodec）とは別物。
+
+**したがって `h264_v4l2m2m` は、存在しない/互換性のないデバイスを
+掴もうとしてハングする。** これが round 156 の症状の正体。
+
+### 決定的な事実 3: `meson-sm1-codecs` が SM1 用のエンコーダを提供している
+
+[ray38080289/meson-sm1-codecs](https://github.com/ray38080289/meson-sm1-codecs)
+
+```
+venc-h264/
+  encoder.c      5444 行   vendor HCodec ドライバ（Amlogic の GPL ソース）
+  compat.c        230 行   mainline 接着層
+  compat.h        182 行   "implemented on mainline (6.18) for SM1 / S905X3 only"
+  venc_v4l2.c     827 行   V4L2 mem2mem wrapper（/dev/videoN）
+  encoder.h       514 行
+  hcodec_regs.h   712 行
+  venc.c          261 行   テスト CLI
+```
+
+**`compat.h` が明示:**
+```c
+/* implemented on mainline (6.18) for SM1 / S905X3 only. */
+#define MESON_CPU_MAJOR_ID_SM1 0x2b
+static inline int get_cpu_type(void) { return MESON_CPU_MAJOR_ID_SM1; }
+```
+
+**我々のカーネル 6.18.62、SoC SM1 (0x2b) と完全一致。**
+
+### 実績（README より）
+
+| 項目 | 値 |
+|---|---|
+| H.264 エンコード 1080p | **~58 fps** |
+| 品質 | 6 Mbit/s で ~43 dB |
+| H.264 デコード 1080p | 113 fps |
+
+### 重要: 我々の症状と一致する既知の問題
+
+> **HW decode + HW encode in one ffmpeg process hangs or wedges.**
+> Decoder alone and encoder alone both work ... **Proven workaround: put a
+> CPU copy between the decoder and the encoder** — either two ffmpeg
+> processes joined by a rawvideo pipe, or a `format=yuv420p` filter.
+
+**我々の構成はまさにこれ**（`mpeg2_v4l2m2m` デコード → `h264_v4l2m2m` エンコード）。
+CPU コピーを挟む回避策が実証済み。
+
+### 必要なもの
+
+1. **ドライバ**: `venc-h264/`（GPL-2.0、vendored Amlogic HCodec ドライバ）を
+   Buildroot パッケージとして組み込む
+2. **ファームウェア**: `ga_h264_enc_cabac.bin`
+   （CoreELEC の `media_modules-aml/h264_enc.bin`、md5 `54dd341ef2d06bdbce243837355e20fc`）
+3. **デコーダ側**: mainline の `meson-vdec`（`amlogic,sm1-vdec`、既に存在）
+
+### 次の一手
+
+1. `venc-h264/` を読み込んで、カーネル 6.18.62 でビルドできるか確認
+2. Buildroot パッケージ化
+3. ファームウェアを取得して rootfs に配置
+4. CPU コピーを挟む構成で録画パイプラインを検証
