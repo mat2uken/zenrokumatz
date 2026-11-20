@@ -625,3 +625,65 @@ Retry count exceeded; starting again
 
 **SD カードでの起動に戻す。** ただし Mac 側の書き込みは `--update-boot` で
 sudo 不要、1 回 10 秒程度なので、往復の手間は SD の抜き差しのみ。
+
+## 追記（round 96 追加）: SD を使わない他の経路を実機で確認
+
+TFTP が使えないため、代替を実機の U-Boot で調べた。
+
+### U-Boot のコマンド一覧（`help` で確認）
+
+| コマンド | 有無 |
+|---|---|
+| `fatload` | **あり** |
+| `fatls` | **あり** |
+| `fatwrite` | **なし** ← FAT への書き込みは不可 |
+| `mmc write` | なし |
+| `ext4write` | なし |
+| `loady`（YMODEM） | **あり** |
+| `loadx` | あり |
+| `usb` | **あり** |
+| `mii` | なし |
+
+**`fatwrite` が無いので、U-Boot から SD の FAT を書き換えることはできない。**
+
+### USB ストレージは使える可能性
+
+```
+usb start
+(Re)start USB...
+USB0:   USB3.0 XHCI init start
+Register 3000140 NbrPorts 2
+Starting the controller
+USB XHCI 1.10
+scanning bus 0 for devices... 2 USB Device(s) found
+       scanning usb for storage devices... 0 Storage Device(s) found
+```
+
+**U-Boot の USB ホストは動作している**（2 デバイス検出 = DT295 と別の何か）。
+USB メモリを挿せば `usb storage` として認識され、`fatload usb 0:1 ...` で読める
+可能性がある。
+
+**ただし未検証**: USB メモリを挿して `0 Storage Device(s)` が
+`1 Storage Device(s)` に変わるか、実際に試す必要がある。
+
+### YMODEM は非現実的
+
+| ファイル | 理想（115200bps） | 実測ペース換算 |
+|---|---|---|
+| `rootfs.cpio.uboot`（35MB） | 51 分 | 25 時間 |
+| `Image`（41.7MB） | 60 分 | 29 時間 |
+
+U-Boot が ACK を返すまでに時間がかかるため、実測ペースでは論外。
+
+### 結論（現時点）
+
+1. **TFTP**: U-Boot のネットワークスタックが送受信できず不可（本ラウンドで確認）
+2. **U-Boot からの SD 書き込み**: `fatwrite` が無く不可
+3. **YMODEM**: 時間がかかりすぎて不可
+4. **USB メモリ**: **可能性あり、要検証**（U-Boot の USB ホストは動作している）
+
+### 次に試すこと
+
+USB メモリ（FAT32、起動ファイルを入れたもの）を 3代目に挿し、U-Boot で
+`usb start` → `usb storage` が認識されるか確認する。認識されれば
+`fatload usb 0:1 0x01080000 Image` で起動でき、SD の抜き差しが不要になる。
