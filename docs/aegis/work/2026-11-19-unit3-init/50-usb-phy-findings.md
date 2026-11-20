@@ -722,3 +722,51 @@ round 37 と違った**ため。具体的には:
 そこから 1 つずつ適用して「何が壊すか」を特定する。
 
 **これが最も確実な方法。** 推測を重ねるより、既知の成功構成から始める。
+
+## 追記（round 121）: dwc2 を有効にしても dwc2 は probe せず、同じ例外
+
+### 実測（`Image` = `29ecb5ec`、`gxl.dtb` = `30d2605d`、`&dwc2 { status = "okay"; }`）
+
+```
+[1.326574] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.327658] dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+[1.332966] DBG usb_init_glue node=usb@ffe09000 skip=1
+[1.340264] DBG gxl_usb_post_init
+[1.341264] DBG gxl_usb_post_init skip=1
+[1.347593] Internal error: synchronous external abort
+
+pc : dwc3_core_probe+0x96c     ← 同じ
+```
+
+**`dwc2 ff400000.usb` のログが一切出ていない。** つまり dwc2 は probe して
+いない。dwc3 の方が先に走って落ちている。
+
+### 順序の問題
+
+round 37 のログでは dwc2 が **1.865 秒**、xhci が **1.892 秒**。dwc2 が先。
+今回は dwc3 が 1.34 秒で落ちるので、dwc2 まで到達しない。
+
+**`dwc3-meson-g12a` が glue の probe の中で子の dwc3 を登録し、それが即座に
+走る**ため、dwc2 の出番がない。
+
+### dwc2 仮説の否定
+
+**dwc2 の PHY 初期化が `0xff500000` の窓を開ける、という仮説は否定された。**
+dwc2 は probe すらしていない。
+
+### 残る唯一の事実
+
+- round 37: `usb_init_glue` が**完全に実行**され、`USB_R1`/`USB_R5`/`usb3_init`/
+  `otg_apply_mode` が動いた → **xhci 成功**
+- 現在: これらを**すべてスキップ** → `0xff500020` が読めない
+
+**glue の初期化のどれかが `0xff500000` の窓を開けている**、という仮説に戻る。
+
+### 次の一手（要ビルド）
+
+round 37 の構成（2 パッチ + `gxl-noextra` DTB）を正確に再現する。
+ビルドが OOM で 2 回失敗したため、`BR2_JLEVEL=1` に下げて再試行する。
+
+```sh
+BR2_JLEVEL=1 X96MAX_PROFILE=ramboot X96MAX_UNIT=3 ./scripts/build-linux.sh
+```
