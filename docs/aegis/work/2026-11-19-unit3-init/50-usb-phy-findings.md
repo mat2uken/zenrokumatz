@@ -1042,3 +1042,46 @@ Linux を起動せずにレジスタを確認できる。ただし autoboot が�
 - 機体のリビジョン差（`X96Max_P` にも複数ロットがある）
 - U-Boot が残した glue の初期状態
 - DT295 の挿抜で PHY の状態が変わった
+
+## 追記（round 129）: probe の順序を確認。順序は原因ではない
+
+### `dwc3_meson_g12a_probe` の順序（755-790 行）
+
+```c
+if (priv->vbus) regulator_enable(priv->vbus);      // VBUS を入れる
+priv->otg_mode = usb_get_dr_mode(dev);
+ret = priv->drvdata->usb_init(priv);               // ← USB_R1 を書く（ここで落ちる）
+/* Init PHYs */
+for (...) phy_init(priv->phys[i]);                 // PHY 初期化は後
+/* Set PHY Power */
+for (...) phy_power_on(priv->phys[i]);             // PHY 電源も後
+```
+
+**`usb_init` が `phy_init`/`phy_power_on` より前**にある。これは mainline の
+設計であり、1代目・2代目も同じ順序で動いている。
+
+**したがって順序は 3代目固有の問題の原因ではない。**
+
+### 残る唯一の謎
+
+1代目・2代目と 3代目で、以下がすべて同じなのに結果が違う:
+
+| 項目 | 1代目 | 2代目 | 3代目 |
+|---|---|---|---|
+| DTB | `ephy-4g` | `ephy-4g` | `ephy-4g` |
+| パッチ | 0001+0002 | 0001+0002 | 0001+0002 |
+| `USB_R1`（`0xffe09084`） | 書ける | 書ける | **書けない** |
+
+### 決定的な確認方法
+
+**2代目が起動したときに `0xffe09084` を読む。** 読めれば「レジスタは存在する」
+3代目で Bus error なら「領域が無い」。
+
+ただし 2代目は別の機体で、シリアルは 3代目に繋がっている。2代目には
+SSH で入る必要がある（現在は停止中）。
+
+### 代替
+
+3代目の U-Boot で `md 0xffe09084 1` を実行する。autoboot を確実に止める
+必要がある（`catch_prompt` が Enter を送り続けるので、タイミング次第で
+Android に進んでしまう）。
