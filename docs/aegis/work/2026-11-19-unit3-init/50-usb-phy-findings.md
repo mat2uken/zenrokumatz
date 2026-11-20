@@ -1952,3 +1952,65 @@ platform_device_register_simple("amvenc_avc", ...);
 ### 次の一手
 
 `compat.c` の各段階で `pr_err` を出して、どこで失敗するかを特定する。
+
+# 🎯 原因判明（round 161）: `compat.c` は `amlogic,g12a-vdec` を探していた
+
+### 決定的な行
+
+`vendor/meson-sm1-codecs/venc-h264/compat.c:160`:
+
+```c
+np = of_find_compatible_node(NULL, NULL, "amlogic,g12a-vdec");
+```
+
+**G12A を探している。** しかし round 159 で DTB の vdec を
+`amlogic,sm1-vdec` に変更したため、**見つからずに `-ENODEV` を返していた**。
+
+```
+modprobe: can't load module amvenc_avc: No such device
+```
+
+### トレードオフの構造
+
+| DTB の compatible | mainline `meson-vdec` | vendor `amvenc_avc` |
+|---|---|---|
+| `amlogic,g12a-vdec` | 動く（`vdec_platform_g12a`） | **動く**（この名前を探す） |
+| `amlogic,sm1-vdec` | 動く（`vdec_platform_sm1`） | **動かない**（見つからない）|
+
+### どちらが正しいか
+
+この機体は SM1 なので、**mainline 側は `sm1-vdec` が正しい**
+（`vdec_platform_sm1` が SM1 のクロック/電源シーケンスを持つ）。
+
+一方 vendor のエンコーダドライバは G12A の名前で探す。
+しかし `meson-sm1-codecs` は SM1 (S905X3) 向けのパッケージなので、
+**本来は `sm1-vdec` を探すはず**。このリポジトリの `compat.c` が
+G12A を探しているのは、`venc-h264` が GXL/G12A 用に流用されているため。
+
+### 対処方針
+
+**`compat.c` を `amlogic,sm1-vdec` を探すように修正する。**
+
+ただし他の箇所にも G12A 前提がある可能性があるので、
+`vendor/` を直接編集せず、**パッチ**として当てる。
+
+```c
+np = of_find_compatible_node(NULL, NULL, "amlogic,sm1-vdec");
+if (!np)
+        np = of_find_compatible_node(NULL, NULL, "amlogic,g12a-vdec");
+```
+
+両方試すのが安全（SM1 を優先し、無ければ G12A）。
+
+### 確認済みで正常だったもの（参考）
+
+| 項目 | 状態 |
+|---|---|
+| SoC | SM1 (S905X3) Revision 2b:c |
+| DT vdec | `amlogic,sm1-vdec` ✓ |
+| vdec ドライバ | バインド済み ✓ |
+| `ao-sysctrl` | あり ✓ |
+| `canvas` phandle | `<0x20>` あり ✓ |
+| canvas ドライバ | `ff638048.video-lut` にバインド ✓ |
+| `hhi-sysctrl` | `bus@3c000/system-controller@0` に**存在** ✓ |
+| `dos` クロック | あり ✓ |
