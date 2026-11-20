@@ -985,3 +985,60 @@ Linux が起動できれば**調べられるが、その構成では `USB_R1` �
 2. **2代目（`192.168.99.123`）が起動したとき**に同じレジスタを読んで比較。
 
 **U-Boot の `md` が最も手軽**。次の起動で確認する。
+
+## 追記（round 128）: glue を `okay` にすると子の status に関係なく USB_R1 を書く
+
+### `-clkon`（glue okay / dwc3・dwc2 disabled）でも同じ例外
+
+```
+[1.308375] USB2 ports: 2
+[1.309329] USB3 ports: 1
+[1.314747] Internal error
+
+Call trace:
+ regmap_mmio_read32le
+ _regmap_update_bits
+ regmap_update_bits_base
+ dwc3_meson_g12a_usb_init_glue.isra.0+0x38    ← USB_R1
+```
+
+**子を両方 `disabled` にしても `usb_init_glue` が走る。**
+
+### 理由（`dwc3-meson-g12a.c` 761-771 行）
+
+```c
+/* Get dr_mode */
+priv->otg_mode = usb_get_dr_mode(dev);
+...
+ret = priv->drvdata->usb_init(priv);      // ← 無条件
+```
+
+**glue の probe は子の `status` を見ずに `usb_init` を呼ぶ。**
+だから glue を `okay` にする限り、必ず `USB_R1` を書いて例外になる。
+
+### トレードオフ（問題の核心）
+
+| 構成 | クロック | USB_R1 書き込み | Linux 起動 |
+|---|---|---|---|
+| glue `disabled`（`-nousb`） | **止まる** | 走らない | **する** |
+| glue `okay`（`-clkon`） | 保たれる | **走って落ちる** | しない |
+
+**レジスタを読むにはクロックが要るが、クロックを保つには glue を
+`okay` にする必要があり、そうすると `USB_R1` で落ちる。**
+
+### 唯一の観測手段
+
+**U-Boot から `md` で読む。** U-Boot は glue のクロックを止めないので、
+Linux を起動せずにレジスタを確認できる。ただし autoboot が先に走るので、
+確実にプロンプトで止める必要がある。
+
+### 重要な疑問
+
+1代目・2代目は glue `okay` で `USB_R1` を書けている。3代目だけ書けない。
+
+**同じ DTB（`ephy-4g`）、同じコード（2 パッチ）で、なぜ違うのか。**
+
+可能性:
+- 機体のリビジョン差（`X96Max_P` にも複数ロットがある）
+- U-Boot が残した glue の初期状態
+- DT295 の挿抜で PHY の状態が変わった
