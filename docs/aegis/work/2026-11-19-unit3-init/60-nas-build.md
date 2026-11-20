@@ -489,3 +489,33 @@ lsusb / /sys/bus/usb/devices
 
 **もしアダプタの問題なら、Mac 側の USB を挿し直せば復帰する。**
 `netdiag` の SD 書き出しは、この切り分けにも使える。
+
+## 追記（round 149）: SD マウントの競合リスクを検討し、boottrace は作らないことにした
+
+### 検討したこと
+
+起動の各段階で SD に breadcrumb を書く `S43boottrace` を実装しようとしたが、
+**SD を起動中にマウントすると `pix-stream` と競合するリスク**があるため取り消した。
+
+### `netdiag` の SD マウントは安全
+
+`S51netdiag` は `S40network` の 20 秒後に**1 回だけ**実行し、即アンマウントする。
+`S97pix-stream` より前なので競合しない。
+
+```
+S40network  →  S51netdiag（20秒後に1回、マウント→書込→即アンマウント）
+            →  S97pix-stream
+```
+
+**タイミングが離れているので安全。**
+
+### 現在の診断手段
+
+| 手段 | 得られる情報 |
+|---|---|
+| シリアル出力 | 起動ログ（入力は効かない） |
+| `/dev/shm/netdiag.txt` | ネットワーク状態（シリアルが効けば読める） |
+| **SD の `netdiag.txt`** | **上記＋ps/pix-streamログ/lsusb** |
+| `panic_on_oops=1 panic=8` | oops なら自動再起動 |
+
+**SD 経由が唯一の確実な手段。**
