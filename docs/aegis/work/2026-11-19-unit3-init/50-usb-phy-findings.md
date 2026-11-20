@@ -294,3 +294,48 @@ PHY の寄与を見たいなら、`gxl.dts` を継承した上で PHY を有効�
 - `skip=0` → プロパティが届いていない（DTS の問題）
 
 **推測を重ねるより、この 1 行を見るのが確実。**
+
+## 追記（round 112）: 静的解析で「skip=0」が最有力候補と判明
+
+### 各関数が glue を触るか（ソースで確認）
+
+| 関数 | glue レジスタを触るか |
+|---|---|
+| `dwc3_meson_gxl_set_phy_mode` | **触らない**（`phy_set_mode` を呼ぶだけ） |
+| `dwc3_meson_g12a_set_phy_mode` | 触る（`u2p_regmap`）※G12A 経路のみ |
+| **`dwc3_meson_g12a_usb3_init`** | **触る**（`USB_R3`, `USB_R2`, `USB_R1`） |
+| `dwc3_meson_g12a_usb_otg_apply_mode` | 触る（`USB_R0`, `USB_R4`, `USB_R1`） |
+
+### 推論
+
+GXL 経路では `set_phy_mode` は安全（PHY ドライバを呼ぶだけ）。
+**危険なのは `usb3_init` と `otg_apply_mode`**で、どちらも
+`usb_init_glue` / `usb_post_init` の中にある。
+
+`skip-glue-init` のガードは:
+
+1. `usb_init_glue` の先頭（`return 0`）→ `usb2_init`/`usb3_init`/`otg_apply_mode` をスキップ
+2. `gxl_usb_post_init` の先頭（`return 0`）→ `otg_apply_mode` をスキップ
+
+**両方にガードがあるので、`skip=1` なら glue は一切書かれないはず。**
+
+それでも例外が出るということは:
+
+- **`skip=0`**（`amlogic,skip-glue-init` が読めていない）、または
+- ガードの外に別の glue 書き込み経路がある
+
+### `skip=0` が起きる条件
+
+`of_property_read_bool(priv->dev->of_node, "amlogic,skip-glue-init")` が偽に
+なるのは:
+
+- DTB にプロパティが無い（`-p-gxl` ではなく別の DTB を起動した）
+- `priv->dev->of_node` が glue ノードを指していない
+
+**round 106 で使った `-phyonly` は `gxl.dts` を継承していなかった**（`skip-glue-init`
+が無い）。同じ取り違えが再発している可能性がある。
+
+### 診断マーカーの価値
+
+`DBG usb_init_glue node=<name> skip=<0|1>` がこの 2 点を一撃で判別する。
+`Image` = `3d48ee0e`（4 マーカー確認済み）。**実機での確認が待たれる。**
