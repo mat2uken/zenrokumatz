@@ -371,3 +371,34 @@ PIX_TUNER=none
 3. SD へ書き込み（Android か Linux 経由）
 4. 起動して確認
 5. **確認後、`PIX_TUNER=dt295` に戻す**
+
+## 追記（round 146）: `PIX_TUNER=none` の切り分け用 rootfs を SD へ書き込み済み
+
+### 実施
+
+1. `board/x96max/ramboot-unit3-overlay/etc/default/pix-stream-linux` の
+   `PIX_TUNER=dt295` → `PIX_TUNER=none` に変更
+2. NAS でビルド（`rootfs.cpio.uboot` = 35,197,351 バイト）
+3. cpio 展開で `PIX_TUNER=none` が入っていることを確認
+4. SD へ `--update-boot --only rootfs.cpio.uboot` で書き込み、検証OK
+5. **設定を `PIX_TUNER=dt295` に戻した**（作業ツリーはクリーン）
+
+### この rootfs の意味
+
+`wait_for_tuner` が `06b8:103b` を探し続ける（見つからない）。
+**USB を一切触らず、`dt295_recover` → `pix_usb_reset` も走らない。**
+
+### 期待される結果（起動後）
+
+| 観察 | 意味 |
+|---|---|
+| シリアル入力が効く / ping が通る | **`pix-stream` の USB 操作が原因** |
+| それでも死んでいる | 別の原因（Ethernet、電源、カーネル） |
+
+### 注意
+
+**この SD は切り分け用**。原因が分かったら、`PIX_TUNER=dt295` の
+rootfs（`8f190905`）に戻す必要がある。
+
+元の rootfs は Mac の `output/ramboot-unit3/` に残っていないので、
+戻すときは NAS で再ビルドする（設定は既に元通りなので、そのままビルドでよい）。
