@@ -5,7 +5,7 @@
 # The DT295 decrypts on its internal card slot, so no external B-CAS reader and
 # no torne-b25 stage are used (PIX_DECRYPT=0). One tuner per unit: unit 1 keeps
 # PX-S1UD/ch17 and unit 2 keeps DT295/BS11, so the same channel is not recorded twice.
-PIX_TUNER=none
+PIX_TUNER=dt295
 PIX_DECRYPT=0
 PIX_SYSTEM=terrestrial
 PIX_CHANNEL=17
