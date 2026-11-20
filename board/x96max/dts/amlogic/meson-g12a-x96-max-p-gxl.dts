@@ -58,3 +58,16 @@
 &dwc2 {
 	status = "disabled";
 };
+
+/*
+ * dwc3 itself needs the USB gate clock and the USB reset.
+ *
+ * The GXL glue node holds both, and the child inherits neither: dwc3_probe's
+ * reset_control_deassert() and dwc3_clk_enable() then succeed as no-ops, and
+ * dwc3_core_is_valid() reads 0xff500020 while the controller is still gated,
+ * which is the synchronous external abort (pc: dwc3_core_probe+0x96c).
+ */
+&dwc3 {
+	clocks = <&clkc CLKID_USB>;
+	resets = <&reset RESET_USB>;
+};

@@ -411,3 +411,73 @@ dwc3 のレジスタ窓が開かない原因を追う。候補:
 
 **`dwc3_core_probe` は `phy_init`/`phy_power_on` より前に `core_init` を呼ぶ**
 はずなので、PHY の準備なしにレジスタを読んでいる可能性がある。
+
+## 追記（round 115）: 原因確定。dwc3 ノードに clocks と resets が無い
+
+### 発見
+
+`dwc3_core_probe+0x96c`（`0xff500020` の読み取り）で落ちる原因が分かった。
+
+**DTS の `usb@ff500000` に `clocks` と `resets` が無い。**
+
+```dts
+usb@ff500000 {
+	compatible = "snps,dwc3";
+	reg = <0x00 0xff500000 0x00 0x100000>;
+	interrupts = <0x00 0x1e 0x04>;
+	dr_mode = "host";
+	snps,quirk-frame-length-adjustment = <0x20>;
+	snps,parkmode-disable-ss-quirk;
+	/* clocks も resets も phys も無い */
+};
+```
+
+### `dwc3_probe` の初期化順序（`core.c`）
+
+```c
+if (!data->ignore_clocks_and_resets) {
+        dwc->reset = devm_reset_control_array_get_optional_shared(dev);
+        dwc3_get_clocks(dwc);
+}
+reset_control_deassert(dwc->reset);   // ← DTS に resets が無いので no-op
+dwc3_clk_enable(dwc);                 // ← clocks が無いので no-op
+if (!dwc3_core_is_valid(dwc)) {       // ← 0xff500020 を読む → 例外
+```
+
+**`_optional_` 系の API は「無ければ NULL」を返すので、エラーにならずに
+素通りする。** その結果、コントローラが gated されたままレジスタを読みに行き、
+synchronous external abort になる。
+
+glue ノードは `clocks = <&clkc CLKID_USB>`、`resets = <&reset RESET_USB>` を
+持っているが、**子の dwc3 には継承されない**。
+
+### 修正
+
+`&dwc3` に同じクロックとリセットを追加した:
+
+```dts
+&dwc3 {
+	clocks = <&clkc CLKID_USB>;
+	resets = <&reset RESET_USB>;
+};
+```
+
+DTB に反映されたことを確認済み（`usb@ff500000` に `clocks = <0x02 0x2f>` と
+`resets = <0x05 0x22>`）。
+
+### これまでの全対処との関係
+
+| 対処 | 効果 |
+|---|---|
+| glue の u2p 回避（0002） | 例外を次へ進めた |
+| glue 全体のスキップ（0004） | glue を完全に無音化 |
+| `dwc2` 無効化 | dwc2 の例外を解消 |
+| **dwc3 に clocks/resets（本ラウンド）** | **0xff500020 の例外を解消する見込み** |
+
+**すべての対処が必要だった**。glue の例外を潰すたびに次の層が現れ、最後に
+dwc3 自身のクロック欠落が残っていた。
+
+### 未検証
+
+実機での起動確認。`Image` = `29ecb5ec`（7 パッチ、4 マーカー入り）、
+`gxl.dtb` に clocks/resets 追加。
