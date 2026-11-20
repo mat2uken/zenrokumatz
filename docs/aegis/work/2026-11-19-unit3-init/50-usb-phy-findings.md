@@ -2131,3 +2131,97 @@ VPU の検証中は `PIX_TUNER=none` を維持する。
 6. VPU エンコードを単体で実行 → ハングするか
 
 **6 でハングすれば、原因は amvenc_avc 側**（pix-stream ではない）と確定する。
+
+## 追記（round 164）: ドライバの SM1 対応をソースで確認。クロック設定は正しい
+
+### `amvenc_avc_probe`（`encoder.c:5007`）
+
+```c
+enc_pr(LOG_INFO, "amvenc_avc probe start.\n");
+idx = of_reserved_mem_device_init(&pdev->dev);
+if (encode_manager.use_reserve == false) {
+#ifndef CONFIG_CMA
+        return -EFAULT;
+#else
+        encode_manager.cma_pool_size = ...;
+#endif
+}
+if (get_cpu_type() >= MESON_CPU_MAJOR_ID_SC2) {
+        hcodec_clk_prepare(...);      // SC2 以上のみ
+}
+...
+encode_manager.irq_num = platform_get_irq(pdev, 0);
+```
+
+**CPU ID**: SM1 = `0x2b`、SC2 = `0x32`。
+`0x2b < 0x32` なので SM1 は `hcodec_clk_prepare` を通らない。これは意図的。
+
+### では SM1 のクロックはどこで入るか
+
+`avc_poweron()`（`encoder.c:3012`）:
+
+```c
+if (T3 || T5M || T3X || S7D) {
+        WRITE_VREG_BITS(DOS_GCLK_EN0, 0x7fff, 12, 15);
+} else {
+        hvdec_clock_enable(clock);           // ← SM1 はここ
+}
+```
+
+`hvdec_clock_enable` マクロ（`encoder.h:78`）:
+
+```c
+#define hvdec_clock_enable(level) \
+    do { \
+        ... else if (level == 6) HDEC_L6(); \
+        WRITE_VREG_BITS(DOS_GCLK_EN0, 0x7fff, 12, 15); \
+    } while (0)
+
+#define HDEC_L6()   WRITE_HHI_REG(HHI_VDEC_CLK_CNTL, \
+                         (1 << 25) | (0 << 16) | (1 << 24) | \
+                         (0xffff & READ_HHI_REG(HHI_VDEC_CLK_CNTL)))
+```
+
+`clock_level = 6`（`encoder.c:100`、SM1 用に fclk_div3 = 666 MHz）。
+**SM1 のクロックは正しく設定される。**
+
+### SM1 固有の電源シーケンス
+
+```c
+WRITE_AOREG(AO_RTI_GEN_PWR_SLEEP0,
+            READ_AOREG(AO_RTI_GEN_PWR_SLEEP0) &
+            ((get_cpu_type() == MESON_CPU_MAJOR_ID_SM1 ||
+              get_cpu_type() >= MESON_CPU_MAJOR_ID_TM2) ? ~0x1 : ~0x3));
+...
+WRITE_AOREG(AO_RTI_GEN_PWR_ISO0,
+            READ_AOREG(AO_RTI_GEN_PWR_ISO0) &
+            ((get_cpu_type() == MESON_CPU_MAJOR_ID_SM1 ||
+              get_cpu_type() >= MESON_CPU_MAJOR_ID_TM2) ? ~0x1 : ~0x30));
+```
+
+**SM1 は専用の分岐で処理されている。** ドライバの SM1 対応は妥当。
+
+### デバイス名
+
+`VENC_NAME = "meson-venc-h264"`（`venc_v4l2.c:23`）。
+`video_register_device(..., VFL_TYPE_VIDEO, -1)` で `/dev/videoN` を作る。
+probe 成功時は `dev_info` で `V4L2 H.264 encoder at /dev/videoN` が出る。
+
+### ログレベルの注意
+
+`encode_print_level = LOG_ERROR`（既定）なので `enc_pr(LOG_INFO/DEBUG, ...)` は
+**出力されない**。一方 `compat.c` の `pr_info("amvenc: dos %pR irq %d canvas %u..%u\n", ...)`
+は常に出る。**この行が出ていれば `venc_hw_init` は成功している。**
+
+### 追加した検証ツール
+
+`tools/vpu-probe.py` — ハングしても証拠が残るように、各段階を SD の FAT へ
+`sync` しながら書く:
+
+1. モジュール一覧、`/dev/video*` の名前
+2. `dmesg` の amvenc/canvas/vdec 関連
+3. MPEG-2 テストクリップ生成（チューナーを使わない）
+4. `h264_v4l2m2m` でエンコード（**ここで死ぬ可能性**）
+5. エンコーダが生きているか
+
+**チューナー由来のハングと VPU 由来のハングを切り分けられる。**
