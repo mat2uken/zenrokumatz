@@ -115,16 +115,21 @@ def boot(dtb, trace_seconds):
         os.close(fd)
         raise SystemExit("could not reach U-Boot")
 
-    for command, wait in (
-        ("mmc dev 0", 6),
-        ("fatload mmc 0:1 0x01080000 Image", 30),
-        ("fatload mmc 0:1 0x08000000 " + dtb, 10),
-        ("fatload mmc 0:1 0x10000000 rootfs.cpio.uboot", 25),
-        ("setenv bootargs console=ttyAML0,115200n8 earlycon rdinit=/init", 4),
+    # Each load must be confirmed before the next one runs: booting stale memory
+    # silently when a fatload failed is worse than stopping here.
+    for command, wait, marker in (
+        ("mmc dev 0", 6, "card in"),
+        ("fatload mmc 0:1 0x01080000 Image", 30, "bytes read"),
+        ("fatload mmc 0:1 0x08000000 " + dtb, 10, "bytes read"),
+        ("fatload mmc 0:1 0x10000000 rootfs.cpio.uboot", 25, "bytes read"),
+        ("setenv bootargs console=ttyAML0,115200n8 earlycon rdinit=/init", 4, ""),
     ):
         console.tail = ""
         os.write(fd, (command + "\r").encode())
-        console.pump(wait)
+        output = console.pump(wait)
+        if marker and marker not in output and marker not in console.tail:
+            os.close(fd)
+            raise SystemExit(f"step failed: {command} (no '{marker}')")
     log.write(b"\n=== BOOTI ===\n")
     console.tail = ""
     os.write(fd, b"booti 0x01080000 0x10000000 0x08000000\r")

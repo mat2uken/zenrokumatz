@@ -528,6 +528,20 @@ class InstallBootTool(unittest.TestCase):
         # Verification against the manifest digest must still happen.
         self.assertIn("digest(local)", section)
 
+    def test_boot_verifies_each_load_before_booting(self):
+        """A failed fatload must stop the run, not boot stale memory.
+
+        The manual procedure this replaced did check "bytes read", and losing
+        that check would make a bad transfer look like a kernel bug.
+        """
+        body = Path(self.tool.__file__).resolve().read_text()
+        start = body.index("def boot(")
+        end = body.index("def main(")
+        section = body[start:end]
+        self.assertIn('"bytes read"', section)
+        self.assertIn("step failed", section)
+        self.assertIn('"card in"', section)
+
     def test_digest_is_sha256_of_the_file(self):
         path = Path(self.tool.__file__).resolve().parents[1] / "tools/install-boot.py"
         self.assertEqual(self.tool.digest(path),
