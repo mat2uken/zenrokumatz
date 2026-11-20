@@ -512,6 +512,22 @@ class InstallBootTool(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self.tool.main()
 
+    def test_linux_install_streams_over_stdin_not_per_chunk(self):
+        """One ssh call per file, because scp has no sftp-server here.
+
+        An earlier version sent base64 in 20 KB pieces, which needed 2783 ssh
+        invocations for the kernel image alone. The payload must go through
+        stdin in a single call and be hash-checked afterwards.
+        """
+        body = Path(self.tool.__file__).resolve().read_text()
+        start = body.index("def install_linux(")
+        end = body.index("def boot(")
+        section = body[start:end]
+        self.assertIn("input=payload", section)
+        self.assertNotIn("for i in range(0, len(data), chunk)", section)
+        # Verification against the manifest digest must still happen.
+        self.assertIn("digest(local)", section)
+
     def test_digest_is_sha256_of_the_file(self):
         path = Path(self.tool.__file__).resolve().parents[1] / "tools/install-boot.py"
         self.assertEqual(self.tool.digest(path),

@@ -73,29 +73,28 @@ def install_android(names):
 
 
 def install_linux(names):
-    """Copy files through a running RAM-boot Linux onto its mounted card."""
-    mount = run(["ssh", "-o", "BatchMode=yes", f"root@{HOST}",
-                 "mount | grep -o 'on /mnt/[^ ]*' | head -1"]).stdout.strip()
-    if not mount:
-        run(["ssh", "-o", "BatchMode=yes", f"root@{HOST}",
-             "mkdir -p /mnt/sd && mount -t vfat /dev/mmcblk0p1 /mnt/sd"], timeout=30)
+    """Copy files through a running RAM-boot Linux onto its mounted card.
+
+    sshd here has no sftp-server, so scp does not work. Instead the file is
+    piped through ssh's stdin as base64 and decoded on the far side: one ssh
+    call per file rather than one per chunk, which matters because the kernel
+    image alone is 42 MB.
+    """
+    ssh = ["ssh", "-o", "BatchMode=yes", f"root@{HOST}"]
+    mounted = run(ssh + ["mount | grep -c ' /mnt/sd '"]).stdout.strip()
+    if mounted == "0":
+        run(ssh + ["mkdir -p /mnt/sd && mount -t vfat /dev/mmcblk0p1 /mnt/sd"], timeout=30)
     print("linux mount: /mnt/sd")
     for name in names:
         local = OUT / name
-        # sftp is not built into this sshd, so stream base64 in chunks.
-        data = base64.b64encode(local.read_bytes())
-        chunk = 20000
-        run(["ssh", "-o", "BatchMode=yes", f"root@{HOST}", "rm -f /tmp/f.b64"], timeout=30)
-        for i in range(0, len(data), chunk):
-            piece = data[i:i + chunk].decode()
-            run(["ssh", "-o", "BatchMode=yes", f"root@{HOST}",
-                 f"printf '%s' '{piece}' >> /tmp/f.b64"], timeout=60)
-        run(["ssh", "-o", "BatchMode=yes", f"root@{HOST}",
-             f"tr -d '\\n' < /tmp/f.b64 | base64 -d > /tmp/{name} && "
-             f"cp /tmp/{name} /mnt/sd/{name} && sync && "
-             f"sha256sum /mnt/sd/{name} && rm -f /tmp/f.b64 /tmp/{name}"], timeout=120)
-        got = run(["ssh", "-o", "BatchMode=yes", f"root@{HOST}",
-                   f"sha256sum /mnt/sd/{name}"]).stdout.split()[0]
+        payload = base64.b64encode(local.read_bytes()).decode()
+        remote = (f"base64 -d > /tmp/{name} && cp /tmp/{name} /mnt/sd/{name} && "
+                  f"sync && sha256sum /mnt/sd/{name} && rm -f /tmp/{name}")
+        result = subprocess.run(ssh + [remote], input=payload, text=True,
+                                capture_output=True, timeout=300)
+        if result.returncode:
+            raise SystemExit(f"{name}: copy failed: {result.stderr.strip()[:200]}")
+        got = result.stdout.split()[0] if result.stdout.split() else ""
         if got != digest(local):
             raise SystemExit(f"{name}: hash mismatch on the card ({got[:16]})")
         print(f"  {name}: installed and verified ({got[:16]})")
