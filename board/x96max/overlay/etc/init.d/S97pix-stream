@@ -43,6 +43,10 @@ start() {
     . /etc/default/pix-stream-linux 2>/dev/null || true
     case "${PIX_TUNER:-pxs1ud}" in
         dt295) daemon=$DAEMON ;;
+        # dt295-cfw reads the raw stream from CFW and descrambles it with
+        # torne-b25, so it goes through the same launcher as the other
+        # external-card tuners.
+        dt295-cfw) daemon=$LEGACY ;;
         pxs1ud|torne) daemon=$LEGACY ;;
         *) echo "unsupported tuner: $PIX_TUNER"; return 1 ;;
     esac

@@ -26,7 +26,12 @@ exec >>/tmp/pix-simple.log 2>&1
 : "${PIX_RING_FILE:=/dev/shm/pix/live.ring}"
 : "${PIX_RING_MB:=32}"
 : "${PIX_LIVE_MAX_MB:=64}"
+# dt295-cfw hands over the stream before descrambling, so the pipeline must
+# pass it through torne-b25.  Derive the flag from the tuner rather than making
+# every unit repeat it in its defaults: the rest of this script already keys
+# the buffered path, the card wait and the recovery on PIX_DECRYPT.
 : "${PIX_DECRYPT:=0}"
+[ "${PIX_TUNER:-}" = dt295-cfw ] && PIX_DECRYPT=1
 # CM feature sideband. Off by default: stb_streamer only inserts pixf when the
 # NAS asks for features=v1, and generating it costs a decode plus an analysis
 # pass. Enable it for a unit whose NAS records with CM chapters.

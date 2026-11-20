@@ -85,9 +85,17 @@ start_relay() {
 
 start() {
     . /etc/default/pix-stream-linux 2>/dev/null || true
+    # dt295    : the vendor firmware descrambles on the tuner's own card, so
+    #            the host needs no reader.
+    # dt295-cfw: CFW hands over the stream *before* descrambling; the card is
+    #            reached through this image's own pcscd reader, so bcasd and
+    #            cardrelay must run even though the card is internal.
     if [ "${PIX_TUNER:-pxs1ud}" = dt295 ] && [ "${PIX_DECRYPT:-0}" != 1 ]; then
-        echo "B-CAS: DT295 internal card (external relay not needed)"
+        echo "B-CAS: DT295 internal card (vendor firmware descrambles)"
         return 0
+    fi
+    if [ "${PIX_TUNER:-pxs1ud}" = dt295-cfw ]; then
+        BCAS_MODE=local
     fi
     case "$BCAS_MODE" in
         remote) start_remote ;;
