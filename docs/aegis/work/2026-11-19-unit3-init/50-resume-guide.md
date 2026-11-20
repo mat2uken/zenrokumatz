@@ -1528,3 +1528,65 @@ DTB に反映済み（`clocks = <0x02 0x2f 0x02 0x37>`）。
 
 **3 パッチが適用されることを `build-unit3-56.log` で確認済み**
 （ビルド自体は OOM で中断）。
+
+## 現時点の到達点（round 149 時点）
+
+### 達成したこと
+
+| 項目 | 状態 | 根拠 |
+|---|---|---|
+| Linux RAM 起動 | **達成** | `usb start` 後に `booti` で `x96max-p3 login:` まで到達（round 137） |
+| USB コントローラ | **達成** | `xhci-hcd: io mem 0xff500000`、`USB2 ports: 2 / USB3 ports: 1` |
+| DT295 認識 | **達成** | round 73 で `lsusb` に `06b8:103b`、`usb info` で `PIXELA PIX-DT295` |
+| NAS 登録・画質設定 | **達成** | 2代目と全項目一致 |
+| CM スキップ実装 | **達成** | `encode_with_features` + `--feature-*`、ffmpeg 構成を実測検証 |
+| NAS でのビルド | **達成** | フルビルド 50 分 → 2 回目以降は数分 |
+| **起動後のネットワーク** | **未達** | SSH/ping 不通（round 137, 144） |
+
+### 最重要の発見
+
+**U-Boot で `usb start` を実行してから `booti` すると Linux が例外なく起動する。**
+
+```sh
+usb start
+fatload mmc 0:1 0x01080000 Image
+fatload mmc 0:1 0x08000000 meson-g12a-x96-max-p-ephy-4g.dtb
+fatload mmc 0:1 0x10000000 rootfs.cpio.uboot
+booti 0x01080000 0x10000000 0x08000000
+```
+
+`usb start` の副作用（vendor の USB 初期化）が Linux に引き継がれ、
+glue の `USB_R1`（`0xffe09084`）への書き込みが通る。
+
+**これがないと必ず `usb_init_glue+0x38` か `dwc3_core_probe+0x96c` で落ちる。**
+
+### 現在の構成
+
+```
+パッチ:  0001 (vdec) + 0002 (u2p回避) + 0008 (num_clks修正)
+       0003-0007 は work/patch-backup/ へ退避
+DTB:     meson-g12a-x96-max-p-ephy-4g.dtb (b031dc16)
+         = 1代目・2代目と同じ素の G12A
+Image:   b8b68100 (NAS ビルド)
+rootfs:  35567de0 (PIX_TUNER=none + netdiag SD書き出し版、切り分け用)
+```
+
+### 残る問題と次の一手
+
+**起動後にシリアル入力もネットワークも死ぬ。**
+
+診断手段として `netdiag` が SD の FAT に状態を書き出す:
+
+```
+ip addr / carrier / operstate
+dmesg (dwmac, eth0, PHY, usb)
+ps (getty や dhcpcd が動いているか)
+pix-stream ログ / lsusb
+```
+
+**SD を Mac に挿せば原因が読める。** 次の起動でこれを取得する。
+
+### 電源再投入を減らす仕組み
+
+`panic_on_oops=1 panic=8` を bootargs に追加。oops で固まる代わりに
+8 秒で自動再起動する。
