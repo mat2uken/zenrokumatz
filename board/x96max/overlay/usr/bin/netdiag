@@ -13,6 +13,12 @@ out=/dev/shm/netdiag.txt
     dmesg | grep -i "dwmac\|eth0\|PHY\|usb" | tail -12
     echo "--- ps ---"
     ps 2>&1 | head -20
+    echo "--- pix-stream log ---"
+    tail -15 /tmp/pix-simple.log 2>/dev/null
+    echo "--- tuner log ---"
+    tail -5 /tmp/pix-ts.log 2>/dev/null
+    echo "--- usb devices ---"
+    lsusb 2>/dev/null || ls /sys/bus/usb/devices 2>/dev/null
 } > "$out" 2>&1
 
 # Best effort: put a copy where the Mac can read it after the card is removed.

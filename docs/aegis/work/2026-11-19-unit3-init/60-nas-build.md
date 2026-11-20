@@ -450,3 +450,42 @@ dwmac / eth0 / PHY / usb 関連の末尾 12 行
 
 SD への書き込み。**SD が Mac に接続されていない**（機体の中）。
 接続されれば `--update-boot --only rootfs.cpio.uboot` で書き込む。
+
+## 追記（round 148）: netdiag にプロセスとログを追加
+
+### 追加した記録
+
+```
+--- ps ---
+（プロセス一覧 20 行）
+
+--- pix-stream log ---
+tail -15 /tmp/pix-simple.log
+
+--- tuner log ---
+tail -5 /tmp/pix-ts.log
+
+--- usb devices ---
+lsusb / /sys/bus/usb/devices
+```
+
+**`ps` で getty や dhcpcd が動いているか**、**pix-stream のログで
+「どこまで進んだか」**、**lsusb で DT295 が見えているか**が SD から分かる。
+
+### ビルド済み
+
+`rootfs.cpio.uboot` = `35567de0`（`PIX_TUNER=none` + SD 書き出し +
+プロセス/ログ記録）。
+
+### シリアル入力が効かない件について（別仮説）
+
+以前も同じ症状があり、**USB ケーブルの抜き差しで復帰した**（round 5 頃）。
+機体側ではなく **CP2104 アダプタの送信が死んでいる**可能性がある。
+
+症状:
+- 起動ログ（出力）は流れる
+- 入力（`\r`、`root`）が 0 バイトも届かない
+- ネットワークも死んでいる（これは別問題）
+
+**もしアダプタの問題なら、Mac 側の USB を挿し直せば復帰する。**
+`netdiag` の SD 書き出しは、この切り分けにも使える。

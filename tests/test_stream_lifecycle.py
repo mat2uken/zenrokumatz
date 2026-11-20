@@ -735,6 +735,9 @@ class NetdiagScript(unittest.TestCase):
         self.assertIn("mmcblk0p1", script)
         self.assertIn("netdiag.txt", script)
         self.assertIn("mount -t vfat", script)
+        # Which process died and whether the tuner was seen must be visible too.
+        self.assertIn("/tmp/pix-simple.log", script)
+        self.assertIn("lsusb", script)
 
     def test_init_runs_it_after_network_start(self):
         name = "S51netdiag"
