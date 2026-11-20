@@ -402,3 +402,51 @@ rootfs（`8f190905`）に戻す必要がある。
 
 元の rootfs は Mac の `output/ramboot-unit3/` に残っていないので、
 戻すときは NAS で再ビルドする（設定は既に元通りなので、そのままビルドでよい）。
+
+## 追記（round 147）: netdiag が SD へも書き出すようにした
+
+### 問題
+
+`usb start` 付きで起動すると、**シリアル入力もネットワークも死ぬ**。
+`/dev/shm/netdiag.txt` に記録しても、**シリアルが効かないと読めない**。
+RAM 上なので電源を切ると消える。
+
+### 解決
+
+`netdiag` が **SD の FAT 区画にもコピー**するようにした:
+
+```sh
+for dev in /dev/mmcblk1p1 /dev/mmcblk0p1; do
+    mount -t vfat "$dev" /mnt/netdiag && \
+        cp /dev/shm/netdiag.txt /mnt/netdiag/netdiag.txt && sync && \
+        umount /mnt/netdiag && break
+done
+```
+
+**SD を Mac に挿せば `netdiag.txt` が読める。** シリアルもネットワークも
+死んでいても原因が分かる。
+
+### 記録内容
+
+```
+=== netdiag <date> ===
+ip -4 addr show
+ip link show eth0
+carrier: <0|1>
+operstate: <up|down|unknown>
+--- dmesg ---
+dwmac / eth0 / PHY / usb 関連の末尾 12 行
+--- ps ---
+プロセス一覧の先頭 20 行
+```
+
+`ps` を入れたのが重要。**getty や dhcpcd が動いているか**が分かる。
+
+### ビルド済み
+
+`rootfs.cpio.uboot` = `7549f99b`（`PIX_TUNER=none` + SD 書き出し版 netdiag）。
+
+### 未実施
+
+SD への書き込み。**SD が Mac に接続されていない**（機体の中）。
+接続されれば `--update-boot --only rootfs.cpio.uboot` で書き込む。

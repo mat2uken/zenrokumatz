@@ -1,13 +1,28 @@
 #!/bin/sh
-# Record the network state at boot so a unit that cannot be reached over the
-# network still reports why. Written to /dev/shm so it survives on RAM.
+# Snapshot the network state, and also mirror it onto the SD card when the FAT
+# partition is reachable. The console and the network both go silent on this
+# board after usb start, so the card is the only durable place to read it from.
+out=/dev/shm/netdiag.txt
 {
     echo "=== netdiag $(date) ==="
     ip -4 addr show 2>&1
     ip link show eth0 2>&1
     echo "carrier: $(cat /sys/class/net/eth0/carrier 2>&1)"
     echo "operstate: $(cat /sys/class/net/eth0/operstate 2>&1)"
-    dmesg | grep -i "dwmac\|eth0\|PHY" | tail -8
-    echo "=== udhcpc log ==="
-    tail -5 /tmp/udhcpc.log 2>/dev/null
-} > /dev/shm/netdiag.txt 2>&1
+    echo "--- dmesg ---"
+    dmesg | grep -i "dwmac\|eth0\|PHY\|usb" | tail -12
+    echo "--- ps ---"
+    ps 2>&1 | head -20
+} > "$out" 2>&1
+
+# Best effort: put a copy where the Mac can read it after the card is removed.
+for dev in /dev/mmcblk1p1 /dev/mmcblk0p1; do
+    [ -b "$dev" ] || continue
+    mkdir -p /mnt/netdiag
+    if mount -t vfat "$dev" /mnt/netdiag 2>/dev/null; then
+        cp "$out" /mnt/netdiag/netdiag.txt 2>/dev/null
+        sync
+        umount /mnt/netdiag 2>/dev/null
+        break
+    fi
+done

@@ -730,6 +730,11 @@ class NetdiagScript(unittest.TestCase):
                        "cat /sys/class/net/eth0/operstate", "dmesg | grep -i"):
             self.assertIn(needle, script)
         self.assertIn("/dev/shm/netdiag.txt", script)
+        # The console and the network both go silent, so the snapshot must also
+        # reach the SD card for the Mac to read.
+        self.assertIn("mmcblk0p1", script)
+        self.assertIn("netdiag.txt", script)
+        self.assertIn("mount -t vfat", script)
 
     def test_init_runs_it_after_network_start(self):
         name = "S51netdiag"
