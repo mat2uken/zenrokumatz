@@ -1215,3 +1215,44 @@ DBG otg_apply_mode         True
 
 **機体が停止中のため未検証。** 電源が入れば
 `tools/install-boot.py --dtb meson-g12a-x96-max-p-gxl.dtb` の 1 回で診断まで進む。
+
+## 追記（round 113）: 実機が 11 ラウンド連続で応答なし（現状の停止点）
+
+### 確認したこと
+
+| 確認 | 結果 |
+|---|---|
+| `/dev/cu.usbserial-01025FC4` | **存在する**（22:43 更新、USB 接続は生きている） |
+| シリアル応答 | **なし**（0 バイト） |
+| Android (5555) | 不通 |
+| Linux SSH (22) | 不通 |
+
+**シリアルデバイスは Mac に認識されているが、機体から何も返らない。**
+機体の電源が入っていないか、起動に失敗して停止している。
+
+### 準備完了しているもの（電源が入れば即実行できる）
+
+| 項目 | 状態 |
+|---|---|
+| `Image` = `3d48ee0e` | 4 つの `DBG` マーカー入り（文字列検索で確認済み） |
+| `rootfs.cpio.uboot` = `ef4964aa` | チューナー待機＋CM 特徴量 |
+| `gxl.dtb` | `skip-glue-init`、`dwc2` 無効、PPC |
+| `tools/install-boot.py` | 書き込み→検証→起動→DBG 表示を 1 コマンド |
+| テスト | 268 件通過 |
+
+### 実行するコマンド（電源投入後）
+
+```sh
+cd ~/Desktop/work/X96MaxLinuxTSEnc
+python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-gxl.dtb
+```
+
+`DBG usb_init_glue node=... skip=...` の 1 行で、以下が確定する:
+
+- `skip=1` → glue はスキップ済み。例外は別の場所（`usb3_init` の外側）
+- `skip=0` → プロパティが届いていない（DTB の取り違え or `of_node` の問題）
+
+### 静的解析の結論（実機確認待ち）
+
+`gxl_set_phy_mode` は glue を触らない。`usb3_init` と `otg_apply_mode` は触るが、
+両方 `skip-glue-init` のガードの内側にある。したがって `skip=0` が最有力。
