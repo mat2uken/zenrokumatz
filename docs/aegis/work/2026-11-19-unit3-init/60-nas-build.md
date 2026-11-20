@@ -166,3 +166,65 @@ $ docker run --rm -v x96max-nas-build:/build alpine:3 \
 | `rootfs.cpio.uboot` | `fde2833a` | チューナー待機＋CM 特徴量 |
 | `gxl.dtb` | `d60f6c97` | `usb_ctrl` + `ddr` の 2 クロック |
 | `ephy-4g.dtb` | `b031dc16` | 素の G12A（1代目・2代目と同じ） |
+
+## 追記（round 138）: 起動後のネットワーク不通は要調査
+
+### 観察
+
+`usb start` を付けて起動したところ、Linux は例外なくユーザー空間まで到達した:
+
+```
+Starting dropbear sshd: OK
+B-CAS: DT295 internal card (vendor firmware descrambles)
+Starting pix-stream: OK
+x96max-p3 login:
+```
+
+しかし **SSH・ping・シリアルすべてが応答しない**。
+
+### 確認したこと
+
+| 項目 | 結果 |
+|---|---|
+| `meson8b-dwmac ff3f0000` の初期化 | **されている**（`IRQ eth_wake_irq not found` の警告あり） |
+| `/etc/network/interfaces` | DHCP 設定あり（`auto eth0`） |
+| `S40network` | **rootfs に存在する**（Buildroot 標準） |
+| 起動ログの `eth0` 設定 | **見えない**（シリアルログの欠落の可能性） |
+
+### 以前との比較
+
+`-nousb` DTB で起動したとき（round 105）は **SSH が通った**:
+
+```
+$ ssh root@192.168.99.56 'uname -a'
+Linux x96max-p3 6.18.62 ...
+$ ip -4 addr show eth0
+inet 192.168.99.56/24
+```
+
+**同じ DTB 系列（`-nousb` は `ephy` から派生）で、当時は通っていた。**
+
+### 考えられる原因
+
+1. **シリアルコンソールが停止している**（Linux は動いているがコンソールと
+   ネットワークの両方が死んでいる）
+2. **`pix-stream` の起動が USB をリセットし、その影響で何かが止まった**
+3. `panic_on_oops` が入る前の Image だったので、別の oops が起きて
+   kworker が死に、ネットワークスタックも止まった
+
+### 3 が有力
+
+`usb start` で glue が初期化された後、Linux の `pix-usb-audit` や
+`pix-stream` が USB を触って再度 oops を起こした可能性。ログには
+`pix-stream: OK` と出ているが、その後の動作で落ちたかもしれない。
+
+### 次の確認
+
+電源投入後、`usb start` 付きで起動し:
+
+1. 起動直後に ping / SSH を試す（時間をおいて再試行）
+2. シリアルで `login:` が出ているか確認
+3. 通れば DT295 の認識と録画を確認
+
+**`panic_on_oops=1 panic=8` が入った Image なら、oops 時に自動再起動するので
+「固まる」状態を避けられる。**
