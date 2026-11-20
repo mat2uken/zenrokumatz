@@ -79,11 +79,25 @@ chan=$(cfw_channel)
 log "starting channel=$chan"
 
 # 取得そのものは ts_grab に任せる。ここは「止まったら選局し直す」係。
-# ts_grab は --seconds 0 で SIGTERM まで流し続ける。
+#
+# 選局は必ず先に単独で行う。`save <ch>` は選局を試みるが、ロックしなくても
+# そのまま取得へ進む（"(recording anyway: no lock)"）ので、ロックしていない
+# まま「データが来ない」を繰り返す。ロックを確かめてから取る。
 restarts=0
 while :; do
+    # tune は結果を stdout に書く（stderr は空）。両方まとめて記録する。
+    "$PIX_CFW_TOOL" tune "$chan" --dev dt295 \
+        >"$PIX_LOG_DIR/pix-cfw-tune.log" 2>&1
+    if ! grep -q " locked, " "$PIX_LOG_DIR/pix-cfw-tune.log" 2>/dev/null; then
+        restarts=$((restarts + 1))
+        log "no lock on $chan; retry (attempt $restarts)"
+        sleep "$PIX_CFW_RETRY_SECONDS"
+        continue
+    fi
+    [ "$restarts" -gt 0 ] && log "locked on $chan after $restarts attempt(s)"
+
     "$PIX_CFW_TOOL" save - --seconds 0 --dev dt295 --bursts "$PIX_CFW_BURSTS" \
-        "$chan" 2>"$PIX_LOG_DIR/pix-cfw-ts.log"
+        2>"$PIX_LOG_DIR/pix-cfw-ts.log"
     status=$?
 
     # 下流（torne-b25 / エンコーダ）が閉じたら EPIPE で終わる。それは正常。
