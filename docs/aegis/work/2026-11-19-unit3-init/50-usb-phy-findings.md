@@ -942,3 +942,46 @@ DT295 の挿抜、USB の再列挙、電源の入れ直し回数などが影響�
 
 **または 3代目で `0xffe09084` が読めるか**を Linux から確認する
 （`-nousb` DTB なら Linux が起動するので、`devmem` で調べられる）。
+
+## 追記（round 126）: `-nousb` では USB レジスタを読めない（クロックが止まる）
+
+### 実測
+
+`-nousb` DTB（全 USB 無効）で Linux を起動し、`busybox devmem` で読んだ:
+
+```
+0xffe09000   Bus error
+0xffe09020   Bus error
+0xffe09080   Bus error
+0xffe09084   Bus error
+0xffe09090   Bus error
+0xff500000   Bus error
+0xff500020   Bus error
+
+0xff634000   0x00000000      ← HHI は読める
+0xfffe0000   Bus error       ← 元から無い領域
+```
+
+### 原因
+
+```
+[2.102487] clk: Disabling unused clocks
+```
+
+**USB のクロックが止められたため、USB 領域が Bus error になる。**
+`-nousb` のコメントに書かれていた既知の現象。
+
+**機体固有の問題ではなく、この調査方法が使えないだけ。**
+
+### 結論
+
+`-nousb` では USB レジスタを調べられない。**USB を有効にした DTB で
+Linux が起動できれば**調べられるが、その構成では `USB_R1` で落ちる。
+
+### 別の方法
+
+1. **U-Boot から読む**。U-Boot の `md` コマンドで `0xffe09084` を読めるか。
+   U-Boot は USB のクロックを止めていないので、値が見えるはず。
+2. **2代目（`192.168.99.123`）が起動したとき**に同じレジスタを読んで比較。
+
+**U-Boot の `md` が最も手軽**。次の起動で確認する。
