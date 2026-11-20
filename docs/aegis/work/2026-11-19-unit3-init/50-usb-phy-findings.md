@@ -2014,3 +2014,66 @@ if (!np)
 | canvas ドライバ | `ff638048.video-lut` にバインド ✓ |
 | `hhi-sysctrl` | `bus@3c000/system-controller@0` に**存在** ✓ |
 | `dos` クロック | あり ✓ |
+
+## 解決（round 162）: SM1 対応パッチを当ててビルド・書き込み完了
+
+### パッチ
+
+`package/meson-venc/patches/0001-look-up-the-sm1-vdec-node.patch`
+
+```diff
+-	np = of_find_compatible_node(NULL, NULL, "amlogic,g12a-vdec");
++	/*
++	 * SM1 boards describe the decoder as "amlogic,sm1-vdec", which is what
++	 * mainline binds vdec_platform_sm1 to. Only fall back to the G12A name so
++	 * the same module still probes on a G12A/G12B board.
++	 */
++	np = of_find_compatible_node(NULL, NULL, "amlogic,sm1-vdec");
+ 	if (!np)
++		np = of_find_compatible_node(NULL, NULL, "amlogic,g12a-vdec");
++	if (!np)
+ 		return -ENODEV;
+```
+
+### 適用フックの知見（重要）
+
+`kernel-module` パッケージは `PRE_BUILD_HOOKS` も `POST_PATCH_HOOKS` も
+呼ばない。**`POST_RSYNC_HOOKS` が正解**:
+
+```make
+define MESON_VENC_APPLY_LOCAL_PATCHES
+	for p in $(MESON_VENC_PATCHES)/*.patch; do \
+		echo "Applying $$(basename $$p)" ; \
+		patch -d $(@D) -p1 --forward --batch < $$p || exit 1 ; \
+	done
+endef
+MESON_VENC_POST_RSYNC_HOOKS += MESON_VENC_APPLY_LOCAL_PATCHES
+```
+
+`kernel-module` は `$(SITE)` から `$(@D)` へ rsync するだけで、通常の
+`patch` ステップを通らない。`POST_RSYNC` が最初に「ソースが揃った状態」に
+なるフック。
+
+### 検証
+
+```
+$ grep -c "look-up-the-sm1" /tmp/nb13.log
+1
+$ grep -c sm1-vdec /build/output/build/meson-venc-*/venc-h264/compat.c
+2
+```
+
+**パッチ適用済み。ビルド成功。**
+
+### 書き込み済み
+
+`rootfs.cpio.uboot` = `f38506c7`（`amvenc` を含むことを cpio 展開で確認）。
+Linux 経由で SD へ書き込み、検証 OK。
+
+### 次の検証
+
+再起動して:
+1. `modprobe amvenc_avc` が成功するか
+2. `dmesg` に `amvenc: dos ... irq ... canvas ...` が出るか
+3. `/dev/video1`（エンコーダ）が現れるか
+4. **VPU エンコードでハングしないか**

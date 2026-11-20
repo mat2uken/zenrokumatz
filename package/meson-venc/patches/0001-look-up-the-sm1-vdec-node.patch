@@ -1,0 +1,19 @@
+--- a/venc-h264/compat.c
++++ b/venc-h264/compat.c
+@@ -157,8 +157,15 @@
+ 	struct resource res, irq_res;
+ 	int ret, irq;
+ 
+-	np = of_find_compatible_node(NULL, NULL, "amlogic,g12a-vdec");
++	/*
++	 * SM1 boards describe the decoder as "amlogic,sm1-vdec", which is what
++	 * mainline binds vdec_platform_sm1 to. Only fall back to the G12A name so
++	 * the same module still probes on a G12A/G12B board.
++	 */
++	np = of_find_compatible_node(NULL, NULL, "amlogic,sm1-vdec");
+ 	if (!np)
++		np = of_find_compatible_node(NULL, NULL, "amlogic,g12a-vdec");
++	if (!np)
+ 		return -ENODEV;
+ 	ret = of_address_to_resource(np, 0, &res);	/* "dos" */
+ 	if (ret)
