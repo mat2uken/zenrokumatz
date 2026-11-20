@@ -561,3 +561,67 @@ U-Boot 側の設定は `ipaddr=192.168.99.56`、`serverip=192.168.99.80`。
 **未検証**: U-Boot からの実際の `tftpboot` 取得。round 13–16 の実測では
 `ipaddr=10.18.9.97, serverip=192.168.99.8` という既定値で、`tftpboot` コマンド
 自体は利用可能だった。今回の構成で実際に取得できるかは次の起動で確認する。
+
+## 追記（round 96 後半）: U-Boot から TFTP は使えない（実機で確認）
+
+### サーバ側は正常
+
+NAS（`192.168.99.80`）の dnsmasq TFTP は動作しており、Mac の `curl` から
+3 ファイルすべてをハッシュ一致で取得できた（Image 59 秒、rootfs 49 秒）。
+
+### U-Boot 側で失敗
+
+```
+setenv ipaddr 192.168.99.56
+setenv serverip 192.168.99.80
+tftpboot 0x08000000 meson-g12a-x96-max-p-gxl.dtb
+```
+
+```
+Speed: 1000, full duplex
+Using dwmac.ff3f0000 device
+TFTP from server 192.168.99.80; our IP address is 192.168.99.56
+Filename 'meson-g12a-x96-max-p-gxl.dtb'.
+Load address: 0x8000000
+Loading: *T T T T T T T
+Retry count exceeded; starting again
+```
+
+**リンクは 1000/full で確立しているのに、パケットが届かない。**
+
+### 切り分け結果
+
+| 対象 | 結果 |
+|---|---|
+| `ping 192.168.99.80`（NAS） | **失敗**（`host is not alive`） |
+| `ping 192.168.99.52`（NAS 別 NIC） | **失敗** |
+| `ping 192.168.99.20`（Mac） | **失敗** |
+
+**どのホストにも ping が通らない。** 特定ホストの問題ではなく、U-Boot の
+ネットワークスタック自体が送受信できていない。
+
+### 確認したこと
+
+- `ethaddr = 90:0e:b3:24:81:7e`（設定済み）
+- `env default -f -a ethaddr` でリセット後に再設定しても同じ
+- NAS 側のファイアウォールは `policy ACCEPT`（遮断していない）
+- NAS 側の dnsmasq ログにリクエストの記録なし（到達していない）
+- `mii` コマンドは未搭載（PHY レジスタを直接読めない）
+- Linux（Android）では同じ NIC で通信できる（`eth0` が `192.168.99.56` を取得）
+
+### 結論
+
+**この U-Boot（2015.01 vendor）の TFTP は、この機体では使えない。**
+リンクが上がってもフレームが通らない。考えられる理由:
+
+1. `dwmac.ff3f0000`（G12A の内蔵 MAC）の初期化が U-Boot 側で不完全
+2. RTL8211F PHY の設定（速度・デュプレックスは読めても、実際の送受信が
+   できていない）— vendor U-Boot がこの PHY 構成に対応していない可能性
+3. TX 記述子/DMA の設定漏れ
+
+いずれも vendor U-Boot のバイナリを直す必要があり、現実的でない。
+
+### 代替
+
+**SD カードでの起動に戻す。** ただし Mac 側の書き込みは `--update-boot` で
+sudo 不要、1 回 10 秒程度なので、往復の手間は SD の抜き差しのみ。
