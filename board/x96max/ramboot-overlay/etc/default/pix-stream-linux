@@ -4,12 +4,26 @@ PIX_DECRYPT=0
 PIX_SYSTEM=bs
 PIX_CHANNEL=9
 PIX_SAT_SLOT=0
-PIX_PIDS="0 17 18 257 273 289 320 321"
+# PIX_PIDS は設定しない。PID を絞ると、ARIB の複合で必要な ECM と、その ECM に
+# 結び付く ES を落としたときに復号できなくなり、事故の余地だけが増える。
+# 外部複合に切り替えるときは特にこの前提が効く（ECM が周期で来ないと
+# カードセッションが切れる）。帯域が問題になったときの最適化として後回しにする。
 PIX_DISPLAY=X96Max-P2
 PIX_PORT=40774
 PIX_ALLOWED_IP=192.168.99.80,192.168.99.52
 PIX_SPOOL_MB=192
 PIX_BITRATE=6000k
 PIX_GOP=60
-PIX_CAPTURE_SECONDS=1800
+# - は「切り直さない」（pix-ts-legacy は SIGTERM まで流し続ける）。
+#
+# 以前は 1800 を設定し、1800秒ごとにキャプチャを作り直していた。これは DT295 の
+# カード交換が止まる問題を避けるための措置だったが、番組の途中で配信が切れ、
+# NAS 側が同じ番組を複数のフォルダに分ける原因になっていた
+# (docs/recording-split-and-stb-recovery.md)。分割の修正は NAS 側で入れたが、
+# 切り直し自体を無くすのが筋なので無期限にする。
+#
+# 数値を書くと その秒数で切り直す。0 と空は - に正規化される
+# (pix-stream-simple の capture_seconds)。先頭 0 の値は基数0解析で
+# 8進になるため書かない。
+PIX_CAPTURE_SECONDS=-
 PIX_LOGO_DIR=/var/lib/pix/logos

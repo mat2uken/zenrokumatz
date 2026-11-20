@@ -282,12 +282,35 @@ streamer() {
         2>/tmp/pix-stb.log
 }
 
+# キャプチャの -t に渡す値を決める。
+#
+# PIX_CAPTURE_SECONDS は「何秒ごとにキャプチャを切り直すか」だった。- を書くと
+# 無期限になり、切り直しが起きなくなる（番組が途中で分割される原因を消す）。
+#
+# pix-ts-legacy の引数解析は main.c:402-406 と number() で、次の制約がある。
+#   -              無期限（SIGTERM まで）
+#   空文字         不正終了（number() が空を弾く）
+#   0              不正終了（!v で弾く）
+#   先頭 0 の数値  基数0解析なので 011 は 9 秒になる
+# 空や 0 をそのまま渡すと usage 終了でパイプラインが1本も立ち上がらないため、
+# ここで正規化する。無期限は必ず - を明示させる。
+capture_seconds() {
+    case "${PIX_CAPTURE_SECONDS:-}" in
+        ""|0) echo "-" ;;
+        *)    echo "$PIX_CAPTURE_SECONDS" ;;
+    esac
+}
+
 # クリアTSを出すチューナーは直結する。中間ファイルを作らないので、
 # ディスクもRAMも消費せず、番組の途中で切れることもない。
 run_direct() {
+    # -t を無期限（-）にすると pix-ts-legacy は自分から時刻で終わらなくなる。
+    # その代わり、下流が詰まると stdout の write が止まり 3秒で
+    # stream_fail(8) する（main.c:88-90）ので、無期限にするときは詰まりを
+    # 作らないことが前提になる。後段は eit_watch 以降で従来と同一。
     # shellcheck disable=SC2086
     capture pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
-        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
+        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$(capture_seconds)" \
         2>/tmp/pix-ts.log \
       | eit_watch --state /dev/shm/pix/program.txt --logo-dir "$PIX_LOGO_DIR" \
             2>/tmp/pix-eit.log \
@@ -302,7 +325,7 @@ run_buffered() {
     # 録画の長さだけ育って tmpfs を埋めるが、リングなら一定量で回る。
     # shellcheck disable=SC2086
     capture pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
-        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$PIX_CAPTURE_SECONDS" \
+        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$(capture_seconds)" \
         2>/tmp/pix-ts.log \
       | torne-b25 --card-socket /dev/shm/torne/card.sock --trace /dev/shm/pix/b25.trace \
             2>/tmp/pix-b25.log \
@@ -487,17 +510,24 @@ while [ ! -e "$STOPFILE" ]; do
     [ ! -e "$STOPFILE" ] || break
     ran=$(( $(date +%s) - started ))
     log "pipeline stopped after ${ran}s; restarting"
-    if [ "$PIX_DECRYPT" != "1" ] && [ "$ran" -lt 10 ]; then
+    # 高速失敗の判定は dt295 のときだけ意味がある（他のチューナーは
+    # ここで USB を切り直さない）。
+    if [ "$PIX_TUNER" = "dt295" ] && [ "$ran" -lt 10 ]; then
         fast_fail=$((fast_fail + 1))
     else
         fast_fail=0
     fi
     # パッチを当てた個体はまずソフトリセットで戻る。それでも駄目だったときだけ
     # ここ (USB の切り直し) に来る。
-    if [ "$PIX_DECRYPT" != "1" ] && grep -qE "requires cold state|cannot read DT295 firmware state|firmware could not be reset" /tmp/pix-ts.log 2>/dev/null; then
+    #
+    # この復帰は PIX_DECRYPT に依らず効かせる。以前は "! PIX_DECRYPT=1" を
+    # 条件にしていたため、外部複合に切り替えた瞬間に DT295 の USB 回復だけが
+    # 止まり、ファームウェアが壊れたときに自動復帰しなくなっていた。
+    # チューナーが dt295 であることだけを見る。
+    if [ "$PIX_TUNER" = "dt295" ] && grep -qE "requires cold state|cannot read DT295 firmware state|firmware could not be reset" /tmp/pix-ts.log 2>/dev/null; then
         dt295_recover || exit 1
         fast_fail=0
-    elif [ "$PIX_DECRYPT" != "1" ] && [ "$fast_fail" -ge 3 ]; then
+    elif [ "$PIX_TUNER" = "dt295" ] && [ "$fast_fail" -ge 3 ]; then
         log "dt295: three quick failures in a row"
         dt295_recover || exit 1
         fast_fail=0
