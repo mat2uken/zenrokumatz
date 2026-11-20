@@ -725,3 +725,39 @@ USB メモリ（FAT32）を挿して `usb start` すると、
 | `meson-g12a-x96-max-p-gxl.dtb` | 51,207 | `e0cc1dbf` |
 
 USB メモリを FAT32 でフォーマットし、この 3 ファイルをルートに置けばよい。
+
+## 追記（round 99）: U-Boot の usb サブコマンド（USB メモリ検証用）
+
+```
+usb start - start (scan) USB controller
+usb reset - reset (rescan) USB controller
+usb stop [f] - stop USB [f]=force stop
+usb tree - show USB device tree
+usb info [dev] - show available USB devices
+usb test [dev] [port] [mode] - set USB 2.0 test mode
+usb storage - show details of USB storage devices
+usb dev [dev] - show or set current USB stor
+```
+
+USB メモリを挿した後は:
+
+```
+usb reset          # 再スキャン
+usb storage        # ストレージとして見えているか
+fatls usb 0:1      # FAT の中身
+```
+
+で確認できる。`fatls` があるので、`fatload` の前に中身を確かめられる。
+
+### NAS の TFTP サーバの扱い
+
+`x96tftp.service`（dnsmasq、`/srv/x96tftp`）は稼働中だが、**3代目の U-Boot
+では使えないと判明している**（本機のネットワークスタックが送受信できない）。
+
+- 停止する場合: `sudo systemctl stop x96tftp && sudo systemctl disable x96tftp`
+- 他機（1代目・2代目）は同じ vendor U-Boot 系列なので、同じ理由で使えない
+  可能性が高い（未検証。他機は現在停止中でシリアルも3代目に接続されている）。
+
+**判断**: 現時点では使い道が無いため、停止してよい。再開する場合は
+`/etc/x96-tftp.conf` と `/srv/x96tftp` が残っていれば
+`sudo dnsmasq --conf-file=/etc/x96-tftp.conf` で復帰できる。
