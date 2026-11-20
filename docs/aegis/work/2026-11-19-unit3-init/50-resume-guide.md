@@ -889,3 +889,60 @@ TE=0 に戻す。U-Boot のバイナリを修正しない限り回避できな�
 3. **`loadx`（XMODEM）** — `loady` より遅いので不可。
 
 **現時点で U-Boot からの TFTP は不可能。** 原因はレジスタレベルで特定済み。
+
+## 追記（round 101）: Android から SD を書き換える経路が使える（実証済み）
+
+U-Boot の TFTP が使えないため、**Android（vendor Linux）経由で SD の FAT を
+書き換える**方式を実機で確立した。
+
+### SD の見え方（Android）
+
+```
+# /proc/partitions
+179  128  31166976  mmcblk1        ← SD カード（31.9GB）
+179  129    131072  mmcblk1p1      ← FAT 区画（134MB）
+
+# マウント
+/mnt/media_rw/0708-F8A4            ← 直接読み書きできる（media_rw 所有）
+
+# 空き容量
+126M 中 75M 使用、51M 空き
+```
+
+### 手順（実証済み）
+
+```sh
+# 1. Mac → Android へ転送（25.9 MB/s、41.8MB が 1.5 秒）
+adb push output/ramboot-unit3/Image /data/local/tmp/Image.new
+
+# 2. Android 側でハッシュ確認
+adb shell 'su -c "sha256sum /data/local/tmp/Image.new"'
+
+# 3. SD の FAT へコピー
+adb shell 'su -c "cp /data/local/tmp/Image.new /mnt/media_rw/0708-F8A4/Image; sync"'
+
+# 4. 検証
+adb shell 'su -c "sha256sum /mnt/media_rw/0708-F8A4/Image"'
+```
+
+### 実績
+
+| ファイル | 更新前 | 更新後 |
+|---|---|---|
+| `Image` | `b3099f99` | **`6a9b20e4`**（ハッシュ一致を SD 上で確認） |
+| `rootfs.cpio.uboot` | `ef4964aa` | 変更なし（既に最新） |
+
+**SD カードを Mac に抜き差しせずに、カーネルを差し替えられた。**
+
+### 制約
+
+- 空き容量が 51MB。`Image`（41.8MB）の更新は可能だが、`rootfs`
+  （35.2MB）と同時に更新すると溢れる。**1 ファイルずつ、古いものを消してから**
+  置き換える（`cp` は上書きなので一度は両方存在する点に注意）。
+- Android が起動している必要がある。U-Boot からは SD を書けない。
+- `su` が必要（この機体は ADB の `su -c` が通る）。
+
+### これで解決したこと
+
+**SD の抜き差しが不要になった。** 以降のカーネル/rootfs の更新は、
+Android を起動 → `adb push` → `cp` で完結する（1 ファイル 2 秒程度）。
