@@ -1166,3 +1166,52 @@ DBG otg_apply_mode                         otg_apply_mode の入口
 
 **機体が停止中のため、書き込みと起動ができていない。**
 Android か Linux が起動すれば、SD へ書いて（両方の経路が確立済み）検証できる。
+
+## 追記（round 111）: 診断マーカー4つが確実に入った Image を確定
+
+### 問題
+
+`0005` に `usb_init_glue` のマーカーを追記したが、**ビルド時に4つ目のハンクが
+適用されず 3 つしか入らなかった**（`patch` が部分適用）。Image の文字列検索で
+`DBG usb_init_glue` が False だったことで発見。
+
+### 対処
+
+`usb_init_glue` のマーカーを **別パッチ `0006-dwc3-meson-glue-trace.patch`**
+として分離した。先行パッチが同じファイルを書き換えているため、追記ではなく
+独立したハンクにした方が確実に当たる。
+
+### 確定した Image
+
+`Image` = **`3d48ee0e`**（6 パッチ適用）。**4 マーカーすべてがバイナリに含まれる
+ことを文字列検索で確認済み**:
+
+```
+DBG usb_init_glue          True
+DBG usb3_init              True
+DBG gxl_usb_post_init      True
+DBG otg_apply_mode         True
+```
+
+### 期待される出力
+
+```
+[1.31] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.31] dwc3-meson-g12a ffe09000.usb: USB3 ports: 1
+[1.31] DBG usb_init_glue node=/soc/usb@ffe09000 skip=1
+[1.31] DBG gxl_usb_post_init
+[1.32] Internal error
+```
+
+`skip=1` なら glue は正しくスキップされ、例外は `post_init` 以降。
+`skip=0` ならプロパティが届いていない。
+
+### ツール
+
+`tools/install-boot.py` で「SD 書き込み → 起動 → DBG 行表示」を 1 コマンドに
+まとめた（`1e5a976`）。Android と Linux の両経路を自動判別する。
+
+### 状態
+
+**機体が停止中のため未検証。** 電源が入れば
+`tools/install-boot.py --dtb meson-g12a-x96-max-p-gxl.dtb` の 1 回で診断まで進む。
