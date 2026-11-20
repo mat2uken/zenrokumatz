@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 import struct
 import subprocess
+import sys
 import zlib
 import tempfile
 import unittest
@@ -469,3 +470,49 @@ class Archive(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallBootTool(unittest.TestCase):
+    """install-boot.py must fail loudly when the box is unreachable.
+
+    The manual equivalent of this tool silently did nothing when the card was
+    not reachable, which wasted several rounds. These checks pin the transport
+    choice and the loud failure.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "installer", Path(__file__).resolve().parents[1] / "tools/install-boot.py")
+        cls.tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.tool)
+
+    def test_reachable_reports_the_port_it_tested(self):
+        seen = []
+        def probe(host, port, timeout=2):
+            seen.append((host, port))
+            return port == 5555
+        real = socket.socket
+        class Fake:
+            def __init__(self, *a, **k): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def settimeout(self, v): pass
+            def connect_ex(self, addr):
+                return 0 if probe(*addr) else 111
+        with patch.object(socket, "socket", Fake):
+            self.assertTrue(self.tool.reachable(5555))
+            self.assertFalse(self.tool.reachable(22))
+        self.assertEqual([p for _, p in seen], [5555, 22])
+
+    def test_missing_files_are_rejected_before_any_transport(self):
+        with patch.object(self.tool, "OUT", Path("/nonexistent-dir")):
+            argv = ["install-boot.py", "--dtb", "nope.dtb"]
+            with patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit):
+                    self.tool.main()
+
+    def test_digest_is_sha256_of_the_file(self):
+        path = Path(self.tool.__file__).resolve().parents[1] / "tools/install-boot.py"
+        self.assertEqual(self.tool.digest(path),
+                         hashlib.sha256(path.read_bytes()).hexdigest())
