@@ -1397,3 +1397,46 @@ U-Boot の `md` を試みたが、autoboot が先に走って Android が起動�
 2. `-clkon` DTB で起動し、`busybox devmem 0xffe09084 32` を読む
 3. 読めれば「レジスタは存在する（書き込みだけが失敗）」、Bus error なら
    「領域自体が無い」
+
+## 追記（round 130）: U-Boot でレジスタを読む専用ツールを追加
+
+### なぜ U-Boot なのか
+
+Linux では USB レジスタを調べられない:
+
+- **glue `disabled`**（`-nousb`）→ `clk: Disabling unused clocks` で
+  USB クロックが止まり、全領域が **Bus error**
+- **glue `okay`**（`-clkon` など）→ `usb_init_glue` が無条件に走り、
+  `USB_R1`（`0xffe09084`）の書き込みで **例外**
+
+**U-Boot はクロックを止めないので、`md` で読める唯一の場所。**
+
+### ツール
+
+`tools/uboot-md.py`:
+
+```sh
+python3 tools/uboot-md.py --address 0xffe09084 --count 4
+python3 tools/uboot-md.py --address 0xffe09000 --count 8
+```
+
+`catch_prompt` で U-Boot に止めてから Ctrl-C で autoboot を止め、
+`md` を発行して結果の行だけを表示する。前回は autoboot が先に走って
+Android に進んでしまったため、Ctrl-C を明示的に送るようにした。
+
+### 判定
+
+| 出力 | 意味 |
+|---|---|
+| `ffe09084: 00000000` など値 | **レジスタは存在する**。書き込みだけが失敗 |
+| `Bus error` / `data abort` | **領域が無い**。基板の配線が 1代目・2代目と違う |
+
+### もし「領域が無い」なら
+
+**この個体は glue の `0xffe09080` 帯を持たない**ことになる。その場合は
+`gxl` 解釈（glue = `0xffe09000`）に戻すのが正しく、かつ `USB_R1` 相当を
+書かない構成（`skip-glue-init`）が必要。ただしそうすると
+`dwc3_core_probe` の `0xff500020` が読めない問題が残る。
+
+**その場合は、dwc3 のレジスタ窓を開ける別の手段（vendor の USB 初期化を
+移植するなど）が必要になる。**
