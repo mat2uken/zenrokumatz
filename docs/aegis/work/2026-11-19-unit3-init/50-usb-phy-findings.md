@@ -481,3 +481,69 @@ dwc3 自身のクロック欠落が残っていた。
 
 実機での起動確認。`Image` = `29ecb5ec`（7 パッチ、4 マーカー入り）、
 `gxl.dtb` に clocks/resets 追加。
+
+## 追記（round 116）: clocks/resets を足しても dwc3_core_probe で落ちる
+
+### 実測
+
+`&dwc3 { clocks = <&clkc CLKID_USB>; resets = <&reset RESET_USB>; }` を入れた
+DTB（`Image` = `29ecb5ec`）で起動:
+
+```
+[1.309468] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.310537] dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+[1.315787] DBG usb_init_glue node=usb@ffe09000 skip=1
+[1.323069] DBG gxl_usb_post_init
+[1.324094] DBG gxl_usb_post_init skip=1
+[1.330446] Internal error: synchronous external abort
+
+pc : dwc3_core_probe+0x96c/0x1600      ← 変わらず
+```
+
+**clocks/resets の追加では解決しなかった。**
+
+### 追加した DTB が実際に使われたか
+
+`install-boot.py` の出力に `fatload ... meson-g12a-x96-max-p-gxl.dtb` が
+含まれ、ハッシュ検証も通っている。DTB は新しかった。
+
+しかし**その DTB に clocks/resets が入っているか**は、起動ログからは確認できない。
+`dtc` で確認した限りでは入っていた（`clocks = <0x02 0x2f>`）。
+
+### 考えられること
+
+1. **クロックとリセットは既に有効**（glue が取っているので enable_count は 1）。
+   dwc3 が追加で取っても二重取得で、実態は変わらない。
+   → **`0xff500000` の窓が開かない原因は別**
+2. `dwc3_core_is_valid` は `0xff500020` の **DRD コンフィグレーション**を読む。
+   このレジスタは「コントローラが DRD モードか」を示す。**この基板の
+   `0xff500000` は dwc3 のレジスタ窓として応答しない**（vendor DT でも
+   `dwc3@ff500000` だが、vendor は専用ドライバで別の準備をしている可能性）。
+
+### 重要な矛盾
+
+round 37 では **一度だけ `xhci-hcd` が `0xff500000` をマップして動作した**
+（`io mem 0xff500000`、`hcc params 0x0228fe64`）。あのときは
+`dwc3_core_is_valid` を通っている。
+
+そのときの構成: `-p-gxl`（`skip-glue-init` **なし**）、`Image` = `b3099f99`
+（パッチ 0001-0002 のみ）、`extra-usb-port` なし。
+
+**今回との違いは `skip-glue-init` の有無**。glue の初期化をスキップしたことで、
+`0xff500000` の窓を開ける何かが実行されなくなった可能性がある。
+
+### 仮説
+
+**glue の初期化（`usb_init_glue`）の中に、dwc3 のレジスタ窓を開ける処理がある。**
+具体的には `usb2_init` の `u2p` 書き込みか、`usb3_init` か、`otg_apply_mode`。
+これらを全部スキップしたため、窓が開かない。
+
+### 次の一手
+
+`skip-glue-init` を外し、**どの書き込みが窓を開けるか**を 1 つずつ試す。
+`usb_init_glue` の中の 4 段階（usb2_init / USB_R1 / USB_R5 / usb3_init /
+otg_apply_mode）を個別に有効化して、どこまで進めば `dwc3_core_is_valid` が
+通るかを調べる。
+
+ただし各段階が例外を出す可能性があるため、**段階ごとに DTB とパッチを
+切り替えて試す**必要がある。
