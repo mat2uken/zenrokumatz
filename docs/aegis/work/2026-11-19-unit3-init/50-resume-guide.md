@@ -1256,3 +1256,51 @@ python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-gxl.dtb
 
 `gxl_set_phy_mode` は glue を触らない。`usb3_init` と `otg_apply_mode` は触るが、
 両方 `skip-glue-init` のガードの内側にある。したがって `skip=0` が最有力。
+
+## 追記（round 119）: dwc2 を有効に戻した DTB を用意（未検証）
+
+### 変更
+
+`board/x96max/dts/amlogic/meson-g12a-x96-max-p-gxl.dts`:
+
+```dts
+&dwc2 {
+	status = "okay";      // disabled から戻した
+};
+```
+
+`gxl.dtb` = `30d2605d`。`dtc` で `usb@ff400000` の `status = "okay"` を確認済み。
+
+### 根拠（round 118 の観察）
+
+round 37 の成功ログでは **dwc2 が PHY を初期化してから xhci が
+`0xff500000` をマップ**していた:
+
+```
+[1.865] dwc2 ff400000.usb: 初期化
+[1.892] xhci-hcd: io mem 0xff500000    ← 成功
+```
+
+現在は dwc2 を無効化しているため、その前提が失われている可能性がある。
+dwc2 の以前の例外（round 106）は glue 経由だったが、今は
+`skip-glue-init` で抑えているので再発しない見込み。
+
+### 検証コマンド（電源投入後）
+
+```sh
+cd ~/Desktop/work/X96MaxLinuxTSEnc
+python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-gxl.dtb --trace 60
+```
+
+### 判定
+
+| 観察 | 意味 |
+|---|---|
+| `xhci-hcd: io mem 0xff500000` が出る | **解決**。dwc2 の PHY 初期化が前提だった |
+| また `dwc3_core_probe+0x96c` | dwc2 は無関係。別の原因を探す |
+| `dwc2_driver_probe` で落ちる | glue 経由の例外が再発。dwc2 は無効に戻す |
+
+### 現在の Image
+
+`Image` = `29ecb5ec`（7 パッチ、4 マーカー入り）。
+dwc3 の clocks/resets も入っている（round 115 の変更、効果は未確認）。

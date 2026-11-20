@@ -55,8 +55,18 @@
  * abort in dwc2_driver_probe). Nothing needs it, because the DT295 is driven by
  * the dwc3 host controller above.
  */
+/*
+ * dwc2 is kept enabled on purpose.
+ *
+ * It was disabled to avoid an abort in dwc2_driver_probe, but that abort came
+ * from the glue writes in the same path that skip-glue-init now suppresses.
+ * More importantly, round 37 booted cleanly with dwc2 running: the log shows
+ * dwc2 finishing its PHY setup before xhci mapped 0xff500000, which is exactly
+ * the window dwc3_core_probe currently cannot read. Letting dwc2 initialise the
+ * shared USB2 PHY again is the cheapest way to test that dependency.
+ */
 &dwc2 {
-	status = "disabled";
+	status = "okay";
 };
 
 /*
