@@ -218,3 +218,73 @@ APDU を通すには `Info.plist` の `CFWAllowAPDU` を `true` にする。
 ただしコメントに「macOS はカードを見つけると自分で APDU を送るため既定は off」と
 ある。Linux の pcscd は自分からは送らないので、`true` にして問題ないはずだが、
 **確かめてからにする**。
+
+## APDU の往復で止まっている点（2026-11-20 追記）
+
+### 症状を段階まで割った
+
+`apdu_test` で 1 ブロックの往復を手で辿った結果:
+
+```
+(ATR needed a second CARD_ON)
+ATR: 3B F0 12 00 FF 91 81 B1 7C 45 1F 03 99
+CARD_PUT  -> OK
+CARD_SEND -> OK                          (stage=6 = STAGE_SENT)
+CARD_RECV -> E_AGAIN  got=262 need=0 stage=6
+```
+
+**カードは 262 バイト応答している。しかし `need` が 0 のまま。**
+
+### 原因
+
+CFW の `card.c` の受信処理（`src/main/card.c:409-438`）:
+
+```c
+rc = stage == STAGE_SENT ? drain(BLOCK_MAX) : FW_OK;
+if (rx_len >= 3u)
+    need = 3u + rx_buf[2] + 1u;
+```
+
+`BLOCK_MAX` は **259**（`card.c:55`、`NAD PCB LEN + 254 + LRC + 予備1`）。
+`drain()` は `rx_len >= cap` になった時点で `FW_EIO` を返す（`card.c:164-176`）。
+
+応答が **262 バイト**なので 259 を 3 バイト超え、`drain` が途中で打ち切り、
+**`need` を計算する前に `rc` が `FW_EIO` になる**。ホストには `need=0` と
+`E_AGAIN` だけが届き、いつまでも揃わない。
+
+### なぜ 262 バイト来るのか（推定）
+
+T=1 のブロックは `NAD PCB LEN` + `LEN` バイト + `LRC` なので、
+最大は `3 + 255 + 1 = 259`。262 はその 3 バイト上。
+
+考えられる説明:
+
+1. **`CARD_MODE` の上位 16 bit が受信済みバイト数を正しくない**（前のセッションの
+   残りを数えている）。CFW の文書にも「読まずに切った ATR が次の ATR の前に
+   並んで出てくる」とあり、受信 FIFO に残りがある状態が実測されている。
+2. B-CAS の `90 30` 応答がそもそも 259 バイトを超える（T=1 の IFSD を超えた
+   ブロックを返している）。ただし `S(IFS 251)` は通っているので、
+   規約上は 259 を超えないはず。
+
+**1 が有力**: `CARD_SEND` の直前に `discard()` しているが、`drain` の cap 判定が
+先に効くと、古い残りと新しい応答が混ざった状態で数えられる。
+
+### 次にやること（順序）
+
+1. `CARD_RECV` の直前に `CARD_MODE` の上位 16 bit を読み、ゴミの量を実測する。
+   262 が「応答 259 + ゴミ 3」なのか「応答そのもの」なのかを分ける。
+2. 分ければ、`recv` の前に FIFO を空にする処理を足す（`discard()` を
+   `CARD_SEND` の前だけでなく `CARD_RECV` の直前にも入れる）。
+3. それでも 262 なら、上流の `BLOCK_MAX` を超える応答を前提に、
+   `need` の計算を `drain` の成否と切り離す（`rx_len >= 3` なら必ず `need` を出す）。
+
+### 参考: 主FR経路と ARM 経路の違い
+
+| 経路 | 1 ブロックに要する枠 | APDU の結果 |
+|---|---|---|
+| 主FR | 最低 5〜10 枠（`CARD_PUT` が 40B ずつ） | `need=0` で停止 |
+| ARM | 1 回の `ARM_CALL` + `ARM_REAP` | `op 4`（XFER）が 6000 ms 無応答 |
+
+ARM 経路は「1 回の依頼で完結」するので、主FR の枠数の問題は無い。
+ただし ARM の XFER も同じ `rx_buf`/`drain` を共有していれば同じ原因で止まる。
+`svc_card.c` が独自の受信処理を持つかは未確認。
