@@ -1569,3 +1569,65 @@ mainline の `dwc3`/`xhci-hcd` では、この DT295 のアイソクロナス要
 **Linux 起動・USB 認識・ネットワークはすべて達成済み。**
 残る唯一の障害は「DT295 からの実際のストリーム読み出し」。
 これは `pix-ts-legacy`（vendor バイナリ）と mainline の xHCI の相性問題。
+
+# 🔬 重大な訂正（round 155）: `pix-ts-legacy` 単体は正常に動作する
+
+### 実験
+
+稼働中の Linux（`PIX_TUNER=none`、SSH 可）で `pix-ts-legacy` を単体実行:
+
+```sh
+pix-ts-legacy --model dt295 -s terrestrial -c 17 \
+    -a /usr/share/pix-tuner -t 30
+```
+
+出力を SD の FAT に 1 行ずつ書き出し（`sync` 付き）。
+
+### 結果: **ハングしない。データが出ている**
+
+```
+$ wc -l < /mnt/sd/tuner-probe.log
+1605        ← 1605 行の TS データ
+
+$ ls -l /mnt/sd/tuner-probe.log
+310292      ← 310 KB
+
+$ ps | grep -c "[p]ix-ts-legacy"
+5           ← まだ稼働中
+
+$ nc -z 192.168.99.56 22  → SSH alive
+$ ping 192.168.99.56       → ping OK
+```
+
+**`pix-ts-legacy` は DT295 から 310KB のデータを読み出し、SSH も
+ネットワークも生きている。**
+
+### 訂正
+
+round 154 で「`pix-ts-legacy` が DT295 を open した瞬間にハング」と書いたが、
+**それは誤り。** `pix-ts-legacy` 単体は問題ない。
+
+ハングの原因は **`pix-stream` の別の部分**:
+
+```
+pix-stream-simple
+  ├─ wait_for_tuner
+  ├─ run_worker probe      ← pix-ts-legacy を起動（これは正常）
+  ├─ encode()              ← ffmpeg (m2v → h264_v4l2m2m)
+  ├─ fragment()            ← ffmpeg (TS → fMP4)
+  └─ streamer()            ← stb_streamer
+```
+
+**`encode()` の `h264_v4l2m2m`（ハードウェアエンコーダ）が疑わしい。**
+VPU の DMA が Ethernet と衝突する可能性がある。
+
+### 次の一手
+
+`encode`/`fragment`/`streamer` を 1 つずつ試す:
+
+1. `encode` だけ（`pix-ts-legacy | ffmpeg -c:v h264_v4l2m2m -f mpegts /dev/null`）
+2. `fragment` だけ
+3. `stb_streamer` だけ
+
+**VPU（`h264_v4l2m2m`）が最も疑わしい。** 2代目では動いていたが、3代目は
+同じ SoC でも個体差があるかもしれない。
