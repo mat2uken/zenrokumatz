@@ -178,11 +178,14 @@ class Console:
         got = ""
         end = time.time() + seconds
         while time.time() < end:
-            r, _, _ = select.select([self.fd], [], [], 0.1)
+            # A shorter select timeout drains the kernel tty buffer more often.
+            # At 0.1s the boot log of this kernel overflowed it and whole lines
+            # were lost, which made the abort's call trace unreadable.
+            r, _, _ = select.select([self.fd], [], [], 0.02)
             if not r:
                 continue
             try:
-                data = os.read(self.fd, 4096)
+                data = os.read(self.fd, 65536)
             except (BlockingIOError, OSError):
                 continue
             if data:

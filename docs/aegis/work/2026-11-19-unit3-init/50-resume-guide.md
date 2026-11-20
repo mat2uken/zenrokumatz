@@ -996,3 +996,54 @@ static int dwc3_meson_gxl_usb_post_init(struct dwc3_meson_g12a *priv)
 `usb_post_init`（otg_apply_mode）の 2 箇所を塞いだ。他に `set_phy_mode`
 （`dwc3_meson_gxl_set_phy_mode`）も glue を触る可能性があるので、次の起動で
 別の場所で例外が出たら同じように塞ぐ。
+
+## 追記（round 103）: 起動ログの欠落を解消（シリアル読み取りの高速化）
+
+### 問題
+
+起動ログが 2,601 バイトしか取れず、文字化けしていた:
+
+```
+wralue calculated using timer frequency.. 48.00 BogoMIPS
+t>                                                      ← 行の途中で切れる
+76] vgaarb: loaded
+```
+
+**`abort` の文字すら含まれていなかった。** 例外の全文を読む前に
+シリアルのカーネルバッファが溢れて失われていた。
+
+### 修正
+
+`tools/uboot_boot_linux.py` の `Console.pump`:
+
+```python
+# 修正前
+r, _, _ = select.select([self.fd], [], [], 0.1)
+data = os.read(self.fd, 4096)
+
+# 修正後
+r, _, _ = select.select([self.fd], [], [], 0.02)   # 0.1 → 0.02
+data = os.read(self.fd, 65536)                     # 4KB → 64KB
+```
+
+`select` の待ちを 5 倍細かくし、1 回の読み取り量を 16 倍にした。
+
+### 部分的に取れた情報（修正前のログから）
+
+コールトレースが次を示していた:
+
+```
+of_platform_bus_create+0x194/0x390
+bus_probe_device_deferred
+deferred_probe_work_func
+```
+
+**deferred probe（後回しにされた probe）で例外が起きている。**
+これは「依存が揃うのを待って後から probe される」ドライバ、つまり
+dwc3/dwc2 のいずれか。
+
+### 次の確認
+
+修正版の取得で完全なコールトレースを取り、例外の発生源を特定する。
+`dwc2` を無効化しても例外が残っているため、`dwc3` の別経路か、
+別ドライバの可能性がある。
