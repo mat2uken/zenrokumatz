@@ -1356,3 +1356,44 @@ python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-gxl-noextra.dtb --trace
 | `dwc3_core_probe+0x96c` で落ちる | round 37 の成功は再現しない（環境依存か偶発） |
 
 **既知の成功構成から始めるのが最も確実。**
+
+## 追記（round 127）: レジスタ調査用の `-clkon` DTB を作成。install-boot の Linux 経路も実証
+
+### 作成した DTB
+
+`meson-g12a-x96-max-p-clkon.dts`（`4bf330c1`）:
+
+```dts
+#include "meson-g12a-x96-max-p-ephy-4g.dts"
+
+&usb    { status = "okay"; dr_mode = "host"; };   // クロックを保持
+&dwc3   { status = "disabled"; };
+&dwc2   { status = "disabled"; };
+```
+
+**狙い**: glue ノードを有効に保つと `CLKID_USB` が取られ、
+`clk: Disabling unused clocks` で USB クロックが止まらない。子を無効化して
+いるので `usb_init` は走らず、例外にならない。これで Linux が起動し、
+`devmem` で USB レジスタを読めるはず。
+
+### `install-boot.py` の Linux 経路が動作
+
+```
+installing through RAM-boot Linux
+linux mount: /mnt/sd
+  meson-g12a-x96-max-p-clkon.dtb: installed and verified (4bf330c1)
+```
+
+**Android を経由せず、Linux から SD へ書き込めた。** ハッシュ検証も機能。
+
+### 未実施
+
+`-clkon` DTB での起動と `devmem` によるレジスタ読み取り。
+U-Boot の `md` を試みたが、autoboot が先に走って Android が起動した。
+
+### 次回
+
+1. U-Boot で `setenv bootdelay 10` 相当を使うか、`catch_prompt` で確実に止める
+2. `-clkon` DTB で起動し、`busybox devmem 0xffe09084 32` を読む
+3. 読めれば「レジスタは存在する（書き込みだけが失敗）」、Bus error なら
+   「領域自体が無い」

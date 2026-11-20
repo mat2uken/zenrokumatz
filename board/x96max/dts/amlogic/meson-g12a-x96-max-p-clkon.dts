@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// Unit 3 diagnostics: keep the USB clocks alive for register inspection.
+//
+// -nousb disables every USB node, so "clk: Disabling unused clocks" turns
+// g12a_usb_general off and the whole 0xffe09xxx/0xff50xxxx region answers with
+// a Bus error. That makes the region impossible to probe from Linux.
+//
+// This variant keeps the glue node enabled (it takes CLKID_USB and never runs
+// usb_init because no child probes) while dwc3 and dwc2 stay off, so userspace
+// still comes up and the USB registers can be read with devmem.
+#include "meson-g12a-x96-max-p-ephy-4g.dts"
+
+&usb {
+	status = "okay";
+	dr_mode = "host";
+};
+
+&dwc3 {
+	status = "disabled";
+};
+
+&dwc2 {
+	status = "disabled";
+};
