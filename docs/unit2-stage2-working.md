@@ -142,3 +142,26 @@ B25_STATS card_commands=7 failed=0
 - **106,382 パケットを複合**（`scrambled=0`）
 - TEI 0、`failed=0`
 - 45 秒の連続パイプラインで約 202 MB が流れた
+
+## IFD ハンドラをイメージに同梱する（2026-11-21）
+
+手で `/usr/lib/pcsc/drivers` に置いていたバンドルは、RAM 起動の再起動で
+消える。再起動後にカードが使えなくなるのはこれが原因だった
+（`Reader is unavailable` → `reset status=-1`）。
+
+そこで `package/cfw` に取り込んだ:
+
+| 追加 | 中身 |
+|---|---|
+| `package/cfw/ifd/Contents/Info.plist` | `CFWAllowAPDU=true`（B-CAS は APDU を使う）、`CFWCardRemovable=false` |
+| `package/cfw/ifd-src/` | IFD ハンドラのソース（上流の `sample/ifd` と `src/shared`） |
+| `cfw.mk` | `libifd_m2tv.so` をビルドし、`/usr/lib/pcsc/drivers/ifd-cfw-m2tv.bundle/` へ配置 |
+
+`CFW_DEPENDENCIES` に `pcsc-lite` を足した。
+
+### ビルドで踏んだこと
+
+- `docker run --name x96max-build` が前回の残骸と衝突して 125 で落ちる。
+  **ビルド前に `docker rm -f x96max-build` が要る。**
+- 中断したビルドがカーネルツリーを壊す（`asm/*.h` が見つからない）。
+  `output/build/linux-6.18.62` を消して再展開させるのが確実。

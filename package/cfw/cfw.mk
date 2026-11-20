@@ -21,7 +21,7 @@ CFW_SITE = $(BR2_EXTERNAL_X96MAX_PATH)/package/cfw/src
 CFW_SITE_METHOD = local
 CFW_LICENSE = MIT
 CFW_LICENSE_FILES = $(BR2_EXTERNAL_X96MAX_PATH)/package/cfw/LICENSE
-CFW_DEPENDENCIES = libusb
+CFW_DEPENDENCIES = libusb pcsc-lite
 
 # chipio.h needs this pair to compile its libusb transport in.
 CFW_DEFS = -D_POSIX_C_SOURCE=200809L -DCHIPIO_HAVE_LIBUSB
@@ -33,6 +33,12 @@ define CFW_BUILD_CMDS
 	$(TARGET_MAKE_ENV) $(TARGET_CC) $(TARGET_CFLAGS) -std=c11 \
 		$(CFW_DEFS) -I$(STAGING_DIR)/usr/include/libusb-1.0 \
 		-o $(@D)/ts_grab $(@D)/ts_grab.c $(TARGET_LDFLAGS) -lusb-1.0 -pthread
+	$(TARGET_MAKE_ENV) $(TARGET_CC) $(TARGET_CFLAGS) -std=c11 -fPIC -shared \
+		$(CFW_DEFS) -I$(STAGING_DIR)/usr/include/libusb-1.0 \
+		-I$(BR2_EXTERNAL_X96MAX_PATH)/package/cfw/ifd-src \
+		-o $(@D)/libifd_m2tv.so \
+		$(BR2_EXTERNAL_X96MAX_PATH)/package/cfw/ifd-src/ifd/ifd_m2tv.c \
+		$(TARGET_LDFLAGS) -lusb-1.0 -ldl -pthread
 endef
 
 define CFW_INSTALL_TARGET_CMDS
@@ -40,5 +46,10 @@ define CFW_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/ts_grab $(TARGET_DIR)/usr/bin/pix-cfw-grab
 	$(INSTALL) -D -m 0644 $(BR2_EXTERNAL_X96MAX_PATH)/package/cfw/frc1-dt295.frc \
 		$(TARGET_DIR)/usr/share/cfw/frc1-dt295.frc
+	$(INSTALL) -D -m 0644 $(BR2_EXTERNAL_X96MAX_PATH)/package/cfw/ifd/Contents/Info.plist \
+		$(TARGET_DIR)/usr/lib/pcsc/drivers/ifd-cfw-m2tv.bundle/Contents/Info.plist
+	$(INSTALL) -D -m 0755 $(@D)/libifd_m2tv.so \
+		$(TARGET_DIR)/usr/lib/pcsc/drivers/ifd-cfw-m2tv.bundle/Contents/Linux/libifd_m2tv.so
 endef
+
 $(eval $(generic-package))
