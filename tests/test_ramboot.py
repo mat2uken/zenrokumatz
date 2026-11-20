@@ -472,6 +472,46 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class CollectBootTool(unittest.TestCase):
+    """Collecting the boot state must work even when the box says nothing.
+
+    The console and the network both stop after usb start, so the SD snapshot is
+    the fallback. That path has to mount the card and read the file, and it must
+    report clearly when the file is absent.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "collector", Path(__file__).resolve().parents[1] / "tools/collect-boot.py")
+        cls.tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.tool)
+
+    def test_reports_a_missing_snapshot_without_raising(self):
+        with tempfile.TemporaryDirectory() as directory:
+            volume = Path(directory)
+            with patch.object(subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 0, "", "")):
+                with patch.object(self.tool, "plistlib") as fake:
+                    fake.loads.return_value = {"MountPoint": str(volume)}
+                    self.assertIsNone(self.tool.read_from_card("/dev/disk99"))
+
+    def test_prints_the_snapshot_when_present(self):
+        import contextlib, io
+        with tempfile.TemporaryDirectory() as directory:
+            volume = Path(directory)
+            (volume / "netdiag.txt").write_text("carrier: 0\noperstate: down\n")
+            with patch.object(subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 0, "", "")):
+                with patch.object(self.tool, "plistlib") as fake:
+                    fake.loads.return_value = {"MountPoint": str(volume)}
+                    buffer = io.StringIO()
+                    with contextlib.redirect_stdout(buffer):
+                        text = self.tool.read_from_card("/dev/disk99", keep=True)
+            self.assertIn("operstate: down", text)
+            self.assertIn("operstate: down", buffer.getvalue())
+
+
 class InstallBootTool(unittest.TestCase):
     """install-boot.py must fail loudly when the box is unreachable.
 

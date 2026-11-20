@@ -1434,3 +1434,75 @@ ethtool eth0 2>/dev/null | head -5
 
 これで「リンクは上がっているが DHCP が失敗」か「リンク自体が落ちている」か
 分かる。
+
+# 🎉 解決（round 153）: `pix-stream` の USB 操作がネットワークを壊していた
+
+### 決定的な実験
+
+`PIX_TUNER=none`（`wait_for_tuner` が待機するだけで USB を触らない）にした
+rootfs で起動したところ、**SSH が通った**:
+
+```
+ssh is up
+
+$ uname -r
+6.18.62
+
+$ ip -4 addr show eth0
+inet 192.168.99.56/24 brd 192.168.99.255 scope global eth0
+
+$ lsusb
+Bus 001 Device 002: ID 06b8:103b Pixela Corp. PIX-DT295     ← DT295 認識
+
+$ cat /dev/shm/netdiag.txt
+[17.543] meson8b-dwmac eth0: configuring for phy/rgmii link mode
+[20.956] meson8b-dwmac eth0: Link is Up - 1Gbps/Full - flow control rx/tx
+carrier: 1
+operstate: up
+```
+
+**ネットワークも USB も完全に正常。**
+
+### 原因
+
+**`pix-stream`（`PIX_TUNER=dt295`）が USB を操作すると、Ethernet と
+シリアルが死ぬ。**
+
+`pix-stream` の起動時の流れ:
+```
+S97pix-stream → pix-stream-simple → wait_for_tuner（DT295 を発見）
+             → run_worker probe → pix-ts-legacy が DT295 を open
+             → 何らかの USB 操作でイーサネット/コンソールが停止
+```
+
+`PIX_TUNER=none` では `wait_for_tuner` が待機するだけで、`pix-ts-legacy` が
+DT295 を open しない。**そのため USB を触らず、ネットワークも無事。**
+
+### したがって
+
+**Linux 起動・ネットワーク・DT295 認識のすべてが成功している。**
+残る問題は「`pix-stream` が DT295 を open したときに何が壊れるか」。
+
+### `pix-ts-legacy` が疑わしい
+
+`pix-ts-legacy` は vendor のファームウェアを使って DT295 を操作する。
+これが USB のアイソクロナス転送を開始したとき、`meson8b-dwmac` の
+DMA と競合する可能性がある（同じ AHB バス上）。
+
+### 次の検証
+
+1. `PIX_TUNER=dt295` に戻す（本来の設定）
+2. `pix-stream` を起動して、**ネットワークがいつ死ぬか**を観察
+3. 死ぬタイミングで `dmesg` を確認（`netdiag` は 20 秒後なので、
+   もっと早い段階の記録が必要かもしれない）
+
+### 到達点（更新）
+
+| 項目 | 状態 |
+|---|---|
+| Linux RAM 起動 | **達成** |
+| ネットワーク（1Gbps） | **達成** |
+| DT295 認識 | **達成** |
+| SSH | **達成** |
+| **録画パイプライン** | **`pix-stream` 起動時にネットワークが停止** |
+| NAS 保存・CM カット | 未達 |
