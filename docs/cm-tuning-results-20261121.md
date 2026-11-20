@@ -127,6 +127,23 @@ pix-cm-worker / @1 / @2 / @3 を再起動 → 4ワーカーすべて active
 
 配備後の実績: 実ジョブが新リリースで完走（`release: 20261121-cpu-tune-01`）。
 
+実処理で正常に CM カットされることの確認: CM を含む既知の実録画を fMP4 にして
+本番キューへ投入し、本番ワーカーが処理することを確かめた。
+
+```
+job:      tunetest-...        release: 20261121-cpu-tune-01
+status:   completed           reason:  cut_and_verified
+validation: verified=true  full_decode_ok=true  verification_mode=packet_hashes
+            expected_video_frames=30222  output_video_frames=30222  video_hash_mismatches=0
+            expected_audio_packets=47269  output_audio_packets=47269  audio_hash_mismatches=0
+            video_max_pts_error_ms=0.0    audio_max_pts_error_ms=0.0
+cuts:     4 箇所
+出力:     1440x1080 H.264 / 30,222 フレーム / 1008.4 秒（ffprobe で再生可能を確認）
+```
+
+確認後、このテストで作られた録画フォルダ・`.media` の実体・ジョブ状態は削除し、
+ライブラリは元の状態に戻した。
+
 ### ロールバック
 
 ```
