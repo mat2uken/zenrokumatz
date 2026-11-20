@@ -325,3 +325,49 @@ pix-stream は起動するがチューナーを探さず待機するだけにな
 `panic_on_oops=1` を入れたので、oops が起きれば panic → 8 秒で再起動する。
 **再起動を繰り返しているなら、シリアルログに panic の痕跡が残る**。
 今回のログには `panic` の文字が無いので、oops ではない。
+
+## 追記（round 145）: 切り分け用の「USB を触らない rootfs」
+
+### 目的
+
+`usb start` 付きで Linux は起動するが、シリアル入力もネットワークも
+死んでいる（round 144）。`pix-stream` が USB を触る処理で何かを壊した
+可能性を切り分ける。
+
+### 方法の比較
+
+| 案 | 変更 | リスク |
+|---|---|---|
+| `S97pix-stream` を削除 | overlay を一時変更 → リビルド | `pix-logo` などが失敗する可能性 |
+| **`PIX_TUNER` を無効値に** | **設定 1 行** | **`wait_for_tuner` が待機するだけ。USB を触らない** |
+| `PIX_DECRYPT=1`（存在しない値） | 設定 1 行 | `wait_for_tuner` はスキップされるが `stb_streamer` が動く |
+
+**`PIX_TUNER` 案が最小で安全。** `wait_for_tuner` を round 77 で実装済みで、
+チューナーが見つからなければ**無期限に待機**する（3 回失敗して
+`dt295_recover` → `pix_usb_reset` に至る経路を避ける設計）。
+
+```sh
+PIX_TUNER=none
+```
+
+これで:
+- `pix-stream` は起動する
+- `wait_for_tuner` が `06b8:103b` を探し続ける（見つからない）
+- **USB を一切触らない**
+- `dt295_recover` も走らない
+
+### 判定
+
+| 結果 | 意味 |
+|---|---|
+| シリアルとネットワークが**復活** | `pix-stream` の USB 操作が原因 |
+| それでも**死んでいる** | 別の原因（Ethernet ドライバ、電源など） |
+
+### 手順
+
+1. `board/x96max/ramboot-unit3-overlay/etc/default/pix-stream-linux` の
+   `PIX_TUNER=dt295` を `PIX_TUNER=none` に変更
+2. NAS でビルド（数分）
+3. SD へ書き込み（Android か Linux 経由）
+4. 起動して確認
+5. **確認後、`PIX_TUNER=dt295` に戻す**
