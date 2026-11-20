@@ -69,3 +69,18 @@ CFW を入れ直すときは、先に S97 と S98 を止め、USB を電源切�
   （`totalDropped` が増える）。NAS が読んでいる間は 0 のまま。
 - ガード（NAS 側 `pix-stb-guard`）は `enabled=false` のノードを復旧しない。
   CFW で作業するときは管理画面で止めておく。
+
+## 運用に戻した（2026-11-21）
+
+NAS の管理画面から 2代目を `enabled=true` に戻した。
+
+```
+status   channel=BS09_0  capturing=true  readers=1  spoolUsedBytes=0  totalDropped=38
+manager  enabled=True  state=recording  pushed=254
+```
+
+- `readers=1` — NAS が読んでいる
+- `spoolUsedBytes=0` — 溜まっていない（追いついている）
+- `totalDropped` は 38 で止まったまま（読者がいない間に増えた分。以後は増えていない）
+
+**2代目は CFW 経路で録画を続けている。**
