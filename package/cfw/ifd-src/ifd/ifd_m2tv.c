@@ -468,6 +468,28 @@ static RESPONSECODE power_up(struct slot *s)
     }
     rc = card_on(&s->link, s->atr, &s->natr, ATR_LIMIT_MS);
     if (rc != FRQ1_ST_OK) {
+        /*
+         * THE FIRST CARD_ON AFTER A COLD START IS OFTEN IGNORED (measured on a
+         * PIX-DT295 running CFW: alternating CARD_OFF / CARD_ON, the card
+         * answers every other time).  The firmware reports stage 4 (power-up
+         * in progress) and never delivers an ATR, however long we wait: 8 s
+         * timed out exactly like 3 s did.
+         *
+         * docs/card.md lists this as an open question.  Retrying here turns it
+         * into a one-off cost at power-up instead of a failure the caller sees,
+         * which matters because pcscd reports it as "no smart card inserted"
+         * and stops asking.
+         */
+        LOG("power up: %{public}s; retrying", s->link.err);
+        (void)card_off(&s->link);
+        rc = card_on(&s->link, s->atr, &s->natr, ATR_LIMIT_MS);
+        if (rc != FRQ1_ST_OK) {
+            LOG("power up: %{public}s; retrying again", s->link.err);
+            (void)card_off(&s->link);
+            rc = card_on(&s->link, s->atr, &s->natr, ATR_LIMIT_MS);
+        }
+    }
+    if (rc != FRQ1_ST_OK) {
         LOGE("power up: %{public}s", s->link.err);
         (void)rc_from_card(s, rc);
         drop_card(s);
