@@ -254,3 +254,43 @@ glue の probe を通しつつ、`USB3 ports: 1` の経路（`usb3_init`）で�
 **`usb3_init` は `usb_init_glue` の中にある**ので、`skip-glue-init` で
 スキップされるはず。別の場所（`set_phy_mode` など）で落ちている可能性。
 完全なコールトレースが必要。
+
+## 追記（round 110）: `-phyonly` の解釈は誤り。skip-glue-init が入っていなかった
+
+### 継承関係の確認
+
+```
+phyonly.dts  →  nousb.dts  →  ephy.dts  →  p.dts
+```
+
+**`gxl.dts`（`skip-glue-init` と `dwc2` 無効化を含む）を継承していない。**
+
+つまり round 106–107 で使った `-phyonly` DTB には:
+
+- `amlogic,skip-glue-init` が**無い**
+- `&dwc2 { status = "disabled"; }` が**無い**（`-nousb` が入れているので dwc2 は無効）
+
+したがって round 107 の「PHY を有効にすると glue が dwc3 を起こす」は正しい観察
+だが、「PHY 単体の例外」ではなかった。**glue がスキップされていない構成**での
+結果だった。
+
+### round 106 の結論を訂正
+
+「PHY 単体で例外 → 原因は `usb2_phy` の regmap 読み取り」は**誤り**。
+`skip-glue-init` が無いので、glue の `usb_init_glue` → `usb3_init` が走り、
+そこで例外になった可能性が高い。
+
+### 正しい切り分け
+
+PHY の寄与を見たいなら、`gxl.dts` を継承した上で PHY を有効にした DTB が必要。
+`-phyonly` を作り直すべき。
+
+### 現在の診断パッチ（0005）の価値
+
+`DBG usb_init_glue node=... skip=...` が入ったので、**次回の起動で
+`skip` の値が 1 か 0 かが分かる**。これで:
+
+- `skip=1` で例外 → glue はスキップされている。真の原因は別（PHY か post_init）
+- `skip=0` → プロパティが届いていない（DTS の問題）
+
+**推測を重ねるより、この 1 行を見るのが確実。**
