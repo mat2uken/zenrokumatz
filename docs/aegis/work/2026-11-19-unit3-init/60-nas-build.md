@@ -557,3 +557,65 @@ cp /tmp/s output/ramboot-unit3/SHA256SUMS
 ```
 
 `--only` を付けない（Image・rootfs・DTB をすべて最新にする）。
+
+## 追記（round 151）: SHA256SUMS が古いままだった（重大な手順ミス）
+
+### 発見
+
+`write-sd.py --update-boot` で書き込んだところ:
+
+```
+Verified boot file: Image SHA-256=c424cb56...
+Verified boot file: rootfs.cpio.uboot SHA-256=426c8ac2...
+```
+
+**Mac のファイルは最新（`b8b68100`、`35567de0`）なのに、古い値が書かれた。**
+
+### 原因
+
+`write-sd.py` は `SHA256SUMS` のハッシュを**期待値として使う**。
+`SHA256SUMS` が NAS ビルド前の古い値（`c424cb56`、`426c8ac2`）のままだったため、
+**古い値で「検証成功」と判定され、実際には古い内容がコピーされた**。
+
+さらに悪いことに、`write-sd.py` は**マニフェストのハッシュと一致することを
+確認してからコピーする**実装なので、ファイルとマニフェストが不一致だと
+本来はエラーになるはず。しかし今回は「マニフェストが古い＝それが正」と
+扱われた。
+
+### 修正
+
+`SHA256SUMS` を**実際のファイルから再生成**した:
+
+```sh
+cd output/ramboot-unit3
+shasum -a 256 Image meson-g12a-x96-max-p*.dtb rootfs.cpio.uboot > SHA256SUMS
+```
+
+正しい値:
+
+```
+b8b68100798cb66e  Image
+b031dc1621706882  meson-g12a-x96-max-p-ephy-4g.dtb
+35567de08a0ea07e  rootfs.cpio.uboot
+```
+
+### 教訓
+
+**NAS から成果物を取得したら、必ず SHA256SUMS を再生成する。**
+マニフェストが古いと、古い内容が「検証済み」として書き込まれる。
+
+### 未完了
+
+SD が `diskutil eject` 後に再認識されず、正しい内容を書き込めていない。
+カードの抜き差しが必要。
+
+### 再開手順（SD が認識されたら）
+
+```sh
+cd ~/Desktop/work/X96MaxLinuxTSEnc
+cp output/ramboot-unit3/ramboot.img output/ramboot-unit3/sdcard.img
+H=$(shasum -a 256 output/ramboot-unit3/sdcard.img | cut -d' ' -f1)
+echo "$H  sdcard.img" >> output/ramboot-unit3/SHA256SUMS
+/usr/bin/python3 scripts/write-sd.py --image output/ramboot-unit3/sdcard.img \
+    --device /dev/diskN --update-boot
+```
