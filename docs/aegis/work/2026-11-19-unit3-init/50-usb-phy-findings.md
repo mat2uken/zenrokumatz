@@ -1261,3 +1261,43 @@ python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-ephy-4g.dtb \
 
 `panic_on_oops=1 panic=8` を bootargs に追加。oops で箱が固まる代わりに
 自動再起動する（毎回の電源再投入を避けるため）。
+
+## 追記（round 139）: `usb start` 成功の再現条件を整理
+
+### 成功した 2 回
+
+| 回 | DTB | Image | パッチ | `usb start` | 結果 |
+|---|---|---|---|---|---|
+| round 73 | `gxl`（`usb_ctrl` のみ） | `b3099f99` | 0001+0002+旧0003 | **あり** | xhci 到達 |
+| round 137 | `ephy-4g` | `b8b68100` | 0001+0002+0008 | **あり** | **ユーザー空間まで起動** |
+
+**共通点: `usb start` を実行している。**
+
+### 失敗した回（`usb start` なし）
+
+| 回 | DTB | Image | 結果 |
+|---|---|---|---|
+| round 116 | `gxl` | `29ecb5ec` | `dwc3_core_probe+0x96c` |
+| round 123 | `gxl-noextra` | `c424cb56` | `usb_init_glue+0x38` |
+| round 125 | `ephy-4g` | `c424cb56` | `usb_init_glue+0x38` |
+| round 128 | `clkon` | `29ecb5ec` | `usb_init_glue+0x38` |
+
+**すべて `usb start` なし。**
+
+### つまり
+
+**`usb start` の有無が成否を分ける。** DTB やパッチの違いより決定的。
+
+### 次に確認すべきこと
+
+**`usb start` だけで十分か、Image のパッチも必要か。**
+
+- `ephy-4g` + `b8b68100`（0008 入り）+ `usb start` → **成功**
+- `ephy-4g` + `c424cb56`（0008 なし）+ `usb start` → **未検証**
+
+もし後者でも成功するなら、**0008（`ddr` クロック）は不要**。最小構成が絞れる。
+
+### 現在の課題
+
+起動後のネットワーク不通。`panic_on_oops=1 panic=8` で自動再起動するので、
+次回の起動で「oops が起きているか」がログから分かる。
