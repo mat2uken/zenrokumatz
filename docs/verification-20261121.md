@@ -26,7 +26,38 @@ stb_linux_pipe: boundary service=101 event=19083 name=大相撲（２０２６�
 
 2代目は境界を正しく送出している。
 
-### ただし公開（`.media` への移動）が 19:51 以降止まっている
+### 公開の仕組みが分かった（当初「止まっている」と誤認した）
+
+`zenroku/recordings/.media` を見て「19:51 以降、公開が止まっている」と
+書いたが、**これは誤りだった**。録画は `.media` ではなく
+**CM 処理キュー（`/dev/shm/pix_cm_queue`）** に渡り、`cm_service.py` が
+処理してから番組フォルダへ書かれる。
+
+`journalctl _PID=<recorder>` で実際の流れが読めた:
+
+```
+00:45:03  boundary: service=101 event=19083 start=1795189500000 dur=1500000
+00:45:06  cm fmp4 queued: producer=pix-stream-recorder-cm-fmp4-v2 pid=1138491
+          input=/dev/shm/pix_stream/staging_1138491_1795187300611.fmp4
+```
+
+完了ジョブ（`/dev/shm/pix_cm_queue/completed/fd884d45-...json`）に
+保存先が書かれている。
+
+**実際に保存されたファイル:**
+
+```
+/mnt/xblk/video/zenroku/recordings/2026/11/21/
+  BS_400101_ＮＨＫ　ＢＳ/
+    000820_ヘチ　王座への道（１７）__fd884d45-…/
+      20261121_000820_ヘチ　王座への道（１７）__p01.mp4   1.80 GB
+       （同名の .json も。service / program / recordingId / partId 入り）
+```
+
+局名・番組名・日時が正しく付いている。**2代目の CFW 経路で録画が
+完成している。**
+
+### （当初の誤認の記録）`.media` だけ見て判断した
 
 `zenroku/recordings/.media` の最終公開は **2026-11-20 19:51**。以後、
 完了したセグメントが staging に残ったままになっている。
