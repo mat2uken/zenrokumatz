@@ -1631,3 +1631,82 @@ VPU の DMA が Ethernet と衝突する可能性がある。
 
 **VPU（`h264_v4l2m2m`）が最も疑わしい。** 2代目では動いていたが、3代目は
 同じ SoC でも個体差があるかもしれない。
+
+# 🎯 根本原因を特定（round 156）: VPU（h264_v4l2m2m）がシステム全体をハングさせる
+
+### 決定的な実験
+
+稼働中の Linux（`PIX_TUNER=none`、SSH・1Gbps・DT295 認識すべて正常）で:
+
+**1. `pix-ts-legacy` 単体**
+
+```sh
+pix-ts-legacy --model dt295 -s terrestrial -c 17 -a /usr/share/pix-tuner -t 15
+```
+
+```
+"locked":1, "cn_raw":1797
+"tables_ready":1, "program_count":3
+"packets":31809, "confirmed_bytes":5959668
+"have_pat":1
+```
+
+**6MB のデータを読み出し、TS テーブルも取得。SSH/ping は生きている。**
+→ **DT295 からの受信は完全に正常。**
+
+**2. VPU エンコード（`h264_v4l2m2m`）**
+
+```sh
+ffmpeg -f mpegts -i /tmp/t.ts -vf "bwdif=mode=send_frame,format=nv12" \
+    -c:v h264_v4l2m2m -b:v 2000k -f mpegts /tmp/o2.ts
+```
+
+→ **即座にハング**
+
+```
+SSH DEAD
+ping NG
+```
+
+### 確定した原因
+
+**`h264_v4l2m2m`（Amlogic VPU ハードウェアエンコーダ）を開始した瞬間に、
+システム全体がハングする。**
+
+典型的な症状: エンコード開始 → 数秒以内に Ethernet・UART・シェルが停止。
+
+### 考えられる理由
+
+1. **VPU の DMA がメモリバスを占有**し、Ethernet の DMA が飢餓状態になる
+2. **VPU ドライバ（`meson-vdec` / `hantro` / `v4l2-mem2mem`）の初期化不良**。
+   このカーネル（6.18.62）で Amlogic G12A/SM1 の VPU サポートが不完全
+3. **`amlogic-vpu` のクロック/リセット**が他の周辺と共有されており、
+   有効化時に衝突
+
+### 2代目で動いていた理由
+
+2代目（`g12a_u211_4g`）は同じ SoC だが、**録画が実際に動いていた記録がある**
+（`restart-recipe-persist-result.log` に DT295 で 555 万パケット）。
+つまり VPU エンコードも動いていた。
+
+**3代目だけが落ちる**のは:
+- 個体差（VPU のリビジョン）
+- カーネルのバージョン差（2代目は別のカーネルで動いていた可能性）
+- 電源容量（VPU 起動時の消費電流増加で給電が不安定）
+
+### 回避策
+
+**ハードウェアエンコードを使わない。** ソフトウェアエンコードなら
+VPU を触らないので、ハングしないはず:
+
+```sh
+-c:v libx264   # または -c:v mpeg2video でパススルー
+```
+
+ただし CPU 負荷が高い。3代目の CPU（4 コア A55）で実時間を保てるかは要検証。
+
+### 次の一手
+
+1. **`-c:v libx264` で試す**（ソフトウェアエンコード）
+2. 実時間を保てれば、これで録画パイプラインが完成する
+3. 保てないなら、VPU をデバッグ（`dmesg` を SD に逃がしてハング直前を見る）
