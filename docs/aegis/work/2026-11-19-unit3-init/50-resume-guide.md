@@ -1304,3 +1304,55 @@ python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-gxl.dtb --trace 60
 
 `Image` = `29ecb5ec`（7 パッチ、4 マーカー入り）。
 dwc3 の clocks/resets も入っている（round 115 の変更、効果は未確認）。
+
+## 追記（round 122）: round 37 と同一構成の Image をビルドできた
+
+### 構成
+
+| 項目 | 値 |
+|---|---|
+| パッチ | **0001 + 0002 のみ**（0003-0007 は `work/patch-backup/` へ退避） |
+| `Image` | **`c424cb56`** |
+| 文字列検索 | `amlogic,skip-glue-init` = **False**、`DBG` = **False**、`port-power-control` = **False** |
+| DTB | `meson-g12a-x96-max-p-gxl-noextra.dtb` = `fcd9e79f` |
+
+**round 37 で成功した構成と一致。**
+
+### ビルドが通らなかった原因（解決済み）
+
+3 回続けて `exit=137`（OOM）。原因は **Mac の空きメモリが 95MB** まで
+逼迫していたこと。`pixel-tpu`（16GiB）が動いており、Colima の VM も
+7.5GB を消費していた。
+
+`pixel-tpu` を停止し、`colima stop/start --profile x96max-linux --cpu 4
+--memory 10` で作り直したところ、`JOBS=3` で成功した。
+
+### 副次的な修正
+
+`scripts/build-linux.sh` が `docker --context colima-x96max-linux` を
+ハードコードしていたため、context のメタデータが壊れると使えなかった。
+`DOCKER_HOST` で上書きできるようにした:
+
+```sh
+if [[ -n ${DOCKER_HOST:-} ]]; then
+    docker_target=""
+else
+    docker_target="--context $context"
+fi
+```
+
+### 次の検証（電源投入後）
+
+```sh
+cd ~/Desktop/work/X96MaxLinuxTSEnc
+python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-gxl-noextra.dtb --trace 60
+```
+
+### 判定
+
+| 観察 | 意味 |
+|---|---|
+| `xhci-hcd: io mem 0xff500000` | **round 37 が再現**。ここから 1 つずつ差分を積む |
+| `dwc3_core_probe+0x96c` で落ちる | round 37 の成功は再現しない（環境依存か偶発） |
+
+**既知の成功構成から始めるのが最も確実。**
