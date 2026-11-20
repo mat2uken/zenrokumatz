@@ -512,6 +512,7 @@ static int ecm_purchased(const uint8_t *resp, int len)
 static int handle_frame(Card *c, Frame *req, Frame *resp)
 {
     int st = 0;
+    LONG ret;
     int rlen = 0;
     uint8_t answer[MAX_APDU];
     int fault;
@@ -531,6 +532,36 @@ static int handle_frame(Card *c, Frame *req, Frame *resp)
             st = card_recover_locked(c);
         } else if (!c->connected) {
             st = card_open_locked(c);
+        } else {
+            /*
+             * A reset has to mean reset.  torne-b25 sends RESET and then the
+             * 90 30 init, and expects the card to have been power-cycled in
+             * between: the CFW card path rejects a block when the firmware is
+             * still holding the previous exchange (measured, 2026-11-21).
+             * Leaving an already-open card alone made the init fail with
+             * "Transaction failed" even though a fresh connection worked.
+             */
+            DWORD protocol = 0;
+
+            ret = SCardReconnect(c->card, SCARD_SHARE_EXCLUSIVE,
+                                 SCARD_PROTOCOL_T1, SCARD_RESET_CARD, &protocol);
+            if (ret == SCARD_S_SUCCESS) {
+                c->atr_len = 0;
+                {
+                    DWORD n = sizeof(c->atr);
+                    if (SCardGetAttrib(c->card, SCARD_ATTR_ATR_STRING, c->atr, &n)
+                        == SCARD_S_SUCCESS)
+                        c->atr_len = (int)n;
+                }
+                clear_caches(c);
+                c->fault = 0;
+            } else {
+                st = card_recover_locked(c);
+                if (st) {
+                    pthread_mutex_unlock(&c->lock);
+                    return st;
+                }
+            }
         }
         pthread_mutex_unlock(&c->lock);
         return st;
