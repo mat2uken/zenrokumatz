@@ -137,3 +137,63 @@ USB を段階的に有効化して、どのノードが例外を出すかを特�
 到達できれば、シリアルに頼らず `dmesg` から完全なコールトレースを取れる。**
 ただし現状は例外で到達前に停止するため、まず「例外を出さずに起動できる
 最小の USB 構成」を探す。
+
+## 追記（round 106）: PHY 単体でも例外 → 原因は USB2 PHY の regmap 読み取り
+
+### 発見した経路（Linux から直接 SD を書けるようになった）
+
+`-nousb` DTB で Linux が動作している状態で、**Linux から SD をマウントして
+書き込める**ことが分かった:
+
+```
+# cat /proc/partitions
+179  0  31166976  mmcblk0        ← SD カード
+179  1    131072  mmcblk0p1      ← FAT 区画
+
+# mount -t vfat /dev/mmcblk0p1 /mnt/sd
+# df -h /mnt/sd
+/dev/mmcblk0p1  126.0M  74.5M  51.5M  59%  /mnt/sd
+```
+
+`dd` も `mount` も busybox にある。**Android へ戻さずに DTB を差し替えられる。**
+
+### 段階的切り分け: PHY 単体で例外
+
+`meson-g12a-x96-max-p-phyonly.dts` を作成（`-nousb` から PHY だけ有効化）:
+
+```dts
+#include "meson-g12a-x96-max-p-nousb.dts"   // usb, dwc3, dwc2, usb2_phy0/1 は無効
+
+&usb2_phy0 { status = "okay"; };
+&usb2_phy1 { status = "okay"; };
+```
+
+起動結果: **ネットワーク不通、SSH 不通 = 例外**。
+
+```
+regmap_mmio_read32le+0x8
+bus_probe_device_deferred
+deferred_probe_work_func
+```
+
+**dwc3 も dwc2 も無効なのに、PHY 単体で落ちる。** つまり例外の発生源は
+**`usb2_phy0` / `usb2_phy1` の regmap 読み取り**（`0xff636000` / `0xff63a000`）。
+
+### 問題の階層が明確になった
+
+| 構成 | 結果 |
+|---|---|
+| 全 USB 無効（`-nousb`） | **正常起動**（例外なし） |
+| **PHY のみ有効** | **例外**（`regmap_mmio_read32le`） |
+| PHY + glue（`-p-gxl`） | 例外（`dwc2_driver_probe` など） |
+
+**USB2 PHY の regmap がこの基板で読めない。** mainline の
+`phy-meson-g12a-usb2.c` は `reg` の最初の領域（`0xff636000`）を regmap として
+使い、そこから読む。この読み取りが synchronous external abort になる。
+
+### 次の一手
+
+PHY ドライバがどのレジスタを読むかを確認し、そのアドレスが本当に読めるかを
+`devmem` で調べる（`-nousb` で Linux が動くので確認できる）。
+`0xff636000` は以前 `busybox devmem` で `0x40057000` が読めていたので、
+**別の領域**（`reg` の 2 番目以降）が問題の可能性がある。

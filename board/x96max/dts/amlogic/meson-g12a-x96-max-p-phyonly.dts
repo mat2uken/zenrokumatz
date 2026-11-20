@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// Unit 3 diagnostics: enable the USB2 PHYs but keep both controllers off.
+//
+// The -nousb DTB reaches userspace with no exceptions, so everything except USB
+// is sound. This build adds back only the PHY drivers: if the abort returns, it
+// comes from the PHY setup at 0xff636000/0xff63a000 rather than from dwc3's
+// glue writes or the xhci port logic. If it stays clean, the PHYs are fine and
+// the controller side is what faults.
+#include "meson-g12a-x96-max-p-nousb.dts"
+
+&usb2_phy0 {
+	status = "okay";
+};
+
+&usb2_phy1 {
+	status = "okay";
+};
