@@ -826,3 +826,61 @@ Call trace:
 
 **`0xffe09004` が書ける条件**を見つけるか、`USB_R1` を書かずに
 `0xff500000` の窓を開ける方法が必要。
+
+## 追記（round 124）: 1代目・2代目は「素の G12A glue」で USB が動いている
+
+### 決定的な発見
+
+`board/x96max/ramboot-unit1.fragment` と `ramboot-unit2.fragment` は、
+どちらも同じ DTB を使っている:
+
+```
+BR2_LINUX_KERNEL_INTREE_DTS_NAME="... meson-g12a-x96-max-p-ephy-4g"
+```
+
+**`meson-g12a-x96-max-p-ephy-4g.dtb` = 標準の `amlogic,meson-g12a-usb-ctrl`**
+（GXL でも G12A の特殊版でもない、素の G12A glue）。
+
+```dts
+usb@ffe09000 {
+	compatible = "amlogic,meson-g12a-usb-ctrl";
+	clocks = <&clkc CLKID_USB>;      /* clock-names なし */
+	dr_mode = "host";
+};
+```
+
+### 意味すること
+
+**1代目と2代目は、この素の G12A glue で USB が動いている。** 2代目は
+DT295 で実際に録画していた（NAS に `state: recording` の記録あり）。
+
+つまり:
+
+- `0xffe09000` を glue として扱う主線の解釈で**問題なく動く**
+- `u2p_regmap` も `USB_R1` も**書けている**
+- 私が round 54/55 で見た「`USB_R1` で例外」は、**別の要因**（当時 DTB に
+  `extra-usb-port` を追加していた等）で起きていた可能性
+
+### 遠回りの総括
+
+私はこの 60 ラウンド以上、`gxl` 互換、`skip-glue-init`、`dwc2` 無効化、
+`clocks`/`resets` 追加、`PPC` など**多数の回避策**を積み重ねてきた。
+しかし **1代目・2代目は何もせず素の G12A で動いている**。
+
+**答えは「素の `ephy-4g` に戻すこと」**の可能性が高い。
+
+### 次の検証
+
+1. パッチを 0001 + 0002 のみ（round 37 構成）
+2. DTB を **`meson-g12a-x96-max-p-ephy-4g.dtb`**（`b031dc16`）
+3. 起動して `xhci-hcd` が動くか確認
+
+round 54/55 で `ephy-4g` が失敗した記録があるが、そのときは DTB に
+`extra-usb-port` を足していた。**素の `ephy-4g` そのものは試していない**
+（round 54 のログを確認する必要がある）。
+
+### 注意
+
+3代目の板は 4GiB ではなく 2GiB（`Machine model: X96Max_P (G12A, 2 GiB, ...)`）。
+`ephy-4g` は 4GiB 用の名前だが、メモリ量の違いは DTB の USB 設定に影響しない
+はず。ただし要確認。
