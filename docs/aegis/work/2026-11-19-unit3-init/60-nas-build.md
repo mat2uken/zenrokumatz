@@ -619,3 +619,54 @@ echo "$H  sdcard.img" >> output/ramboot-unit3/SHA256SUMS
 /usr/bin/python3 scripts/write-sd.py --image output/ramboot-unit3/sdcard.img \
     --device /dev/diskN --update-boot
 ```
+
+## 解決（round 152）: `ramboot.img` が古かった。NAS から取り直して書き込み成功
+
+### 真の原因
+
+```
+ramboot.img:  11月21日 00:00   ← Image(01:39)・rootfs(02:09) より前
+sdcard.img:   02:12（ramboot.img のコピーなので中身は 00:00 のもの）
+```
+
+**`ramboot.img`（FAT イメージ）が最新の Image/rootfs を含んでいなかった。**
+`write-sd.py --update-boot` は `sdcard.img` の FAT からファイルを抽出するので、
+古い `ramboot.img` からは古いファイルしか出てこない。
+
+マニフェストを最新値にしても、**イメージ自体が古ければ意味がない。**
+
+### 修正
+
+NAS の `~/x96/output/ramboot-unit3/ramboot.img`（02:09、Image/rootfs と
+同時刻）を Mac へ取り直した。
+
+```sh
+scp ku@192.168.99.80:~/x96/output/ramboot-unit3/ramboot.img \
+    output/ramboot-unit3/ramboot.img
+cp output/ramboot-unit3/ramboot.img output/ramboot-unit3/sdcard.img
+cd output/ramboot-unit3 && shasum -a 256 Image meson-g12a-x96-max-p*.dtb \
+    rootfs.cpio.uboot sdcard.img > SHA256SUMS
+```
+
+### 書き込み結果（成功）
+
+```
+Updating 7 boot files on /Volumes/X96RAMBOOT
+Verified boot file: Image SHA-256=b8b68100...        ← ddr 修正入り
+Verified boot file: rootfs.cpio.uboot SHA-256=35567de0...  ← netdiag SD書き出し
+Verified boot file: meson-g12a-x96-max-p-ephy-4g.dtb ...=b031dc16...
+Boot files updated; card ejected.
+```
+
+### 教訓（2 つ）
+
+1. **NAS から成果物を取得したら `SHA256SUMS` を再生成する**
+2. **`ramboot.img`/`sdcard.img` も最新か確認する**（個別ファイルだけ新しくても
+   イメージが古いと、そこから抽出されるのは古い内容）
+
+### 注意: マニフェストのファイルリスト
+
+`ramboot-unit3.fragment` の `BR2_LINUX_KERNEL_INTREE_DTS_NAME` に含まれる
+DTB だけがイメージに入る。診断用の `-clkon`、`-phyonly`、`-gxl-noextra` は
+含まれないので、マニフェストに入れると `missing from the image's FAT volume`
+で失敗する。
