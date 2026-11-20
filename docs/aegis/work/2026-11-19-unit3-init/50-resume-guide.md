@@ -831,3 +831,61 @@ U-Boot の DWMAC ドライバが `FES=1`（100M）のまま送信を有効化し
 3. U-Boot の DWMAC 初期化コードを追う（バイナリなので困難）
 
 **まず 1 を試す価値がある。** 100M でも TFTP で 77MB を送るのに 10 分程度。
+
+## 追記（round 100 後半）: DWMAC の送信が機能しない（実機で深掘り）
+
+### 試したことと結果
+
+| 試行 | 結果 |
+|---|---|
+| `phyreg w 0 0x2100`（100M full 固定、AN 無効） | U-Boot が「Waiting for PHY auto negotiation」でタイムアウト |
+| `phyreg w 4 0x0180`（100M のみアドバタイズ）→ AN 再開 | AN 完了、`Speed: 1000, full duplex` |
+| `macreg w 0x40 0x80007e83`（TE=1） | 値は入るが、`ping`/`ethloop` が DWMAC を再初期化して TE=0 に戻る |
+| `macreg w 0x0 0x1e802`（DMA ST/SR=1） | 同上、上書きされる |
+| TE=1 にした直後に `ethloop` | **`loopback test failed`** |
+| `usb stop` + `ethact` 明示 | 変化なし |
+| `gatewayip` 修正 | 変化なし |
+
+### 決定的な事実
+
+```
+ethloop
+Speed: 1000, full duplex
+loopback test failed
+```
+
+**`ethloop` は内部ループバックテスト。外部ネットワークと無関係に失敗する。**
+つまり MAC の送信経路そのものが機能していない。
+
+### MAC の状態（`ethloop` 後）
+
+```
+MAC_CONFIG [0x0040] = 0x80007e81
+  RE=1 (受信有効), TE=0 (送信無効), FES=1 (100M)
+```
+
+**U-Boot の DWMAC 初期化が終わった状態でも TE=0。** これはドライバが
+送信を有効化していないことを意味する。
+
+U-Boot 2015.01（Aug 17 2020 ビルド、crosstool-NG linaro 1.13.1）。
+
+### 結論
+
+**この U-Boot の `dwmac` ドライバは、この機体（X96Max_P、RTL8211F）で
+送信を有効化できない。** PHY は正常（Link Status=1、AN Done=1）、MAC アドレスも
+正しく設定されているが、`TE` が立たないためフレームが出ない。
+
+`macreg` で手動で TE=1 にしても、`ping`/`ethloop` が毎回 DWMAC を再初期化して
+TE=0 に戻す。U-Boot のバイナリを修正しない限り回避できない。
+
+### 可能な残りの道（いずれも重い）
+
+1. **U-Boot をビルドし直す** — vendor のソースが必要。`dwmac` の該当箇所に
+   TE=1 を足す。ただし Amlogic の U-Boot ソースは非公開部分が多い。
+2. **Linux 側から TFTP** — 目標は「U-Boot から TFTP で起動」だが、Linux が
+   起動できるなら SD は既に不要（rootfs が RAM にある）。つまり TFTP の利点は
+   「カーネル/rootfs の差し替え」だけであり、Android 側から `/dev/block` 経由で
+   SD を書く方が現実的かもしれない（要検証）。
+3. **`loadx`（XMODEM）** — `loady` より遅いので不可。
+
+**現時点で U-Boot からの TFTP は不可能。** 原因はレジスタレベルで特定済み。
