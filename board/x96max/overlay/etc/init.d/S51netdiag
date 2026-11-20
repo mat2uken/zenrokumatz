@@ -1,0 +1,12 @@
+#!/bin/sh
+# Capture the network state once DHCP has had time to settle, so a box that is
+# not reachable over the network still reports why when read over the console.
+case "$1" in
+    start)
+        printf "Starting netdiag: "
+        ( sleep 20; /usr/bin/netdiag ) &
+        echo "OK"
+        ;;
+    stop) killall netdiag 2>/dev/null ;;
+    *) echo "Usage: $0 {start|stop}"; exit 1 ;;
+esac

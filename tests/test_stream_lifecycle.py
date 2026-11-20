@@ -716,6 +716,36 @@ else:
         self.assertFalse((self.run / "pix-logo-weekly.owner").exists())
 
 
+class NetdiagScript(unittest.TestCase):
+    """Boot-time network capture, for a box reachable only over the console.
+
+    A unit that comes up without a working network cannot be inspected over
+    ssh, and the serial log loses lines. Writing one snapshot to /dev/shm makes
+    the reason readable after logging in.
+    """
+
+    def test_script_records_the_expected_facts(self):
+        script = (OVERLAY / "usr/bin/netdiag").read_text()
+        for needle in ("ip -4 addr show", "cat /sys/class/net/eth0/carrier",
+                       "cat /sys/class/net/eth0/operstate", "dmesg | grep -i"):
+            self.assertIn(needle, script)
+        self.assertIn("/dev/shm/netdiag.txt", script)
+
+    def test_init_runs_it_after_network_start(self):
+        name = "S51netdiag"
+        init = (OVERLAY / "etc/init.d" / name).read_text()
+        self.assertIn("/usr/bin/netdiag", init)
+        # S40network comes from Buildroot and starts eth0, so the snapshot has to
+        # run after it; the ordering is carried by the S51 prefix.
+        number = int(name.split("S")[1][:2])
+        self.assertGreater(number, 40, "must start after S40network")
+
+    def test_scripts_are_executable(self):
+        for name in ("etc/init.d/S51netdiag", "usr/bin/netdiag"):
+            path = OVERLAY / name
+            self.assertTrue(path.stat().st_mode & 0o111, name)
+
+
 class TunerWait(unittest.TestCase):
     """The supervisor waits for the tuner instead of restarting into a panic.
 

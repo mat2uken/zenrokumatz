@@ -228,3 +228,45 @@ inet 192.168.99.56/24
 
 **`panic_on_oops=1 panic=8` が入った Image なら、oops 時に自動再起動するので
 「固まる」状態を避けられる。**
+
+## 追記（round 143）: 起動時ネットワーク診断を追加
+
+### 背景
+
+`usb start` を付けて起動すると Linux は例外なく立ち上がるが、**SSH・ping・
+シリアルすべてが無応答**になる（round 137）。シリアルも落ちるため、原因を
+調べる手段が無かった。
+
+### 実装
+
+**`/usr/bin/netdiag`** — ネットワーク状態を `/dev/shm/netdiag.txt` に記録:
+
+```sh
+ip -4 addr show
+ip link show eth0
+cat /sys/class/net/eth0/carrier
+cat /sys/class/net/eth0/operstate
+dmesg | grep -i "dwmac\|eth0\|PHY" | tail -8
+```
+
+**`/etc/init.d/S51netdiag`** — `S40network` の後に 20 秒待って実行。
+`S51` は Buildroot の `S40network` より後なので、DHCP の結果が反映される。
+
+### 使い方（起動後）
+
+シリアルでログインできれば:
+
+```sh
+cat /dev/shm/netdiag.txt
+```
+
+ネットワークが死んでいても、コンソールから原因を読める。
+
+### 成果物
+
+`rootfs.cpio.uboot` = `8f190905`（`netdiag`、`S51netdiag`、
+`wait_for_tuner` を含むことを cpio 展開で確認済み）。
+
+### テスト
+
+`NetdiagScript` に 3 件追加。**272 テスト通過。**
