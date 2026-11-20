@@ -42,11 +42,10 @@ start() {
     [ ! -d "$FETCH_LOCK" ] || { echo 'tuner borrowed for logo fetch'; return 1; }
     . /etc/default/pix-stream-linux 2>/dev/null || true
     case "${PIX_TUNER:-pxs1ud}" in
-        dt295) daemon=$DAEMON ;;
-        # dt295-cfw reads the raw stream from CFW and descrambles it with
-        # torne-b25, so it goes through the same launcher as the other
-        # external-card tuners.
-        dt295-cfw) daemon=$LEGACY ;;
+        # pix-stream-simple is the launcher that knows the CFW source
+        # (pix-cfw-ts) and the torne-b25 stage; pix-stream-linux is the older
+        # one and cannot read the raw stream from CFW.
+        dt295|dt295-cfw) daemon=$DAEMON ;;
         pxs1ud|torne) daemon=$LEGACY ;;
         *) echo "unsupported tuner: $PIX_TUNER"; return 1 ;;
     esac
