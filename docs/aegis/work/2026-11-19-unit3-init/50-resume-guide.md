@@ -687,3 +687,41 @@ U-Boot が ACK を返すまでに時間がかかるため、実測ペースで�
 USB メモリ（FAT32、起動ファイルを入れたもの）を 3代目に挿し、U-Boot で
 `usb start` → `usb storage` が認識されるか確認する。認識されれば
 `fatload usb 0:1 0x01080000 Image` で起動でき、SD の抜き差しが不要になる。
+
+## 追記（round 98）: U-Boot の USB で DT295 が認識されている
+
+```
+usb info
+
+1: Hub,  USB Revision 3.0
+ - u-boot XHCI Host Controller
+ - Class: Hub
+
+2: Vendor specific,  USB Revision 2.0
+ - PIXELA CORPORATION PIX-DT295 VK12041874
+ - Class: (from Interface) Vendor specific
+```
+
+**`usb start` の "2 USB Device(s) found" は root hub と DT295 だった。**
+DT295 は U-Boot の段階でも USB で見えている（シリアル番号 `VK12041874`）。
+
+`0 Storage Device(s) found` は USB メモリが挿さっていないため。
+
+### USB メモリ挿入時に期待される動作
+
+USB メモリ（FAT32）を挿して `usb start` すると、
+`1 Storage Device(s) found` になり、`fatload usb 0:1 ...` が使えるはず。
+
+**未検証**: 実際の USB メモリでの認識と fatload。
+
+### 準備済みのファイル
+
+`work/usbstick/` に配置済み（SD と同じ最新版）:
+
+| ファイル | サイズ | SHA-256（先頭） |
+|---|---|---|
+| `Image` | 41,757,184 | `6a9b20e4` |
+| `rootfs.cpio.uboot` | 35,195,682 | `ef4964aa` |
+| `meson-g12a-x96-max-p-gxl.dtb` | 51,207 | `e0cc1dbf` |
+
+USB メモリを FAT32 でフォーマットし、この 3 ファイルをルートに置けばよい。
