@@ -547,3 +547,73 @@ otg_apply_mode）を個別に有効化して、どこまで進めば `dwc3_core_
 
 ただし各段階が例外を出す可能性があるため、**段階ごとに DTB とパッチを
 切り替えて試す**必要がある。
+
+## 追記（round 117）: probe の順序が判明。差は usb_post_init の有無だけ
+
+### `dwc3_meson_g12a_probe` の後半（`dwc3-meson-g12a.c` 820-850 行）
+
+```c
+/* Init PHYs */
+for (i = 0; i < PHY_COUNT; ++i) {
+        ret = phy_init(priv->phys[i]);          // PHY を初期化
+        ...
+}
+/* Set PHY Power */
+for (i = 0; i < PHY_COUNT; ++i) {
+        ret = phy_power_on(priv->phys[i]);      // PHY の電源を入れる
+        ...
+}
+
+if (priv->drvdata->usb_post_init) {
+        ret = priv->drvdata->usb_post_init(priv);   // ← skip-glue-init でスキップ中
+        ...
+}
+
+ret = of_platform_populate(np, NULL, NULL, dev);    // ← 子の dwc3 を登録
+```
+
+**`usb_post_init` は `of_platform_populate` の直前**にある。つまり
+`dwc3_core_probe` の**わずか前**に実行される。
+
+### round 37 との差分
+
+| 項目 | round 37（成功） | 現在 |
+|---|---|---|
+| `phy_init` / `phy_power_on` | 実行 | 実行（同じ） |
+| **`usb_post_init`（`otg_apply_mode`）** | **実行** | **スキップ** |
+| `of_platform_populate` → `dwc3_core_probe` | **成功** | 例外 |
+
+**PHY の初期化は両方で実行されている。** 違うのは `usb_post_init` だけ。
+
+### `otg_apply_mode` の中身（host モード側）
+
+```c
+} else {
+        if (priv->otg_mode != USB_DR_MODE_OTG &&
+            priv->drvdata->otg_phy_host_port_disable) {
+                regmap_update_bits(USB_R1,
+                        USB_R1_U3H_HOST_U2_PORT_DISABLE_MASK, 0);
+                msleep(500);                     // ← 500ms の待機
+        }
+        regmap_update_bits(USB_R0, USB_R0_U2D_ACT, 0);
+        regmap_update_bits(USB_R4, USB_R4_P21_SLEEP_M0, 0);
+}
+```
+
+`USB_R0` と `USB_R4` を書き、`USB_R1` の U2 ポート無効を解除する。
+**500ms 待つのは、ポートの有効化が落ち着くのを待つため**と思われる。
+
+### 仮説
+
+**`otg_apply_mode` の `USB_R4_P21_SLEEP_M0 = 0` が、USB のスリープを解除し、
+`0xff500000` の窓を開ける。** これをスキップしたため、dwc3 のレジスタが
+応答しない。
+
+### 検証方法
+
+`skip-glue-init` のガードを `usb_init_glue` のみに戻し、`usb_post_init` は
+実行させる。`usb_post_init` が書くのは `USB_R1`（U2 ポート無効の解除）、
+`USB_R0`、`USB_R4` の 3 つ。
+
+ただし `USB_R1` への書き込みは以前（round 54/55）に例外になった実績がある。
+`0xffe09004` への書き込みが通るかは微妙。
