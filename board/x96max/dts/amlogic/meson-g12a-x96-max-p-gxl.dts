@@ -48,3 +48,13 @@
 	 */
 	amlogic,skip-glue-init;
 };
+
+/*
+ * The vendor block at 0xff400000 is not usable here: dwc2 probes the USB2 PHY
+ * through a register window that faults on this board (synchronous external
+ * abort in dwc2_driver_probe). Nothing needs it, because the DT295 is driven by
+ * the dwc3 host controller above.
+ */
+&dwc2 {
+	status = "disabled";
+};
