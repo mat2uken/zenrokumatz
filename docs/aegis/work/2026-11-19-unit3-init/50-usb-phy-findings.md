@@ -1085,3 +1085,60 @@ SSH で入る必要がある（現在は停止中）。
 3代目の U-Boot で `md 0xffe09084 1` を実行する。autoboot を確実に止める
 必要がある（`catch_prompt` が Enter を送り続けるので、タイミング次第で
 Android に進んでしまう）。
+
+## 追記（round 132）: レジスタは存在する。vendor は正しく書けている
+
+### Android の `aml_reg` で実測（決定的）
+
+```
+0xffe09084 = 0xFF020000     ← USB_R1（G12A glue の USB_R1）
+  U3H_FLADJ_30MHZ (bits24-19) = 0x20    ← mainline が書く値と一致
+  PORT_POWER_CONTROL_PRESENT (bit17) = 1
+  P30_PCS_TX_SWING_FULL (bits31-25) = 127
+
+0xffe09000 = 0x0B           ← U2P_R0
+0xffe09080 = 0x6A           ← usb3phy 制御
+0xffe09090 = 0x0            ← USB_R4
+```
+
+**レジスタは存在し、vendor（Android）は正しく書けている。**
+値も mainline の期待値と完全に一致（FLADJ=0x20、TX_SWING=127）。
+
+**「領域が無い」という仮説は否定された。** 問題は「mainline だけが書けない」こと。
+
+### probe の順序（`dwc3-meson-g12a.c` 720-745 行）
+
+```c
+ret = devm_clk_bulk_get(dev, num_clks, clks);
+ret = clk_bulk_prepare_enable(num_clks, clks);      // ← クロック有効化
+platform_set_drvdata(pdev, priv);
+priv->reset = devm_reset_control_get_shared(dev, NULL);
+ret = reset_control_reset(priv->reset);             // ← リセット実行
+```
+
+**GXL の `num_clks` は `ARRAY_SIZE(meson_g12a_clocks)` = 1**（mainline のバグ、
+round 88 で発見）。`meson_gxl_clocks` は 2 つ（`usb_ctrl`、`ddr`）だが、
+**1 つしか有効化されない**。
+
+`meson_g12a_clocks` は `{ .id = NULL }`（名前なし）。GXL 版は
+`usb_ctrl` を要求するので、DTS で `clock-names = "usb_ctrl"` を付けて通した。
+
+**しかし `ddr`（2 つ目）が有効化されていない。** これが USB のレジスタ窓に
+必要なクロックかもしれない。
+
+### 新しい仮説
+
+**`ddr` クロック（`meson_gxl_clocks[1]`）が有効化されていないため、
+USB のレジスタ窓が応答しない。**
+
+mainline のバグ（`num_clks` の取り違え）が原因。3代目だけではなく、
+1代目・2代目も同じバグの影響下にあるはずだが、そちらは動いている。
+差は DTS のクロック構成かもしれない。
+
+### 検証方法
+
+`num_clks` を正しい値（2）に修正するパッチを入れ、`ddr` クロックも
+有効化する。DTS に `clock-names = "usb_ctrl", "ddr"` と 2 つのクロックを
+追加する必要がある。
+
+`ddr` に対応するクロック ID は `CLKID_USB1_DDR_BRIDGE`（55）。
