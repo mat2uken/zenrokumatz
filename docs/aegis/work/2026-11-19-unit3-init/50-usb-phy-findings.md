@@ -197,3 +197,60 @@ PHY ドライバがどのレジスタを読むかを確認し、そのアドレ�
 `devmem` で調べる（`-nousb` で Linux が動くので確認できる）。
 `0xff636000` は以前 `busybox devmem` で `0x40057000` が読めていたので、
 **別の領域**（`reg` の 2 番目以降）が問題の可能性がある。
+
+## 追記（round 107）: PHY を有効にすると glue が dwc3 を起こしてしまう
+
+### 決定的な観察
+
+PHY 単体テスト（`-phyonly`、dwc3/dwc2 は `disabled`）の起動ログ:
+
+```
+[1.318773] dwc3-meson-g12a ffe09000.usb: USB3 ports: 1
+[1.324165] Internal error: synchronous external abort
+```
+
+**`dwc3-meson-g12a` が probe している。しかも `USB3 ports: 1`。**
+
+以前の `-p-gxl`（dwc3 有効）では `USB3 ports: 0` だったので、`USB3 ports: 1` は
+**PHY を有効化した結果として PHY が取れるようになった**ことを意味する。
+
+つまり:
+
+- `&usb2_phy0`/`&usb2_phy1` を `okay` にすると、`dwc3_meson_g12a_get_phys`
+  が PHY を見つけられるようになる
+- その結果 `usb3_ports` が 1 になり、glue の初期化経路（`usb3_init` など）が
+  走って例外になる
+
+### `&dwc3 { status = "disabled"; }` が効いていない理由
+
+`dwc3` ラベルは **`meson-g12-common.dtsi` の `usb@ff500000`**（dwc3 コントローラ）
+を指す。しかし glue ドライバ（`amlogic,meson-gxl-usb-ctrl`）は**親ノード**で、
+その子として dwc3 を `of_platform_populate` する。**子が disabled でも、親の
+probe は走る**。
+
+親（glue）の probe 内で `usb_init` → `usb3_init` などが呼ばれ、PHY が揃って
+いるので `USB3 ports: 1` になり、`USB_R1` を書いて例外。
+
+### つまり
+
+**`-phyonly` は「PHY だけのテスト」になっていなかった。** PHY を有効にすると
+glue の probe が完全な経路に入ってしまう。
+
+### 正しい切り分け
+
+PHY 単体を見たいなら、**`&usb`（glue）自体を disabled** にして、PHY だけを
+`okay` にする必要がある。ただし以前の記録（`-nousb` のコメント）にある通り、
+glue を完全に切ると `clk: Disabling unused clocks` で USB クロックが止まり、
+領域が Bus error になる。
+
+**したがって「PHY 単体」の検証は構造的に難しい。**
+
+### 本当に必要なこと
+
+glue の probe を通しつつ、`USB3 ports: 1` の経路（`usb3_init`）で落ちないように
+する。`skip-glue-init` は `usb_init_glue` を丸ごと return しているので、
+そこで止まるはずだが、`USB3 ports: 1` の後に例外が出ている。
+
+**`usb3_init` は `usb_init_glue` の中にある**ので、`skip-glue-init` で
+スキップされるはず。別の場所（`set_phy_mode` など）で落ちている可能性。
+完全なコールトレースが必要。
