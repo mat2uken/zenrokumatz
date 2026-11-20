@@ -770,3 +770,59 @@ round 37 の構成（2 パッチ + `gxl-noextra` DTB）を正確に再現する�
 ```sh
 BR2_JLEVEL=1 X96MAX_PROFILE=ramboot X96MAX_UNIT=3 ./scripts/build-linux.sh
 ```
+
+## 追記（round 123）: round 37 の成功は再現しない（同一構成で失敗）
+
+### 実施
+
+round 37 と**完全に同一の構成**を用意して起動した:
+
+| 項目 | 値 |
+|---|---|
+| パッチ | 0001 + 0002 のみ |
+| `Image` | `c424cb56`（`skip-glue-init` = False、`DBG` = False を文字列検索で確認） |
+| DTB | `meson-g12a-x96-max-p-gxl-noextra.dtb` = `fcd9e79f`（round 37 と同じファイル） |
+| 書き込み | Android 経由、SD 上でハッシュ一致を確認 |
+
+### 結果: 失敗
+
+```
+[1.308617] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.309642] dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+[1.314967] Internal error: synchronous external abort
+
+Call trace:
+ regmap_mmio_read32le+0x8/0x20
+ _regmap_update_bits
+ regmap_update_bits_base+0x54/0x80
+ dwc3_meson_g12a_usb_init_glue.isra.0+0x38/0x190
+ dwc3_meson_gxl_usb_init+0x14/0x30
+```
+
+**`USB_R1`（`0xffe09004`）への書き込みで例外。** round 54/55 と同じ症状。
+
+### 結論
+
+**round 37 の「例外なしで xhci まで到達」は再現しない。** 同一の Image・DTB・
+手順で、今回は glue の書き込みで落ちる。
+
+### 考えられる説明
+
+1. **round 37 の成功は偶発**。何らかのタイミング（電源投入からの経過時間、
+   PHY の状態、U-Boot の初期化具合）に依存していた。
+2. **機体のハード状態が変わった**。DT295 の挿抜、USB の再列挙、電源の
+   入れ直し回数などで PHY の状態が変わる可能性。
+3. **round 37 のログを取り違えている**。ただし `work/unit3-boot-gxl2.log` に
+   `xhci-hcd: io mem 0xff500000` が記録されており、実際に動いていたのは確か。
+
+**いずれにせよ、`0xffe09004` への書き込みが通るかどうかが不安定**で、
+それが成否を分けている。
+
+### 重要な観察
+
+- 現在の構成（`skip-glue-init`）では **`USB_R1` を書かないので例外にならない**
+- 代わりに `dwc3_core_probe` の `0xff500020` で落ちる
+- つまり **「書けば glue で落ち、書かなければ dwc3 で落ちる」** の二択
+
+**`0xffe09004` が書ける条件**を見つけるか、`USB_R1` を書かずに
+`0xff500000` の窓を開ける方法が必要。
