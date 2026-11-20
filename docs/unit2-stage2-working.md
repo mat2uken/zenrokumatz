@@ -97,3 +97,48 @@ pix-cfw-ts | torne-b25 --card-socket /dev/shm/torne/card.sock
 - ランチャー（`pix-stream-simple`）への組み込みと、`S97` からの起動
 - ガードとの運用（`enabled=false` の扱い）
 - 連続運用の確認（長時間）
+
+## 動作する構成（実測で確定した条件）
+
+同じハードで「通る」「通らない」が分かれたので、確定した条件を残す。
+
+### 1. bcasd の RESET を本物にする（これが最大の原因だった）
+
+`bcasd` は接続済みのカードに対して RESET を**何もしていなかった**。
+`torne-b25` は RESET → `90 30` の順で初期化するので、2 回目以降は
+前のやり取りが残ったままになり、CFW のカード経路が次のブロックを拒否する。
+
+→ `SCardReconnect(..., SCARD_RESET_CARD)` を入れた（`package/bcasd/src/bcasd.c`）。
+これで 3 回連続の初期化が通る。
+
+### 2. ゾンビプロセスが USB を握ると何も動かない
+
+`pix-cfw-grab` や `pix-cfw-ts` が残っていると、
+`cannot claim interface 0: LIBUSB_ERROR_BUSY (a driver for this device is loaded)`
+で取得が失敗する。**入れ直す前に必ず落とす。**
+
+```sh
+for p in $(ps | awk '/pix-cfw|torne-b25/ && !/awk/ {print $1}'); do kill -KILL $p; done
+```
+
+### 3. USB を電源切り直したら pcscd も入れ直す
+
+`frc1_load install` のために `usb1-port1/disable` を叩くと、pcscd は
+リーダーを見失って `Reader is unavailable.` を返す。pcscd を再起動する。
+
+### 4. カードと TS は同時に使える（実測）
+
+TS を流しながら `90 30` を投げても通った。EP0 を取り合うが、
+`pix-cfw-grab` の 1 枠 32KiB とカードの短い枠なら実用上問題ない。
+
+## 実測値
+
+```
+$ torne-b25 --card-socket /dev/shm/torne/card.sock < final-raw.ts
+TS_STATS stage=clear packets=106382 tei=0 duplicate_cc=1 scrambled=0
+B25_STATS card_commands=7 failed=0
+```
+
+- **106,382 パケットを複合**（`scrambled=0`）
+- TEI 0、`failed=0`
+- 45 秒の連続パイプラインで約 202 MB が流れた
