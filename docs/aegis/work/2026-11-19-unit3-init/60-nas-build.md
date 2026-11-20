@@ -519,3 +519,41 @@ S40network  →  S51netdiag（20秒後に1回、マウント→書込→即ア�
 | `panic_on_oops=1 panic=8` | oops なら自動再起動 |
 
 **SD 経由が唯一の確実な手段。**
+
+## 追記（round 150）: SD の内容が古いまま（要更新）
+
+### 現状の不一致
+
+| ファイル | Mac の最新 | SD にあるもの |
+|---|---|---|
+| `Image` | `b8b68100` | **不明**（round 137 以降未更新の可能性） |
+| `rootfs.cpio.uboot` | **`35567de0`**（SD書き出しnetdiag） | **`426c8ac2`**（古い） |
+| `ephy-4g.dtb` | `b031dc16` | 不明 |
+
+**SD の rootfs は `426c8ac2` で、最新の `35567de0` ではない。**
+SD 書き出し機能が入っていない版なので、**今の SD では netdiag の結果を
+SD から読めない**。
+
+### 更新が必要な理由
+
+`35567de0` は:
+- `PIX_TUNER=none`（USB を触らない切り分け用）
+- SD の FAT へ netdiag を書き出す
+- ps / pix-stream ログ / lsusb を記録
+
+**これが無いと、シリアルもネットワークも死んだ状態では何も分からない。**
+
+### 手順（SD が Mac に接続されたら）
+
+```sh
+cd ~/Desktop/work/X96MaxLinuxTSEnc
+cp output/ramboot-unit3/ramboot.img output/ramboot-unit3/sdcard.img
+H=$(shasum -a 256 output/ramboot-unit3/ramboot.img | cut -d' ' -f1)
+grep -vE "  (sdcard\.img|rootfs\.cpio\.gz)$" output/ramboot-unit3/SHA256SUMS > /tmp/s
+echo "$H  sdcard.img" >> /tmp/s
+cp /tmp/s output/ramboot-unit3/SHA256SUMS
+/usr/bin/python3 scripts/write-sd.py --image output/ramboot-unit3/sdcard.img \
+    --device /dev/diskN --update-boot
+```
+
+`--only` を付けない（Image・rootfs・DTB をすべて最新にする）。
