@@ -478,3 +478,86 @@ print('port-power-control:', b'amlogic,port-power-control' in d)"
 ```
 
 SD 上の gxl.dtb（`e0cc1dbf`）は最新と同じなので、実質 Image と rootfs の更新になる。
+
+## 追記（round 96）: NAS 上の TFTP サーバで SD 不要の起動が可能になった
+
+### 背景
+
+SD カードを Mac と機体の間で抜き差しする往復が非効率という指摘を受けて、
+TFTP 起動を再検討した。round 13–16 では「TFTP サーバの起動に sudo が必要で
+AI 側から代替できない」として断念していたが、**NAS（`192.168.99.80`）では
+`sudo -n` がパスワードなしで通る**ことが分かり、この制約が解消した。
+
+### 実測した NAS の条件
+
+```
+$ ssh ku@192.168.99.80 'sudo -n true' → 成功（パスワード不要）
+uname -a: Linux sweedmaster02 6.8.0-147-generic #147-Ubuntu x86_64
+dnsmasq 2.91 が導入済み、既存サービスは inactive
+ポート 69 は空き
+インターフェイス: enp11s0 = 192.168.99.80（enp0s25 も 192.168.99.52）
+```
+
+### 構築したもの
+
+**配信ディレクトリ**: `/srv/x96tftp`（root 所有、644）
+
+```
+Image                  41,757,184  bytes
+rootfs.cpio.uboot      35,195,682  bytes
+meson-g12a-x96-max-p-gxl.dtb  51,207 bytes
+```
+
+`/home/ku` 配下だとディレクトリが 750 で `dnsmasq`（`nobody` 実行）が
+アクセスできず `Permission denied` になったため、`/srv` へ移した。
+
+**設定**: `/etc/x96-tftp.conf`
+
+```
+port=0
+interface=enp11s0
+bind-interfaces
+enable-tftp
+tftp-root=/srv/x96tftp
+```
+
+`port=0` で DNS を無効化し、既存の DNS/DHCP に一切影響しない。DHCP も無効。
+
+**起動**:
+
+```sh
+sudo dnsmasq --conf-file=/etc/x96-tftp.conf
+```
+
+### 検証（Mac から取得）
+
+macOS の `tftp` コマンドは転送が途中で切れる（1468 バイトで停止）ため、
+**`curl` を使う**:
+
+```sh
+curl -o /tmp/Image "tftp://192.168.99.80/Image"
+```
+
+| ファイル | サイズ | 所要時間 | SHA-256 照合 |
+|---|---|---|---|
+| `Image` | 41,757,184 | **59 秒** | `6a9b20e4…` 一致 |
+| `rootfs.cpio.uboot` | 35,195,682 | **49 秒** | `ef4964aa…` 一致 |
+| `gxl.dtb` | 51,207 | 瞬時 | `e0cc1dbf…` 一致 |
+
+**Gigabit で約 0.7MB/s。77MB の一式が 2 分弱で配信できる。**
+
+### U-Boot 側の使い方
+
+`tools/uboot_boot_linux.py` に `--tftp-server` が実装済み:
+
+```sh
+/usr/bin/python3 tools/uboot_boot_linux.py --dev /dev/cu.usbserial-01025FC4 \
+    --ramboot --unit 3 --tftp-server 192.168.99.80 \
+    --dtb meson-g12a-x96-max-p-gxl.dtb --wait 240 --trace 60
+```
+
+U-Boot 側の設定は `ipaddr=192.168.99.56`、`serverip=192.168.99.80`。
+
+**未検証**: U-Boot からの実際の `tftpboot` 取得。round 13–16 の実測では
+`ipaddr=10.18.9.97, serverip=192.168.99.8` という既定値で、`tftpboot` コマンド
+自体は利用可能だった。今回の構成で実際に取得できるかは次の起動で確認する。
