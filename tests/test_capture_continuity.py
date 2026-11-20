@@ -177,6 +177,44 @@ dt295_recover() {{ echo recovered >> {shlex.quote(str(events))}; exit 0; }}
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(events.exists(), "DT295 recovery did not run under PIX_DECRYPT=1")
             self.assertIn("recovered", events.read_text())
+    def test_other_tuners_never_trigger_dt295_usb_recovery(self):
+        # The gate narrowed the trigger from "not PIX_DECRYPT" to "is dt295".
+        # A pxs1ud unit must not unbind/bind the USB controller: that recovery
+        # is DT295-specific and has left the board unresponsive before.
+        loop_at = self.source.index('while [ ! -e "$STOPFILE" ]; do')
+        tail = self.source.index('\ndone\n', loop_at) + len('\ndone\n')
+        block = self.source[loop_at:tail]
+        with tempfile.TemporaryDirectory(prefix="pix-norecover-") as tmp:
+            base = Path(tmp)
+            events = base / "events"
+            log = base / "pix-ts.log"
+            log.write_text("firmware boot requires cold state 0 or unauthenticated state 16\n")
+            script = block.replace("/tmp/pix-ts.log", shlex.quote(str(log)))
+            prefix = f"""
+PIX_TUNER=pxs1ud
+PIX_DECRYPT=0
+PIX_CAPTURE_SECONDS=-
+STOPFILE={shlex.quote(str(base / 'stop'))}
+fast_fail=9
+feature_failures=0
+cleanup_failed=0
+FEAT_ARGS=
+log() {{ :; }}
+wait_for_tuner() {{ return 0; }}
+# The loop is endless by design when recovery never fires, so stop it here.
+# The probe branch must see success, or the loop takes the broadcast-suspension
+# path and waits 5 minutes instead of reaching the recovery block.
+run_worker() {{ PASSES=$((${{PASSES:-0}} + 1)); [ "$PASSES" -lt 3 ] && return 0; exit 0; }}
+pause_retry() {{ :; }}
+date() {{ echo 1000; }}
+dt295_recover() {{ echo recovered >> {shlex.quote(str(events))}; :; }}
+"""
+            result = subprocess.run(["/bin/sh", "-c", prefix + script], text=True,
+                                    capture_output=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(events.exists(),
+                             "a non-dt295 unit must never run the DT295 USB reset")
+
 
 class Unit2DefaultsTests(unittest.TestCase):
     """Unit 2's deployed defaults."""
