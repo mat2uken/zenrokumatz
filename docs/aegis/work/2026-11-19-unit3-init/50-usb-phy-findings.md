@@ -2291,3 +2291,59 @@ ret = get_data_from_name(p, (u8 *)mc_addr);   /* ← SM1 はこちら */
 SD は機体の中にあり、Mac からは更新できない。
 
 **必要なこと: SD を Mac に接続して新しい rootfs を書き込む。**
+
+## 🔴 重大な発見（round 166）: `PIX_CHANNEL=17` は SBS ではなくテレビ静岡
+
+### 外部情報（NHK 静岡放送局の公式チャンネル表、静岡・日本平）
+
+| 局 | リモコン | 物理 ch |
+|---|---|---|
+| NHK 総合 | 1 | 20 |
+| NHK 教育 | 2 | 13 |
+| 静岡第一 (SDT) | 4 | 19 |
+| 静岡朝日 (SATV) | 5 | 18 |
+| **静岡放送 (SBS)** | **6** | **15** |
+| **テレビ静岡 (SUT)** | **8** | **17** |
+
+出典: [NHK静岡放送局 受信情報](https://www.nhk.or.jp/shizuoka/station_info/channel.html)、
+[総務省 東海総合通信局 静岡県の開局状況](https://www.soumu.go.jp/soutsu/tokai/housou/digital/toukai/index.html)
+
+### 傍証（NAS と既存 docs）
+
+- NAS の `192.168.99.56-17`（= 3代目）の `channelName` は **「テレビ静岡」**
+- 既存 docs `recording-split-and-stb-recovery.md` は ch17 を **テレビ静岡**として扱い、
+  1代目（`192.168.99.109`）の録画もテレビ静岡
+
+### したがって
+
+現在の 3代目設定:
+
+```sh
+PIX_CHANNEL=17     # テレビ静岡。SBS ではない
+```
+
+**ユーザーの要件「録画する番組は SBS を想定」と一致していない。**
+SBS の物理チャンネルは **15**。
+
+これまでの記録（`20-checkpoint.md`、`40-acceptance.md`）が
+「ch17 = SBS、service_id 35864」としているのは**誤り**。
+ch17 で測れた service_id 35864 はテレビ静岡のもの。
+
+### リモコン番号についても
+
+記録は「SBS はリモコン 5」としていたが、**SBS は 6、5 は静岡朝日テレビ**。
+
+### 検証手段
+
+`tools/channel-scan.py` を追加。ch15 と ch17 を実際に受信し、
+`ffprobe -show_programs` で SDT の局名を読む:
+
+```sh
+python3 tools/channel-scan.py --run --channel 15 --channel 17
+```
+
+結果は SD の `channel-scan.log` に残る（ハングしても読める）。
+
+### 未実施
+
+実機での確認と `PIX_CHANNEL` の修正。**機体が停止中のため保留。**
