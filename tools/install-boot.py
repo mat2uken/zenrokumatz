@@ -100,7 +100,7 @@ def install_linux(names):
         print(f"  {name}: installed and verified ({got[:16]})")
 
 
-def boot(dtb, trace_seconds):
+def boot(dtb, trace_seconds, usb_start=False):
     sys.path.insert(0, str(ROOT / "tools"))
     import uboot_boot_linux as uboot
 
@@ -117,12 +117,20 @@ def boot(dtb, trace_seconds):
 
     # Each load must be confirmed before the next one runs: booting stale memory
     # silently when a fatload failed is worse than stopping here.
+    # Round 73 reached a working xhci after "usb start" had run in U-Boot, so the
+    # vendor controller/PHY init is carried into Linux. Repeat it on request.
+    if usb_start:
+        console.tail = ""
+        os.write(fd, b"usb start\r")
+        output = console.pump(12.0)
+        print("usb start:", "storage seen" if "Storage Device" in output else "no storage")
+
     for command, wait, marker in (
         ("mmc dev 0", 6, "card in"),
         ("fatload mmc 0:1 0x01080000 Image", 30, "bytes read"),
         ("fatload mmc 0:1 0x08000000 " + dtb, 10, "bytes read"),
         ("fatload mmc 0:1 0x10000000 rootfs.cpio.uboot", 25, "bytes read"),
-        ("setenv bootargs console=ttyAML0,115200n8 earlycon rdinit=/init", 4, ""),
+        ("setenv bootargs console=ttyAML0,115200n8 earlycon rdinit=/init panic_on_oops=1 panic=8", 4, ""),
     ):
         console.tail = ""
         os.write(fd, (command + "\r").encode())
@@ -151,6 +159,9 @@ def main():
                     help="files to install (default: Image and rootfs.cpio.uboot)")
     ap.add_argument("--no-reboot", action="store_true")
     ap.add_argument("--trace", type=float, default=60.0)
+    ap.add_argument("--usb-start", action="store_true",
+                    help="run 'usb start' in U-Boot before booti, so the vendor "
+                         "controller/PHY init is carried into Linux")
     args = ap.parse_args()
 
     names = list(args.files)
@@ -171,7 +182,7 @@ def main():
     if args.no_reboot:
         print("installed; not rebooting (--no-reboot)")
         return 0
-    boot(args.dtb, args.trace)
+    boot(args.dtb, args.trace, args.usb_start)
     return 0
 
 

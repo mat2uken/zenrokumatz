@@ -145,7 +145,7 @@ def ramboot_setup(server=None, ipaddr=None, unit=2, usb=False):
         f"{load} ${{kernel_addr_r}} Image",
         f"{load} ${{fdt_addr_r}} {dtb}",
         f"{load} ${{ramdisk_addr_r}} rootfs.cpio.uboot",
-        "setenv bootargs 'console=ttyAML0,115200n8 earlycon rdinit=/init'",
+        "setenv bootargs 'console=ttyAML0,115200n8 earlycon rdinit=/init panic_on_oops=1 panic=8'",
     ]
     return setup, "booti ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r}"
 

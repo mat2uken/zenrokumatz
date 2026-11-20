@@ -1187,3 +1187,77 @@ U-Boot の `usb start` は:
 
 その結果、glue のレジスタが「書ける状態」になり、`0xff500000` の窓も開く。
 Linux はその状態を引き継ぐので、mainline の初期化が通る可能性がある。
+
+## 決着（round 137）: U-Boot の `usb start` が鍵だった。Linux が例外なく起動
+
+### 実測（`Image` = `b8b68100`、DTB = `ephy-4g` = `b031dc16`、`--usb-start` あり）
+
+```
+[1.303430] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.304359] dwc3-meson-g12a ffe09000.usb: USB3 ports: 1
+（例外なし）
+
+Starting crond: OK
+Starting dropbear sshd: OK
+B-CAS: DT295 internal card (vendor firmware descrambles)
+Starting pix-stream: OK
+Starting pix-logo-weekly: OK
+
+X96Max_P3 RAM-root Linux
+x96max-p3 login:
+```
+
+**`Internal error` が無く、ユーザー空間まで完全に起動した。**
+
+### 決定的だったこと
+
+**U-Boot で `usb start` を実行してから `booti` する。**
+
+```sh
+usb start
+booti 0x01080000 0x10000000 0x08000000
+```
+
+round 73 で DT295 が認識されたときも、この手順を踏んでいた。
+
+### なぜ効くのか
+
+U-Boot の `usb start`（vendor の実装）が:
+
+1. `0xffe09000` の glue を vendor の解釈で初期化
+2. `0xff500000` の XHCI を初期化
+3. USB2/USB3 PHY を立ち上げる
+
+その状態を Linux が引き継ぐため、mainline の `usb_init_glue` が書く
+`USB_R1`（`0xffe09084`）が**通る状態になっている**。
+
+`usb start` をしないと glue が未初期化のままで、`USB_R1` へのアクセスが
+synchronous external abort になる。
+
+### これまでの遠回りの総括
+
+60 ラウンド以上かけて glue のスキップ、dwc2 無効化、clocks/resets 追加、
+PPC、`num_clks` 修正などを試したが、**答えは「U-Boot で `usb start` を
+1 回実行してから起動する」**だった。
+
+`ephy-4g`（1代目・2代目と同じ素の G12A）が正しい DTB で、パッチも
+0001+0002 だけで足りる可能性がある（0008 の効果は未検証）。
+
+### ツール
+
+`tools/install-boot.py --usb-start` で自動化:
+
+```sh
+python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-ephy-4g.dtb \
+    --files Image --usb-start
+```
+
+### 残る問題
+
+起動後、**SSH とシリアルの両方が応答しない**。ログには `dhcpcd` や `eth0` の
+設定が見えない。ネットワークが上がっていない可能性があり、要調査。
+
+### 追加した改善
+
+`panic_on_oops=1 panic=8` を bootargs に追加。oops で箱が固まる代わりに
+自動再起動する（毎回の電源再投入を避けるため）。
