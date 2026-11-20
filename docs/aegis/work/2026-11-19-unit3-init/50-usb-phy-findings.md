@@ -884,3 +884,61 @@ round 54/55 で `ephy-4g` が失敗した記録があるが、そのときは DT
 3代目の板は 4GiB ではなく 2GiB（`Machine model: X96Max_P (G12A, 2 GiB, ...)`）。
 `ephy-4g` は 4GiB 用の名前だが、メモリ量の違いは DTB の USB 設定に影響しない
 はず。ただし要確認。
+
+## 追記（round 125）: `ephy-4g` で USB3 ports: 1 まで到達。それでも USB_R1 で落ちる
+
+### 実測（`Image` = `c424cb56`、DTB = `ephy-4g` = `b031dc16`、2 パッチのみ）
+
+```
+[1.317909] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.318879] dwc3-meson-g12a ffe09000.usb: USB3 ports: 1      ← gxl では 0 だった
+[1.324217] Internal error: synchronous external abort
+
+Call trace:
+ regmap_mmio_read32le+0x8
+ _regmap_update_bits
+ regmap_update_bits_base+0x54/0x80
+ dwc3_meson_g12a_usb_init_glue.isra.0+0x38/0x190
+```
+
+**`USB3 ports: 1`** — `ephy-4g` では PHY が正しく数えられている（`gxl` では 0）。
+これは 1代目・2代目と同じ状態。だが **`USB_R1` で落ちる**。
+
+### 機体の正体（判明）
+
+```
+Machine model: X96Max_P (G12A, 4 GiB, external Ethernet PHY)
+Memory: 3087124K/3538944K available
+```
+
+**この機体は 4 GiB。** 以前「2 GiB」と記録していたのは誤り。
+`ephy-4g`（4GiB + external Ethernet PHY）がまさに正しい DTB。
+
+**1代目・2代目と同じ条件になった。それでも `USB_R1` で落ちる。**
+
+### レジスタの構造（G12A）
+
+```c
+#define G12A_GLUE_OFFSET  0x80
+#define U2P_REG_SIZE      0x20
+
+glue regmap   = base + 0x80   → 0xffe09080
+u2p_regmap[i] = base + i*0x20 → 0xffe09000 (i=0), 0xffe09020 (i=1)
+```
+
+`USB_R1` = `0xffe09080 + 0x04` = **`0xffe09084`**。
+
+### 残る謎
+
+1代目・2代目は同じ DTB・同じコードで `USB_R1` を書けている。3代目は書けない。
+
+**機体個体差か、PHY の状態か、電源投入のタイミングか。**
+DT295 の挿抜、USB の再列挙、電源の入れ直し回数などが影響している可能性。
+
+### 次の一手
+
+1代目（`192.168.99.109`）が起動していれば、その `dmesg` で
+`USB_R1` の書き込みがどうなっているか比較できる。ただし現在は停止中。
+
+**または 3代目で `0xffe09084` が読めるか**を Linux から確認する
+（`-nousb` DTB なら Linux が起動するので、`devmem` で調べられる）。
