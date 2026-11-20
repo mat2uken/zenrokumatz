@@ -1506,3 +1506,66 @@ DMA と競合する可能性がある（同じ AHB バス上）。
 | SSH | **達成** |
 | **録画パイプライン** | **`pix-stream` 起動時にネットワークが停止** |
 | NAS 保存・CM カット | 未達 |
+
+# 🔬 再現成功（round 154）: `pix-stream` 起動 → システム全体ハング
+
+### 実験
+
+稼働中の Linux（`PIX_TUNER=none`、SSH・1Gbps・DT295 認識すべて正常）で:
+
+```sh
+sed -i "s/^PIX_TUNER=none$/PIX_TUNER=dt295/" /etc/default/pix-stream-linux
+/etc/init.d/S97pix-stream start
+```
+
+### 結果: **即座に全停止**
+
+```
+SSH DEAD          ← 3 秒後には SSH 不通
+ping: 100% packet loss
+シリアル: 0 バイト（無応答）
+```
+
+**ネットワーク・シリアル・システム全体がハング。**
+
+### 確定した因果関係
+
+| 状態 | 結果 |
+|---|---|
+| `PIX_TUNER=none`（DT295 を触らない） | **SSH・1Gbps・DT295 認識すべて正常** |
+| `PIX_TUNER=dt295` + `pix-stream` 起動 | **3 秒以内にシステム全体ハング** |
+
+**`pix-stream` が DT295 を open した瞬間にカーネルごと停止する。**
+
+### 犯人
+
+`pix-stream-simple` → `run_worker probe` → `pix-ts-legacy` が DT295 の
+USB アイソクロナス転送を開始する。その瞬間に:
+
+- Ethernet（`meson8b-dwmac`）が停止
+- シリアル（`ttyAML0`）が停止
+- おそらくカーネル全体がロック
+
+**アイソクロナス転送の DMA が、他の DMA（Ethernet、UART）と衝突している**
+可能性が高い。または `dwc3` の xHCI リングが壊れてバスがロック。
+
+### vendor（Android）では動く理由
+
+Android は vendor の `dwc3` ドライバと vendor の USB 初期化を使っており、
+アイソクロナス転送の設定（TRB、bandwidth、interval）が正しい。
+mainline の `dwc3`/`xhci-hcd` では、この DT295 のアイソクロナス要求を
+正しく扱えていない可能性がある。
+
+### 次の一手
+
+1. **`pix-ts-legacy` を単体で実行**して、どこまで進むか確認
+   （`pix-stream` を介さず、直接 DT295 を open する）
+2. `dmesg` を**ハング直前まで**取得する（シリアルに流れる前に止まるので困難）
+3. `panic_on_oops=1` が効いているなら、ハングではなく panic になるはず。
+   効いていないなら、oops ではなく**完全なデッドロック**。
+
+### 重要な意味
+
+**Linux 起動・USB 認識・ネットワークはすべて達成済み。**
+残る唯一の障害は「DT295 からの実際のストリーム読み出し」。
+これは `pix-ts-legacy`（vendor バイナリ）と mainline の xHCI の相性問題。
