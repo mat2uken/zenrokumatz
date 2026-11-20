@@ -1,0 +1,102 @@
+#!/bin/sh
+#
+# pix-cfw-ts - MB8AC031-CFW から生 TS（複合前）を取り出して標準出力へ流す
+#
+# 純正ファームの pix-ts-legacy に代わる入り口。違いは次のとおり。
+#
+#   pix-ts-legacy  チューナー内で複合し、複合済み TS を出す
+#   pix-cfw-ts     複合前の生 TS を出し、複合は後段（torne-b25）に任せる
+#
+# ファームウェア側に主ループが無い（1 枠で 32KiB までしか運べない）ので、
+# ts_grab が制御転送を回し続けることで連続化している。止まったら自分で
+# 選局し直す。
+#
+# 設定は /etc/default/pix-stream-linux を読む。使う値:
+#   PIX_SYSTEM, PIX_CHANNEL, PIX_SAT_SLOT, PIX_SAT_TSID
+#
+# チャンネルの書き方は ts_grab に合わせる。
+#   地上波: 17          （UHF の物理チャンネル）
+#   衛星:   BS15/0x40f1 （トランスポンダと TSID）
+#
+# 前提: CFW が入っていて、純正ファームが載っていないこと。純正経路
+# （pix-ts-legacy）を一度でも動かすと hook が戻るので、そのときは
+# USB を電源切り直しして入れ直す。
+
+set -u
+[ -r /etc/default/pix-stream-linux ] && . /etc/default/pix-stream-linux
+
+: "${PIX_SYSTEM:=terrestrial}"
+: "${PIX_CHANNEL:=17}"
+: "${PIX_SAT_SLOT:=}"
+: "${PIX_SAT_TSID:=}"
+: "${PIX_LOG_DIR:=/tmp}"
+: "${PIX_CFW_TOOL:=/usr/bin/pix-cfw-grab}"
+: "${PIX_CFW_STALL_SECONDS:=10}"
+: "${PIX_CFW_RETRY_SECONDS:=3}"
+: "${PIX_CFW_BURSTS:=64}"
+
+log() { echo "$(date +%H:%M:%S) cfw-ts: $*" >&2; }
+
+# ts_grab に渡すチャンネル表記を作る。
+#
+# CFW では衛星を「トランスポンダと TSID」で指す（例 BS15/0x40f1）。
+# 純正ファームの PIX_SAT_SLOT（スロット 0..7）とは意味が違うので、
+# CFW 用に PIX_CFW_CHANNEL を用意する。設定されていればそれを最優先で使う。
+#
+#   地上波  PIX_CHANNEL=17                       -> 17
+#   衛星    PIX_CFW_CHANNEL=BS15/0x40f1          -> BS15/0x40f1
+#   衛星    PIX_CHANNEL=BS15 PIX_SAT_TSID=0x40f1 -> BS15/0x40f1
+#
+# トランスポンダ番号はチャンネル番号と一致しない（実測: BS11 は BS15）。
+cfw_channel() {
+    if [ -n "${PIX_CFW_CHANNEL:-}" ]; then
+        printf '%s' "$PIX_CFW_CHANNEL"
+        return
+    fi
+    if [ "$PIX_SYSTEM" = "terrestrial" ]; then
+        printf '%s' "$PIX_CHANNEL"
+        return
+    fi
+    case "$PIX_CHANNEL" in
+        BS*|CS*) printf '%s' "$PIX_CHANNEL" ;;
+        *)
+            case "$PIX_SYSTEM" in
+                bs)  printf 'BS%s' "$PIX_CHANNEL" ;;
+                cs)  printf 'CS%s' "$PIX_CHANNEL" ;;
+                *)   printf '%s' "$PIX_CHANNEL" ;;
+            esac
+        ;;
+    esac
+    [ -n "$PIX_SAT_TSID" ] && printf '/%s' "$PIX_SAT_TSID"
+}
+
+if [ ! -x "$PIX_CFW_TOOL" ]; then
+    log "取得用の道具がありません: $PIX_CFW_TOOL"
+    exit 1
+fi
+
+chan=$(cfw_channel)
+log "starting channel=$chan"
+
+# 取得そのものは ts_grab に任せる。ここは「止まったら選局し直す」係。
+# ts_grab は --seconds 0 で SIGTERM まで流し続ける。
+restarts=0
+while :; do
+    "$PIX_CFW_TOOL" save - --seconds 0 --dev dt295 --bursts "$PIX_CFW_BURSTS" \
+        "$chan" 2>"$PIX_LOG_DIR/pix-cfw-ts.log"
+    status=$?
+
+    # 下流（torne-b25 / エンコーダ）が閉じたら EPIPE で終わる。それは正常。
+    [ "$status" = 0 ] && break
+
+    # 止まったときの検出。ts_grab は「nothing on ep」を出すので、それを
+    # 見て選局し直す。ここで短い待ちを挟まないと、ファームが詰まったまま
+    # 同じ失敗を高速で繰り返す。
+    if grep -q "nothing on ep" "$PIX_LOG_DIR/pix-cfw-ts.log" 2>/dev/null; then
+        restarts=$((restarts + 1))
+        log "no data from the tuner; retune (restart $restarts)"
+    else
+        log "capture ended (status $status)"
+    fi
+    sleep "$PIX_CFW_RETRY_SECONDS"
+done

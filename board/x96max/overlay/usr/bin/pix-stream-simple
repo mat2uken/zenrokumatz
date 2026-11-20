@@ -319,14 +319,32 @@ run_direct() {
 
 # 復号器を挟むときは、出力の詰まりでカードのやり取りが止まるため、
 # いったんファイルへ書いて別プロセスに読ませる。
+# 複合前の生 TS を出す源。
+#
+#   dt295      純正ファーム。デバイス内で複合済みの TS を出す
+#   dt295-cfw  MB8AC031-CFW。複合前の TS を出す（torne-b25 で複合する）
+#
+# dt295-cfw は pix-cfw-ts が連続で取り出し続ける。止まったら選局し直すのは
+# pix-cfw-ts の役目なので、ここでは包むだけでよい。
+raw_ts_source() {
+    case "$PIX_TUNER" in
+        dt295-cfw)
+            exec pix-cfw-ts
+            ;;
+        *)
+            # shellcheck disable=SC2086
+            exec pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
+                -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$(capture_seconds)" \
+                2>/tmp/pix-ts.log
+            ;;
+    esac
+}
+
 run_buffered() {
     rm -f /dev/shm/pix/b25.trace "$PIX_RING_FILE"
     # 復号器の出力は固定長のリングへ入れる。追記型のファイルに書くと
     # 録画の長さだけ育って tmpfs を埋めるが、リングなら一定量で回る。
-    # shellcheck disable=SC2086
-    capture pix-ts-legacy --model "$PIX_TUNER" --assets /usr/share/pix-tuner \
-        -s "$PIX_SYSTEM" -c "$PIX_CHANNEL" $extra -t "$(capture_seconds)" \
-        2>/tmp/pix-ts.log \
+    capture raw_ts_source \
       | torne-b25 --card-socket /dev/shm/torne/card.sock --trace /dev/shm/pix/b25.trace \
             2>/tmp/pix-b25.log \
       | pix-ring --path "$PIX_RING_FILE" --size "$PIX_RING_MB" --produce \

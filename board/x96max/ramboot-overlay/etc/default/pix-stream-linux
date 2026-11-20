@@ -27,3 +27,11 @@ PIX_GOP=60
 # 8進になるため書かない。
 PIX_CAPTURE_SECONDS=-
 PIX_LOGO_DIR=/var/lib/pix/logos
+
+# CFW（MB8AC031-CFW）を使うときの設定。PIX_TUNER=dt295-cfw で有効になる。
+#
+# 純正ファームは複合済みの TS しか出さないが、CFW は複合前の生 TS を出す。
+# チャンネルは「トランスポンダと TSID」で指す（実測: BS11 は BS15、TSID 0x40f1）。
+# PIX_CHANNEL=9 / PIX_SAT_SLOT=0 は純正ファーム用の書き方で、CFW では
+# BS9 になりロックしないので、CFW 用の値を別に持つ。
+PIX_CFW_CHANNEL=BS15/0x40f1

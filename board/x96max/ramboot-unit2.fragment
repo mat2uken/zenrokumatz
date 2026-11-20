@@ -3,3 +3,9 @@ BR2_TARGET_GENERIC_HOSTNAME="x96max-p2"
 BR2_TARGET_GENERIC_ISSUE="X96Max_P2 RAM-root Linux"
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/overlay $(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/ramboot-overlay"
 BR2_LINUX_KERNEL_INTREE_DTS_NAME="amlogic/meson-g12a-x96-max-p amlogic/meson-g12a-x96-max-p-ephy amlogic/meson-g12a-x96-max-p-ephy-4g"
+
+# Unit 2 is the CFW unit: the tuner hands over the stream before descrambling
+# and torne-b25 does the ARIB work with a B-CAS card. Units 1 and 3 record
+# through the vendor firmware (pix-ts-legacy / siano-ts), so they do not
+# carry these tools.
+BR2_PACKAGE_CFW=y

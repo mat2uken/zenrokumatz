@@ -1,0 +1,14 @@
+config BR2_PACKAGE_CFW
+	bool "cfw (MB8AC031 replacement firmware tools for PIX-DT295)"
+	select BR2_PACKAGE_LIBUSB
+	help
+	  Host-side tools for MB8AC031-CFW: frc1_load puts the replacement
+	  firmware on the tuner chip, and ts_grab takes the raw (still
+	  scrambled) transport stream out of it.
+
+	  The firmware itself (frc1-dt295.frc) is installed alongside, so the
+	  image carries the exact container the tools were built against.
+
+	  This is the DT295 path that replaces in-tuner descrambling: the
+	  tuner hands over the stream before it is decrypted, and torne-b25
+	  does the ARIB MULTI2 work with a B-CAS card.

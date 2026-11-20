@@ -94,9 +94,20 @@ class LauncherPassesNormalisedSecondsTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_every_capture_passes_through_capture_seconds(self):
-        for function in ("run_direct", "run_buffered"):
-            body = extract(self.source, f"{function}() {{", "}\n")
-            self.assertIn('"$(capture_seconds)"', body, function)
+        # run_buffered now goes through raw_ts_source, which picks the vendor
+        # path (bounded by capture_seconds) or the CFW path (unbounded by
+        # design). A raw setting anywhere is caught by the test above.
+        direct = extract(self.source, "run_direct() {", "\n}\n")
+        self.assertIn('"$(capture_seconds)"', direct)
+        raw = extract(self.source, "raw_ts_source() {", "\n}\n")
+        self.assertIn('"$(capture_seconds)"', raw)
+        # The CFW branch must not pass a -t at all: pix-cfw-ts streams until
+        # stopped, and handing it a timeout would reintroduce the cut.
+        cfw_branch = raw[:raw.index(";;") + 2]
+        self.assertIn("dt295-cfw", cfw_branch)
+        # "-t" as a flag, not the "-t" inside the tuner name "dt295-cfw".
+        self.assertNotIn("-t ", cfw_branch)
+        self.assertNotIn('"-t"', cfw_branch)
 
     def test_direct_path_keeps_the_original_output_chain(self):
         # Only the -t value may change on the direct path. Programme metadata,
