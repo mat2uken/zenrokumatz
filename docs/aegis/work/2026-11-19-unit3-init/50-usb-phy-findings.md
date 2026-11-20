@@ -617,3 +617,49 @@ ret = of_platform_populate(np, NULL, NULL, dev);    // ← 子の dwc3 を登録
 
 ただし `USB_R1` への書き込みは以前（round 54/55）に例外になった実績がある。
 `0xffe09004` への書き込みが通るかは微妙。
+
+## 追記（round 118）: round 37 の成功時は dwc2 が動いていた（dwc2 無効化が裏目）
+
+### round 37 のログ（成功、`-p-gxl`、`skip-glue-init` なし）
+
+```
+[1.322276] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.323384] dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+[1.865640] dwc2 ff400000.usb: supply vusb_d not found, using dummy regulator
+[1.874424] dwc2 ff400000.usb: Configuration mismatch. dr_mode forced to device
+[1.881780] dwc2 ff400000.usb: EPs: 7, dedicated fifos, 712 entries in SPRAM
+[1.892690] xhci-hcd xhci-hcd.0.auto: xHCI Host Controller
+[1.901881] xhci-hcd: hcc params 0x0228fe64
+[1.911082] xhci-hcd: irq 17, io mem 0xff500000
+```
+
+**`dwc2` が初期化を完了してから、`xhci` が `0xff500000` をマップして成功した。**
+
+### 現在との差分（2 つ）
+
+| 項目 | round 37（成功） | 現在（失敗） |
+|---|---|---|
+| `dwc2` | **有効（初期化される）** | **無効化した** |
+| `skip-glue-init` | なし（glue の全経路を実行） | あり（全部スキップ） |
+
+### 新たな仮説
+
+**`dwc2` の初期化が `0xff500000` の窓を開ける。** `dwc2` は
+`usb2_phy1` を使い、`phy_init`/`phy_power_on` を呼ぶ。dwc2 の probe は
+dwc3 より先に走る（ログの時刻が 1.86 秒 vs 1.89 秒）。
+
+round 106-107 で `dwc2` を無効化したのは、`dwc2_driver_probe` の例外を
+避けるためだった。しかし**その例外は `skip-glue-init` が無い構成での話**。
+現在は `skip-glue-init` があるので、dwc2 を有効に戻しても例外にならない
+可能性がある。
+
+### 次の一手
+
+**`dwc2` を有効に戻す。** 現在の構成（`skip-glue-init` あり、7 パッチ）で
+`&dwc2 { status = "okay"; }` にすれば:
+
+- dwc2 が PHY を初期化し、`0xff500000` の窓が開く可能性
+- dwc2 の probe 自体は `skip-glue-init` の影響を受けない（別ドライバ）
+- 以前の dwc2 例外は glue 経由だったので、今は起きない可能性
+
+**これが最短の検証。** 1 行の DTS 変更で試せる。
