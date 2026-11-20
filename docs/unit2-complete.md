@@ -84,3 +84,26 @@ manager  enabled=True  state=recording  pushed=254
 - `totalDropped` は 38 で止まったまま（読者がいない間に増えた分。以後は増えていない）
 
 **2代目は CFW 経路で録画を続けている。**
+
+## 調査中に壊した 1代目を戻した
+
+2代目のカード経路を調べる途中、1代目で「同じカードを2クライアントで使えるか」を
+試すために `/etc/bcas/second.conf` の relay を起動し、本来の relay を落として
+しまった。その結果 1代目の録画が止まっていた（NAS から見て `state=error`）。
+
+**戻した内容:**
+- 試験用 relay（`/tmp/second.conf`）を停止・削除
+- `/etc/init.d/S96bcas restart` で本来の `cardrelay.conf`（`host=192.168.99.10`）を起動
+- `/etc/init.d/S97pix-stream start`
+
+**確認:**
+```
+unit1  17      capturing=true  readers=1  totalDropped=0
+unit2  BS09_0  capturing=true  readers=1  totalDropped=38（読者なしの間に増えた分で停止）
+NAS    192.168.99.109 recording / 192.168.99.123 recording
+```
+
+2台とも NAS が読んでいる。
+
+**教訓:** 共有资源（1枚のカード、1つの relay）を試すときは、既存の運用を
+止めない形で行う。止める必要があるなら、先に何が止まるかを言ってからにする。
