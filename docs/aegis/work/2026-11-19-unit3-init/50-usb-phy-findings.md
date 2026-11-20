@@ -1898,3 +1898,57 @@ verisilicon/ ディレクトリ: 空                                     ← han
 3. `/dev/video*` にエンコーダが現れるか
 4. `ffmpeg -encoders | grep h264_v4l2m2m` で確認
 5. **VPU エンコードでハングしないか**（これが本命）
+
+# デバッグ中（round 160）: amvenc_avc が `No such device` で probe しない
+
+### 状況
+
+SM1 DTB で起動後:
+
+```
+$ lsmod | grep amvenc
+（無い）
+
+$ modprobe amvenc_avc
+modprobe: can't load module amvenc_avc (updates/amvenc_avc.ko): No such device
+
+$ dmesg | grep amvenc
+[2.302241] amvenc_avc: loading out-of-tree module taints kernel.
+（probe のログが無い）
+```
+
+### 確認したこと（すべて正常）
+
+| 項目 | 状態 |
+|---|---|
+| SoC | `Amlogic Meson SM1 (S905X3) Revision 2b:c` |
+| DT の vdec compatible | **`amlogic,sm1-vdec`** ✓ |
+| vdec ドライバ | `ff620000.video-decoder` にバインド ✓ |
+| `amlogic,ao-sysctrl` | あり ✓ |
+| `amlogic,canvas` phandle | `<0x20>` あり ✓ |
+| `clock-names` | `dos_parser dos vdec_1 vdec_hevc vdec_hevcf` ✓（`dos` あり）|
+| **canvas ドライバ** | **`ff638048.video-lut` にバインド済み** ✓ |
+| `/dev/video0` | `meson-video-decoder`（デコーダのみ）|
+
+### `venc_hw_init()` の失敗候補
+
+`compat.c` の順序:
+
+```c
+np = of_find_compatible_node(NULL, NULL, "amlogic,sm1-vdec");   // OK
+of_address_to_resource(np, 0, &res);                            // OK
+venc_hw.ao = syscon_regmap_lookup_by_phandle(np, "amlogic,ao-sysctrl");  // ?
+hhi = of_find_compatible_node(NULL, NULL, "amlogic,meson-gx-hhi-sysctrl"); // ?
+venc_hw.dos_clk = of_clk_get_by_name(np, "dos");                // ?
+venc_alloc_canvases(np);                                        // ?
+venc_hw.dos = ioremap(res.start, ...);                          // ?
+venc_map_irq();                                                 // ?
+platform_device_register_simple("amvenc_avc", ...);
+```
+
+**`amlogic,meson-gx-hhi-sysctrl` が無い可能性**が高い。
+`bus@ff600000/system-controller@0` に `amlogic,meson-gx-hhi-sysctrl` があるか要確認。
+
+### 次の一手
+
+`compat.c` の各段階で `pr_err` を出して、どこで失敗するかを特定する。
