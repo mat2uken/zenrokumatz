@@ -946,3 +946,53 @@ adb shell 'su -c "sha256sum /mnt/media_rw/0708-F8A4/Image"'
 
 **SD の抜き差しが不要になった。** 以降のカーネル/rootfs の更新は、
 Android を起動 → `adb push` → `cp` で完結する（1 ファイル 2 秒程度）。
+
+## 追記（round 101 後半）: skip-glue-init が不十分だった（usb_post_init も書く）
+
+### 発見
+
+`6a9b20e4` の Image（`skip-glue-init` のみ）で起動したところ、**別の場所で
+同じ例外**になった。
+
+```
+dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+Internal error: synchronous external abort
+
+Call trace:
+ regmap_mmio_read32le
+ _regmap_update_bits
+ dwc3_meson_g12a_usb_otg_apply_mode+0x120/0x160
+ dwc3_meson_gxl_usb_post_init+0x3c/0x50      ← ここ
+ dwc3_meson_g12a_probe+0x354/0x590
+```
+
+**`usb_init_glue` はスキップできていた**が、その後の `usb_post_init`
+（GXL 版）が `usb_otg_apply_mode` を呼び、そこで glue レジスタを書いて例外。
+
+### 修正
+
+`dwc3_meson_gxl_usb_post_init` の先頭にも同じガードを追加した:
+
+```c
+static int dwc3_meson_gxl_usb_post_init(struct dwc3_meson_g12a *priv)
+{
+	int ret;
+
+	/* The glue block is not writable on this board; see usb_init_glue. */
+	if (of_property_read_bool(priv->dev->of_node, "amlogic,skip-glue-init"))
+		return 0;
+
+	ret = priv->drvdata->set_phy_mode(priv, USB2_OTG_PHY, ...);
+```
+
+パッチ 0004 に 2 つ目のハンクとして追加し、クリーンなツリーで
+4 パッチすべての適用を確認（`Image` = `6779f086`）。
+
+### 学び
+
+`skip-glue-init` は **glue レジスタを触るすべての経路**に必要。今回で
+`usb_init_glue`（USB_R1/USB_R5/usb3_init/otg_apply_mode）と
+`usb_post_init`（otg_apply_mode）の 2 箇所を塞いだ。他に `set_phy_mode`
+（`dwc3_meson_gxl_set_phy_mode`）も glue を触る可能性があるので、次の起動で
+別の場所で例外が出たら同じように塞ぐ。
