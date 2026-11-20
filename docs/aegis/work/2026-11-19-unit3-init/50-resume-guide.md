@@ -1440,3 +1440,40 @@ Android に進んでしまったため、Ctrl-C を明示的に送るように�
 
 **その場合は、dwc3 のレジスタ窓を開ける別の手段（vendor の USB 初期化を
 移植するなど）が必要になる。**
+
+## 追記（round 131）: U-Boot の autoboot を止めるのが難しい
+
+### 試したこと
+
+| 方法 | 結果 |
+|---|---|
+| `catch_prompt`（0.25 秒ごとに Enter） | 失敗。Android に進む |
+| 0.15 秒ごとに Enter を 40 回 | **成功**（attempt 22 で捕捉） |
+| 捕捉後に `md` を発行 | **失敗**。`md` の前に autoboot が再開 |
+
+### 問題
+
+U-Boot のカウントダウンは 1 秒（`Hit Enter or space or Ctrl+C key to stop autoboot -- : 1`）。
+プロンプトに到達しても、**次の autoboot までの猶予が短い**か、`bootcmd` が
+すぐ走る。
+
+捕捉に成功した round 131 の 1 回目でも、`md` を送る前に Android が起動した。
+
+### 対策案
+
+1. **プロンプト到達後すぐ、1 つの書き込みで `md` を送る**（改行を入れずに送る）。
+   現在は `\r` を送ってから別途 `md` を送っているため、その間に autoboot が走る。
+2. **Ctrl-C を最初から送り続ける**（Enter ではなく）。
+3. **`bootdelay` を大きくする**。`setenv bootdelay 10` は `saveenv` しないと
+   次の起動に効かないが、**同じ起動中なら有効**。プロンプトに一度でも
+   到達できれば、`setenv bootdelay 30` で以降の猶予が増える。
+
+### 3 が有望
+
+プロンプトに到達 → 即 `setenv bootdelay 30` → 以降は落ち着いて `md` を
+実行できる。`saveenv` はしないので NAND は汚さない（電源を切れば元に戻る）。
+
+### 現状
+
+**機体は Android で稼働中。** 電源を入れ直して再試行するか、
+Android から `reboot` して U-Boot を狙う。
