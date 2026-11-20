@@ -110,6 +110,26 @@ class BootCommands(unittest.TestCase):
             self.assertIn(dtb, joined)
         self.assertEqual(boot, "booti ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r}")
 
+    def test_unit3_usb_boot_needs_no_sd_card(self):
+        """A USB stick is the only way to swap files when neither SD nor TFTP works.
+
+        This U-Boot has no fatwrite and its TFTP stack cannot transmit, so the
+        card has to come out for every update unless a stick can be used.
+        """
+        setup, boot = uboot.ramboot_setup(unit=3, usb=True)
+        loads = [c for c in setup if c.startswith("fatload ")]
+        self.assertEqual(len(loads), 3)
+        for command in loads:
+            self.assertIn("fatload usb 0:1", command)
+        self.assertIn("usb start", setup)
+        joined = " ".join(setup)
+        self.assertNotIn("mmc", joined)
+        self.assertNotIn("tftpboot", joined)
+        self.assertTrue(loads[1].endswith("${ramboot_dtb}"))
+        for dtb in ("meson-g12a-x96-max-p.dtb", "meson-g12a-x96-max-p-ephy-4g.dtb"):
+            self.assertIn(dtb, joined)
+        self.assertEqual(boot, "booti ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r}")
+
     def test_board_identity_must_match_selected_unit(self):
         for unit, board in ((1, "g12a_u212_2g"), (2, "g12a_u211_4g")):
             self.assertTrue(uboot.ramboot_board_matches(f"aml_dt={board}\r\n", unit))

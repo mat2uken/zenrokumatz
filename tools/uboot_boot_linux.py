@@ -79,7 +79,7 @@ def ramboot_board_matches(text, unit):
     return any(re.search(re.escape(board), text) for board in accepted)
 
 
-def ramboot_setup(server=None, ipaddr=None, unit=2):
+def ramboot_setup(server=None, ipaddr=None, unit=2, usb=False):
     """Full RAM boot; unit 1 SD/2GiB, unit 2 USB/4GiB, unit 3 SD/DT295. Never saveenv."""
     if unit not in RAMBOOT_BOARDS:
         raise ValueError("RAM boot unit must be 1, 2 or 3")
@@ -102,6 +102,18 @@ def ramboot_setup(server=None, ipaddr=None, unit=2):
         if unit == 3:
             # Unit 3's DTB is chosen by the board name in the U-Boot prompt, as
             # it is for local media, since this U-Boot's aml_dt is not a DTB name.
+            setup += [f"setenv ramboot_dtb {next(iter(UNIT3_DTBS.values()))}"]
+            for board, name in UNIT3_DTBS.items():
+                setup += [f"if test \"${{board#*{board}}}\" != \"${{board}}\"; then setenv ramboot_dtb {name}; fi"]
+            setup += ["printenv ramboot_dtb"]
+            dtb = "${ramboot_dtb}"
+    elif usb:
+        # Load from a USB stick instead of the SD card. U-Boot on this board has
+        # no fatwrite and its TFTP stack cannot transmit, so a stick is the only
+        # way to swap the kernel and initramfs without removing the card.
+        setup += ["usb start", "sleep 3"]
+        load = "fatload usb 0:1"
+        if unit == 3:
             setup += [f"setenv ramboot_dtb {next(iter(UNIT3_DTBS.values()))}"]
             for board, name in UNIT3_DTBS.items():
                 setup += [f"if test \"${{board#*{board}}}\" != \"${{board}}\"; then setenv ramboot_dtb {name}; fi"]
@@ -243,16 +255,22 @@ def main():
     ap.add_argument("--unit", type=int, choices=(1, 2, 3), default=2,
                     help="RAM boot unit: 1=SD/2GiB, 2=USB/4GiB, 3=SD/DT295 (default 2)")
     ap.add_argument("--tftp-server", help="load RAM-boot files from this IPv4 address instead of local media")
+    ap.add_argument("--usb", action="store_true",
+                    help="load RAM-boot files from a FAT USB stick instead of the SD card")
     ap.add_argument("--ipaddr", help="temporary TFTP IPv4 (default: unit1 .109, unit2 .123)")
     ap.add_argument("--dtb", help="load this DTB name instead of the unit's default "
                                   "(for example the unit-3 diagnostic meson-g12a-x96-max-p-nousb.dtb)")
     args = ap.parse_args()
     if args.dtb and not args.ramboot:
         ap.error("--dtb requires --ramboot")
+    if args.usb and not args.ramboot:
+        ap.error("--usb requires --ramboot")
+    if args.tftp_server and args.usb:
+        ap.error("--tftp-server and --usb are mutually exclusive")
     if args.tftp_server and not args.ramboot:
         ap.error("--tftp-server requires --ramboot")
     try:
-        setup, boot = ramboot_setup(args.tftp_server, args.ipaddr, args.unit) if args.ramboot else (SETUP, BOOT)
+        setup, boot = ramboot_setup(args.tftp_server, args.ipaddr, args.unit, args.usb) if args.ramboot else (SETUP, BOOT)
     except ValueError as exc:
         ap.error(str(exc))
     if args.dtb:
