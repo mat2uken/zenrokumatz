@@ -1301,3 +1301,51 @@ python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-ephy-4g.dtb \
 
 起動後のネットワーク不通。`panic_on_oops=1 panic=8` で自動再起動するので、
 次回の起動で「oops が起きているか」がログから分かる。
+
+## 追記（round 140）: 2代目の実績ログに `usb start` → USB メモリ起動 → DT295 録画の完全な手順があった
+
+### 発見した記録（`work/restart-recipe-persist-result.log`）
+
+```
+linux_boot_ram='run ram_boot_setup; for ram_try in 1 2 3; do if usb start; then sleep 3; run ram_boot_load; fi; ...'
+
+1 Storage Device(s) found
+
+[1.262464] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.302238] xhci-hcd: xHCI Host Controller
+[1.310272] xhci-hcd: hcc params 0x0228fe6c hci version 0x110    ← PPC=1
+[1.319476] xhci-hcd: irq 17, io mem 0xff500000
+
+{"model":"DT295","phase":3,"packets":5550080,"elapsed_ms":437443,"usb_bytes":1043513344,...}
+```
+
+**`usb start` → USB メモリから起動 → xhci が `0xff500000` をマップ →
+DT295 で 5,550,080 パケット（約 1GB）を録画。**
+
+### 機体
+
+`aml_dt = g12a_u211_4g`、プロンプト `g12a_u211_v1#` = **2代目**。
+
+### つまり
+
+**2代目では「USB メモリ + `usb start`」で完全に動作していた。**
+`hcc params 0x0228fe6c`（PPC=1）は vendor の U-Boot が `usb start` で
+設定したもの。
+
+### 3代目への適用
+
+3代目（`g12a_u212_v1`）でも同じ手順が使えるはず:
+
+1. USB メモリ（FAT32）に `Image`、`rootfs.cpio.uboot`、DTB を置く
+2. U-Boot で `usb start`
+3. `fatload usb 0:1 ...` でロード
+4. `booti`
+
+**round 137 では SD からロードしつつ `usb start` だけ実行して成功した。**
+USB メモリからロードする必要はなく、`usb start` の副作用（vendor の
+USB 初期化）が本質。
+
+### 起動後のネットワーク不通について
+
+2代目のログでは録画が動いていたので、ネットワークも当然動いていた。
+3代目で不通なのは別の問題（`pix-stream` が USB を触って oops した可能性）。
