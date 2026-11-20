@@ -761,3 +761,73 @@ fatls usb 0:1      # FAT の中身
 **判断**: 現時点では使い道が無いため、停止してよい。再開する場合は
 `/etc/x96-tftp.conf` と `/srv/x96tftp` が残っていれば
 `sudo dnsmasq --conf-file=/etc/x96-tftp.conf` で復帰できる。
+
+## 追記（round 100）: TFTP 不通の原因をレジスタレベルで特定
+
+### 測定したこと
+
+NAS 側で `tcpdump` を回しながら U-Boot から `ping` した結果、**ARP 要求は
+NAS から出るが、U-Boot からのパケットは一切出ていない**。MAC アドレスは NAS の
+近隣テーブルに載っている（`192.168.99.56 lladdr 90:0e:b3:24:81:7e STALE`）。
+
+### DWMAC のレジスタ（`macreg d`）
+
+**MAC レジスタ**
+
+```
+[0x0040] 0x80007e81   ← MAC_CONFIG
+```
+
+| ビット | 値 | 意味 |
+|---|---|---|
+| bit0 RE | **1** | 受信有効 |
+| **bit1 TE** | **0** | **送信が無効！** |
+| bit14 FES | 1 | 100M モード（リンクは 1000/full なのに） |
+
+**DMA レジスタ**
+
+```
+DMA_OP_MODE [0x0000] = 0x1c800
+  ST (Start/Stop TX, bit13) = 0     ← 送信停止
+  SR (Start/Stop RX, bit 1) = 0     ← 受信停止
+```
+
+**PHY レジスタ**（正常）
+
+```
+reg0 (BMCR) = 0x5040   オートネゴ有効
+reg1 (BMSR) = 0x79ad   Link Status=1, Auto-Neg Done=1
+```
+
+### 原因
+
+**U-Boot の DWMAC 初期化が `TE`（送信有効）を立てていない。** さらに DMA の
+送受信開始ビットも 0。
+
+手動で `macreg w 0x40 0x80007e83`（TE=1）と `macreg w 0x0 0x1e802`
+（ST/SR=1）を書くと値は入るが、**`ping` を実行すると U-Boot が DWMAC を
+再初期化して上書きしてしまう**。
+
+### Amlogic 独自のデバッグコマンド（今回発見）
+
+```
+phyreg d / r reg / w reg val   ethernet phy register read/write/dump
+macreg d / r reg / w reg val   ethernet mac register read/write/dump
+ethloop                        loopback test using ethernet test package
+```
+
+`mii` コマンドは無いが、これらで PHY/MAC を直接操作できる。
+
+### 次のアプローチ
+
+U-Boot の DWMAC ドライバが `FES=1`（100M）のまま送信を有効化していない。
+リンクは 1000/full なので、**PHY の速度設定と MAC の速度設定が食い違っている**。
+
+考えられる対処:
+
+1. **PHY を 100M に固定する**（`phyreg w 0 0x2100` で AN 無効 + 100M full）
+   → リンクが 100M になり、MAC の FES=1 と一致する可能性
+2. `ethloop` で送受信そのものをテストする
+3. U-Boot の DWMAC 初期化コードを追う（バイナリなので困難）
+
+**まず 1 を試す価値がある。** 100M でも TFTP で 77MB を送るのに 10 分程度。
