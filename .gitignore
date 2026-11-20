@@ -3,3 +3,5 @@
 /.yomiyasu/
 /board/x96max/overlay/root/.ssh/authorized_keys
 __pycache__/
+/nas/out/
+nas/src/__pycache__/

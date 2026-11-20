@@ -542,6 +542,22 @@ class InstallBootTool(unittest.TestCase):
         self.assertIn("step failed", section)
         self.assertIn('"card in"', section)
 
+    def test_usb_start_runs_before_booti_when_requested(self):
+        """Round 73 worked after U-Boot ran "usb start"; that state is inherited.
+
+        The vendor controller/PHY init happens there, so Linux may then find the
+        glue and dwc3 windows already usable. The option must issue the command
+        before the loads, and stay absent by default.
+        """
+        body = Path(self.tool.__file__).resolve().read_text()
+        start = body.index("def boot(")
+        end = body.index("def main(")
+        section = body[start:end]
+        self.assertIn('b"usb start\\r"', section)
+        self.assertIn("if usb_start:", section)
+        # The usb start block must precede the mmc/fatload loop.
+        self.assertLess(section.index("if usb_start:"), section.index("mmc dev 0"))
+
     def test_digest_is_sha256_of_the_file(self):
         path = Path(self.tool.__file__).resolve().parents[1] / "tools/install-boot.py"
         self.assertEqual(self.tool.digest(path),
