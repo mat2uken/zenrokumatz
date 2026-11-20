@@ -2077,3 +2077,57 @@ Linux 経由で SD へ書き込み、検証 OK。
 2. `dmesg` に `amvenc: dos ... irq ... canvas ...` が出るか
 3. `/dev/video1`（エンコーダ）が現れるか
 4. **VPU エンコードでハングしないか**
+
+## 追記（round 163）: 新 rootfs で起動したが、pix-stream が再びハングさせた
+
+### 起動結果（`rootfs` = `f38506c7`、SM1 DTB、`usb start` あり）
+
+```
+Starting netdiag: OK
+B-CAS: DT295 internal card (vendor firmware descrambles)
+Starting pix-stream: OK
+Starting pix-logo-weekly: OK
+
+X96Max_P3 RAM-root login:
+```
+
+起動自体は成功（`login:` まで到達）。しかし直後に:
+
+```
+ping: 100% packet loss
+adb closed
+シリアル: 0 バイト
+```
+
+**再びシステム全体がハング。** round 156 と同じ症状。
+
+### 原因
+
+この rootfs は `PIX_TUNER=dt295` でビルドされていた（round 162 で設定を
+元に戻したため）。`pix-stream` が DT295 を開いて VPU エンコーダへ流そうと
+した段階で停止した可能性が高い。
+
+**`amvenc_avc` が原因の可能性も残る**（新しいパッチで初めて probe が
+通った可能性があり、その場合はじめてハードウェアに触る）。切り分けが必要。
+
+### 対処
+
+`PIX_TUNER=none` に戻して再ビルド（`rootfs` = 35,061,621 バイト）。
+これで `pix-stream` は USB を触らず、`amvenc_avc` の probe だけを
+安全に検証できる。
+
+### 教訓（再掲）
+
+**`PIX_TUNER=dt295` のままでは、起動後すぐに箱が死ぬ。**
+VPU の検証中は `PIX_TUNER=none` を維持する。
+
+### 検証手順（次回）
+
+1. `PIX_TUNER=none` の rootfs で起動
+2. `lsmod | grep amvenc` → ロードされているか
+3. `dmesg | grep amvenc` → `amvenc: dos ... irq ... canvas ...` が出るか
+4. `ls /dev/video*` → エンコーダデバイスが増えたか
+5. `ffmpeg -encoders | grep h264_v4l2m2m`
+6. VPU エンコードを単体で実行 → ハングするか
+
+**6 でハングすれば、原因は amvenc_avc 側**（pix-stream ではない）と確定する。
