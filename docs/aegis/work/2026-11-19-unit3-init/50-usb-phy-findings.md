@@ -1800,3 +1800,42 @@ CPU コピーを挟む回避策が実証済み。
 2. Buildroot パッケージ化
 3. ファームウェアを取得して rootfs に配置
 4. CPU コピーを挟む構成で録画パイプラインを検証
+
+# ✅ VPU エンコーダをビルドに組み込めた（round 158）
+
+### ビルド結果
+
+```
+/build/output/target/lib/modules/6.18.62/updates/amvenc_avc.ko
+/build/output/target/lib/firmware/meson/venc/ga_h264_enc_cabac.bin  (24,576 バイト)
+```
+
+**Amlogic HCodec H.264 エンコーダのドライバとファームウェアが両方
+rootfs に入った。**
+
+### 既存のパッケージを使った
+
+`package/meson-venc/`（既にリポジトリにあった）:
+
+```make
+MESON_VENC_VERSION = eb7a44464af1c7793f793698e309abe4e6ad82da
+MESON_VENC_SITE = $(BR2_EXTERNAL_X96MAX_PATH)/vendor/meson-sm1-codecs
+MESON_VENC_MODULE_SUBDIRS = venc-h264
+$(eval $(kernel-module))
+```
+
+`vendor/meson-sm1-codecs/` を vendor ソースとして使い、
+`meson-sm1-codecs` の `venc-h264/` をカーネルモジュールとしてビルドする。
+`configs/x96max_defconfig` で `BR2_PACKAGE_MESON_VENC=y`。
+
+**私は最初、同じものを新規に作ろうとして重複させかけた。既存を確認すべきだった。**
+
+### 残る作業
+
+1. **DTB の `compatible` を `amlogic,sm1-vdec` に変更**
+   ドライバは `of_find_compatible_node(NULL, NULL, "amlogic,sm1-vdec")` で
+   vdec ノードを探すが、現在の DTB は `amlogic,g12a-vdec`。
+   `meson-sm1-codecs` の `vdec/` も同様に SM1 を要求する。
+2. **モジュールの自動ロード**（`modules-load.d` か init スクリプト）
+3. **`h264_v4l2m2m` が `meson-venc-h264` を掴むか確認**
+4. **HW decode + HW encode のハング回避**（CPU コピーを挟む）
