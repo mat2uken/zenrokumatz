@@ -24,3 +24,10 @@ CONFIG_DWMAC_MESON=y
 CONFIG_MDIO_BUS_MUX_MESON_G12A=y
 CONFIG_MESON_GXL_PHY=y
 CONFIG_PWM_MESON=y
+
+# The Amlogic VPU is not Verisilicon IP: hantro-vpu only matches Rockchip,
+# i.MX, Sunxi and STM32 device nodes. Building it here just gives ffmpeg's
+# h264_v4l2m2m a driver that binds to nothing on this SoC, which made an
+# encoder run touch an unrelated register window and wedge the box. The real
+# encoder is the amvenc_avc package.
+# CONFIG_VIDEO_HANTRO is not set

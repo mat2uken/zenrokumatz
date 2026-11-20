@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// Unit 3: SM1 (S905X3) board, external RTL8211F PHY, RAM boot.
+//
+// The X96Max_P device trees inherit from meson-g12a.dtsi, but this unit's SoC
+// identifies itself as SM1:
+//
+//   [0.900259] soc soc0: Amlogic Meson SM1 (S905X3) Revision 2b:c (10:2)
+//   aml_dt soc: sm1 platform: ac213 variant: 4g
+//
+// That matters for the video decoder: mainline registers different platform
+// data for it (vdec_platform_sm1 carries the SM1 clock and power sequencing),
+// and the Amlogic HCodec encoder driver finds its DOS window through the node
+// whose compatible is "amlogic,sm1-vdec". Booting with the G12A compatible
+// therefore leaves both the decoder and the encoder without their SM1 setup.
+#include "meson-g12a-x96-max-p-ephy-4g.dts"
+
+/ {
+	model = "X96Max_P (SM1, 4 GiB, external Ethernet PHY)";
+};
+
+&vdec {
+	compatible = "amlogic,sm1-vdec";
+};

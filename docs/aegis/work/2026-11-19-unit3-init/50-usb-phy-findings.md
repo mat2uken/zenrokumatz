@@ -1839,3 +1839,62 @@ $(eval $(kernel-module))
 2. **モジュールの自動ロード**（`modules-load.d` か init スクリプト）
 3. **`h264_v4l2m2m` が `meson-venc-h264` を掴むか確認**
 4. **HW decode + HW encode のハング回避**（CPU コピーを挟む）
+
+# ✅ 完全な構成が整った（round 159）
+
+### 実施した変更
+
+**1. SM1 用 DTB を作成**（`meson-g12a-x96-max-p-sm1.dts`）
+
+```dts
+#include "meson-g12a-x96-max-p-ephy-4g.dts"
+/ { model = "X96Max_P (SM1, 4 GiB, external Ethernet PHY)"; };
+&vdec { compatible = "amlogic,sm1-vdec"; };
+```
+
+理由: mainline の `vdec.c` は `amlogic,sm1-vdec` に対して
+`vdec_platform_sm1`（SM1 のクロック/電源シーケンス）を割り当てる。
+`amlogic,g12a-vdec` のままだと SM1 の設定が使われない。
+また `amvenc_avc` は `of_find_compatible_node(..., "amlogic,sm1-vdec")` で
+DOS ウィンドウを探す。
+
+検証済み: `compatible = "amlogic,sm1-vdec"`、`model = "X96Max_P (SM1, ...)"`
+
+**2. `hantro` を無効化**（`board/x96max/linux.fragment`）
+
+```
+# CONFIG_VIDEO_HANTRO is not set
+```
+
+理由: Amlogic の VPU は Verisilicon IP ではない。`hantro-vpu` は
+Rockchip/i.MX/Sunxi/STM32 のノードにしかマッチせず、この SoC では
+何にもバインドしない。それでも ffmpeg の `h264_v4l2m2m` がこのドライバを
+掴んで無関係なレジスタ窓に触り、箱ごとハングさせていた。
+
+**3. `amvenc_avc` の自動ロード**（`etc/modules-load.d/amvenc.conf`）
+
+### ビルド結果
+
+```
+/build/output/target/lib/modules/6.18.62/updates/amvenc_avc.ko   ← あり
+# CONFIG_VIDEO_HANTRO is not set                                  ← 無効
+verisilicon/ ディレクトリ: 空                                     ← hantro は生成されない
+```
+
+**Amlogic のエンコーダだけが入り、Rockchip 用の誤ったドライバが排除された。**
+
+### 成果物
+
+| ファイル | SHA-256（先頭） |
+|---|---|
+| `Image` | `118d696e` |
+| `rootfs.cpio.uboot` | `e5eb706d` |
+| `meson-g12a-x96-max-p-sm1.dtb` | `fd5711eb` |
+
+### 次の検証（実機）
+
+1. SM1 DTB で起動
+2. `modprobe amvenc_avc` が成功するか（`dmesg`）
+3. `/dev/video*` にエンコーダが現れるか
+4. `ffmpeg -encoders | grep h264_v4l2m2m` で確認
+5. **VPU エンコードでハングしないか**（これが本命）
