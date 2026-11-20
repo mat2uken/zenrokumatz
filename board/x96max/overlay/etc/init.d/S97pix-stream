@@ -57,6 +57,25 @@ start() {
     # A failed teardown deliberately retains ownership: do not launch over it.
     [ ! -d "$OWNER" ] && [ ! -e "$LEGACY_GROUP" ] || { echo 'previous owner not drained'; return 1; }
     mkdir -p /dev/shm/pix || return 1
+    # dt295-cfw needs the replacement firmware in the tuner's RAM.  That RAM is
+    # volatile, so a reboot brings back the vendor loader and the tuner stops
+    # answering FRQ1 until the container is put back.  Install it here rather
+    # than leaving it to a human: a box that reboots unattended would otherwise
+    # look healthy while recording nothing.
+    if [ "${PIX_TUNER:-}" = dt295-cfw ]; then
+        if ! pix-cfw-grab probe 2>/dev/null | grep -q "signature 'FR01'"; then
+            printf 'installing CFW: '
+            if ! frc1_load install /usr/share/cfw/frc1-dt295.frc >/dev/null 2>&1; then
+                echo 'failed'
+                return 1
+            fi
+            echo 'OK'
+            if ! pix-cfw-grab probe 2>/dev/null | grep -q "signature 'FR01'"; then
+                echo 'CFW does not answer after install'
+                return 1
+            fi
+        fi
+    fi
     needs_card=1
     [ "${PIX_TUNER:-pxs1ud}" = dt295 ] && [ "${PIX_DECRYPT:-0}" != 1 ] && needs_card=0
     waited=0
