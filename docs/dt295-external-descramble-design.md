@@ -483,5 +483,8 @@ NAS 側の録画が 1 ファイルで継続し、`simple: pipeline stopped after
 この16件は、変更前のファイルに対しては 6 failures / 7 errors で落ちることを
 確認済み（テストが本当に旧挙動を検出する）。
 
-**まだ実機で見ていない**: 合格条件（6時間連続・`totalPushed` 単調増加・
-`pipeline stopped after` が出ない）は実機で確かめていない。
+**実機で確かめた**（2026-11-20、2代目）: 1800秒を越えて uptime 3375 秒で
+切り直し 0 回、`totalPushed` は 10 → 1664 と単調増加、番組境界
+（event 36739 → 36741）を1本のストリームで越えた。詳細と手順・戻し方は
+[unit2-stage1-deployment.md](unit2-stage1-deployment.md)。
+NAS 側で録画が1ファイルのままかは未確認（NAS にログインできないため）。
