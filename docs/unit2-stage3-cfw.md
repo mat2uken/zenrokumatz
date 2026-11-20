@@ -174,3 +174,25 @@ the hook at 0x000ea6fc does not hold a jump of ours: 00498b5a8b94d980
 4. その状態で CFW 経路だけを使う
 
 元に戻すときは、USB を抜き差しすれば純正経路がそのまま使える（CFW は RAM なので消える）。
+
+### 入れ直しが失敗したときの落とし穴（実測）
+
+CFW を入れた状態で `S97pix-stream stop` を実行しただけでは足りなかった。
+
+- `S98pix-logo`（週1回のロゴ取得）が待機していて、`pix-logo-weekly` が
+  `S97pix-stream start` を呼び、`pix-ts-legacy` が純正ファームを載せ直す。
+- その結果、USB を電源切り直ししても、**すぐに純正ファームが載って state が 0x02 に戻る**。
+- `install` は「state is 0x00020000, not 0」で正しく止まる。
+
+**CFW の入れ直しは次の順で行う。**
+
+```sh
+/etc/init.d/S98pix-logo stop      # 週次ジョブを先に止める
+/etc/init.d/S97pix-stream stop
+# tuner プロセスが残っていないことを確認してから
+P=/sys/bus/usb/devices/usb1/1-0:1.0/usb1-port1
+echo 1 > $P/disable; sleep 3; echo 0 > $P/disable; sleep 8
+frc1_load install /tmp/cfw/frc1-dt295.frc
+```
+
+この順で通ることを確認済み（state 0 → installed → IDENTIFY FR01）。
