@@ -127,3 +127,42 @@ docker run --rm -v x96max-nas-build:/build -v $HOME/x96:/project:ro \
 
 `ephy-4g`（素の G12A）では `USB3 ports: 1` まで進むので、**`ephy-4g` と
 新 Image の組み合わせ**を次に試す。
+
+## 追記（round 135）: NAS ビルドに 0008 パッチが入っていることを確認
+
+```
+$ docker run --rm -v x96max-nas-build:/build alpine:3 \
+    sh -c 'grep -n "num_clks = " .../dwc3-meson-g12a.c'
+
+193:	.num_clks = ARRAY_SIZE(meson_gxl_clocks),   ← gxl（修正済み）
+206:	.num_clks = ARRAY_SIZE(meson_gxl_clocks),   ← gxm（修正済み）
+218:	.num_clks = ARRAY_SIZE(meson_gxl_clocks),   ← a1（元から正しい）
+230:	.num_clks = ARRAY_SIZE(meson_g12a_clocks),  ← g12a（元から正しい）
+241:	.num_clks = ARRAY_SIZE(meson_a1_clocks),    ← gsx（元から正しい）
+```
+
+**`num_clks` の修正は正しく適用されている。**
+
+### `ddr` クロックの正体（参考）
+
+`CLKID_USB1_DDR_BRIDGE` = `g12a_usb1_to_ddr`:
+
+**USB1 → DDR ブリッジのクロック**。USB の DMA がメモリへ転送するためのもので、
+**レジスタウィンドウ（`0xffe09000` 帯）の応答とは直接関係しない可能性が高い**。
+
+ただし、有効化されていないクロックを有効にすること自体は無害なので、
+検証する価値はある。
+
+### 次の検証
+
+1. **`ephy-4g` + 新 Image**（`ddr` 修正込み）→ `USB_R1` が通るか
+2. もし通らなければ、`ddr` は無関係と判断し別の要因を探す
+
+### 現在の成果物
+
+| ファイル | SHA-256（先頭） | 内容 |
+|---|---|---|
+| `Image` | `b8b68100` | 0001+0002+0008（`ddr` 修正込み） |
+| `rootfs.cpio.uboot` | `fde2833a` | チューナー待機＋CM 特徴量 |
+| `gxl.dtb` | `d60f6c97` | `usb_ctrl` + `ddr` の 2 クロック |
+| `ephy-4g.dtb` | `b031dc16` | 素の G12A（1代目・2代目と同じ） |
