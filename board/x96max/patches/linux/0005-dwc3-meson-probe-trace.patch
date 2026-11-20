@@ -3,8 +3,8 @@ The serial link drops most of the boot log, so a call trace cannot be read;
 short pr_err markers identify the last function entered instead.
 
 diff -ruN a/drivers/usb/dwc3/dwc3-meson-g12a.c b/drivers/usb/dwc3/dwc3-meson-g12a.c
---- a/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-20 21:25:58
-+++ b/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-20 21:26:15
+--- a/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-20 21:52:03
++++ b/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-20 21:52:07
 @@ -344,6 +344,7 @@
  
  static void dwc3_meson_g12a_usb3_init(struct dwc3_meson_g12a *priv)
@@ -21,7 +21,7 @@ diff -ruN a/drivers/usb/dwc3/dwc3-meson-g12a.c b/drivers/usb/dwc3/dwc3-meson-g12
  	if (mode == PHY_MODE_USB_DEVICE) {
  		if (priv->otg_mode != USB_DR_MODE_OTG &&
  		    priv->drvdata->otg_phy_host_port_disable)
-@@ -694,6 +696,7 @@
+@@ -697,6 +699,7 @@
  {
  	int ret;
  

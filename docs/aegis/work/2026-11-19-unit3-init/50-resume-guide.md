@@ -1123,3 +1123,46 @@ DBG otg_apply_mode       dwc3_meson_g12a_usb_otg_apply_mode の入口
 ### 一時的なパッチであること
 
 `0005` はデバッグ専用。原因が判明したら削除する。
+
+## 追記（round 109）: 診断マーカーを 4 箇所に拡張（最終形）
+
+### 追加したマーカー
+
+```
+DBG usb_init_glue node=<name> skip=<0|1>   glue の入口。ノード名と判定結果
+DBG usb3_init                              usb3_init の入口
+DBG gxl_usb_post_init                      post_init の入口
+DBG otg_apply_mode                         otg_apply_mode の入口
+```
+
+`usb_init_glue` のマーカーが重要。**`skip=1` なら glue は即 return
+しているので、例外は別の場所**。`skip=0` ならプロパティが届いていない。
+
+`node=` で glue ノードの名前も出るので、`priv->dev->of_node` が
+`/soc/usb@ffe09000` を指しているか確認できる。
+
+### 期待される出力と判定
+
+```
+[1.31] dwc3-meson-g12a ffe09000.usb: USB3 ports: 1
+[1.31] DBG usb_init_glue node=/soc/usb@ffe09000 skip=1    ← 正常に読めている
+[1.31] DBG gxl_usb_post_init                              ← ここへ進んだ
+[1.32] Internal error                                     ← post_init 内で落ちた
+```
+
+| 観察 | 意味 |
+|---|---|
+| `skip=1` で `usb3_init` が出ない | glue は正しくスキップ。例外は post_init 以降 |
+| `skip=1` でも `usb3_init` が出る | 別の呼び出し経路がある |
+| `skip=0` | プロパティが届いていない（DTS か of_node の問題） |
+| `node=(null)` | `priv->dev->of_node` が無い |
+
+### ビルド
+
+5 パッチ適用OK。`Image` = `8de56a3b`。4 マーカーすべてがバイナリに含まれる
+ことを文字列検索で確認済み。
+
+### 状態
+
+**機体が停止中のため、書き込みと起動ができていない。**
+Android か Linux が起動すれば、SD へ書いて（両方の経路が確立済み）検証できる。
