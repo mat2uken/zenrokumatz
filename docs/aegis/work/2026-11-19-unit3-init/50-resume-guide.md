@@ -1477,3 +1477,54 @@ U-Boot のカウントダウンは 1 秒（`Hit Enter or space or Ctrl+C key to 
 
 **機体は Android で稼働中。** 電源を入れ直して再試行するか、
 Android から `reboot` して U-Boot を狙う。
+
+## 追記（round 133）: `num_clks` バグの修正パッチと `ddr` クロックを実装（ビルド待ち）
+
+### 実装したもの
+
+**`0008-dwc3-meson-gxl-clock-count.patch`**
+
+```c
+static const struct dwc3_meson_g12a_drvdata gxl_drvdata = {
+        .clks = meson_gxl_clocks,                        // 2 要素
+        .num_clks = ARRAY_SIZE(meson_gxl_clocks),        // 1 → 2 に修正
+```
+
+`gxm_drvdata` も同じ修正。mainline のバグ（`ARRAY_SIZE(meson_g12a_clocks)`
+= 1 のまま `meson_gxl_clocks` を渡していた）で、**`ddr` クロックが
+有効化されていなかった**。
+
+**DTS（`gxl.dts`）**
+
+```dts
+clocks = <&clkc CLKID_USB>, <&clkc CLKID_USB1_DDR_BRIDGE>;
+clock-names = "usb_ctrl", "ddr";
+```
+
+DTB に反映済み（`clocks = <0x02 0x2f 0x02 0x37>`）。
+
+### ビルドが通らない
+
+**Mac の空きメモリが 63MB** まで逼迫し、`exit=137`（OOM）が続く。
+`colima stop` → `start --memory 6` を試したら **VM が起動できなくなった**
+（`signal: killed`）。`colima delete --force` しても同じ。
+
+**メモリ不足が根本原因**で、Colima の VM すら起動できない状態。
+
+### 復旧に必要なこと
+
+1. **Mac のメモリを空ける**（Chrome、Microsoft Defender、Spotlight の
+   `mds_stores` などが動いている）
+2. その後 `colima start --profile x96max-linux --cpu 4 --memory 10`
+3. `JOBS=3` でビルド
+
+### 実装済みのパッチ（ビルド時に適用される）
+
+```
+0001-vdec-meson-sm1-codecs.patch
+0002-dwc3-meson-skip-u2p.patch
+0008-dwc3-meson-gxl-clock-count.patch
+```
+
+**3 パッチが適用されることを `build-unit3-56.log` で確認済み**
+（ビルド自体は OOM で中断）。

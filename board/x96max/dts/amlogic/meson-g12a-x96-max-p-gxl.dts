@@ -29,8 +29,13 @@
 	 * The G12A common dtsi gives the glue a single unnamed clock. GXL asks
 	 * for it by name, so name it here.
 	 */
-	clocks = <&clkc CLKID_USB>;
-	clock-names = "usb_ctrl";
+	/*
+	 * gxl_drvdata asks for both of these (meson_gxl_clocks). Only the first was
+	 * ever enabled because num_clks was sized from the G12A array, so name both
+	 * here now that 0008 lets the loop reach the second one.
+	 */
+	clocks = <&clkc CLKID_USB>, <&clkc CLKID_USB1_DDR_BRIDGE>;
+	clock-names = "usb_ctrl", "ddr";
 	/*
 	 * Vendor firmware reports hcc_params 0x0228fe6c (HCC_PPC = 1) while
 	 * mainline reports 0x0228fe64 (HCC_PPC = 0): the GXL glue variant never

@@ -1,0 +1,26 @@
+gxl_drvdata and gxm_drvdata list meson_gxl_clocks but size it with
+ARRAY_SIZE(meson_g12a_clocks), which is 1. clk_bulk_prepare_enable() then
+enables only usb_ctrl and never ddr, because num_clks stops the loop early.
+Size the array that is actually listed.
+
+diff -ruN a/drivers/usb/dwc3/dwc3-meson-g12a.c b/drivers/usb/dwc3/dwc3-meson-g12a.c
+--- a/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-20 23:59:59
++++ b/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-21 00:00:05
+@@ -190,7 +190,7 @@
+ static const struct dwc3_meson_g12a_drvdata gxl_drvdata = {
+ 	.otg_phy_host_port_disable = true,
+ 	.clks = meson_gxl_clocks,
+-	.num_clks = ARRAY_SIZE(meson_g12a_clocks),
++	.num_clks = ARRAY_SIZE(meson_gxl_clocks),
+ 	.phy_names = meson_a1_phy_names,
+ 	.num_phys = ARRAY_SIZE(meson_a1_phy_names),
+ 	.setup_regmaps = dwc3_meson_gxl_setup_regmaps,
+@@ -203,7 +203,7 @@
+ static const struct dwc3_meson_g12a_drvdata gxm_drvdata = {
+ 	.otg_phy_host_port_disable = true,
+ 	.clks = meson_gxl_clocks,
+-	.num_clks = ARRAY_SIZE(meson_g12a_clocks),
++	.num_clks = ARRAY_SIZE(meson_gxl_clocks),
+ 	.phy_names = meson_gxm_phy_names,
+ 	.num_phys = ARRAY_SIZE(meson_gxm_phy_names),
+ 	.setup_regmaps = dwc3_meson_gxl_setup_regmaps,
