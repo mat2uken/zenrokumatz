@@ -141,3 +141,80 @@ CFW の作業中だけ使い、終わったら必ず `start` に戻すこと。
 **同時に両方の経路を使うことはできない。** IFD ハンドラを作るときは、
 どちらか一方に固定する（設計では ARM 経路を推奨していたが、主 FR 経路でも
 ATR が取れるので、pcscd の実装しやすさで選べばよい）。
+
+## pcscd のリーダーとして動いた（2026-11-20）
+
+### バンドルのビルドと配置
+
+```sh
+# クロスビルド（Buildroot の sysroot を使う）
+$CC -std=c11 -O2 -Wall -Wextra -DCHIPIO_HAVE_LIBUSB -D_POSIX_C_SOURCE=200809L \
+    -I$SYS/usr/include/libusb-1.0 -I/src/sample -fPIC -shared -pthread \
+    -o libifd_m2tv.so ifd_m2tv.c -lusb-1.0 -ldl
+```
+
+警告 0 でビルドできた（macOS 固有部分は `#ifdef __APPLE__` で分離済み）。
+
+配置は PC/SC のドライバ置き場。このイメージの pcscd は
+`usbdropdir=/usr/lib/pcsc/drivers` でビルドされている（`strings /usr/sbin/pcscd` で確認）。
+
+```
+/usr/lib/pcsc/drivers/ifd-cfw-m2tv.bundle/Contents/Info.plist
+/usr/lib/pcsc/drivers/ifd-cfw-m2tv.bundle/Contents/Linux/libifd_m2tv.so
+```
+
+`Info.plist` は `sample/ifd/Makefile` と同じく `CFBundleExecutable` を
+`libifd_m2tv.so` に書き換える。
+
+### 結果
+
+`pcscd` を起動するとリーダーとして認識された。
+
+```
+$ pcsc_atr
+reader: PIX-DT295 CFW card slot (WD10043976) 00 00
+  card present (state 00060022)
+  protocol T=1  ATR 3B F0 12 00 FF 91 81 B1 7C 45 1F 03 99
+  disconnect: Command successful.
+```
+
+**PC/SC 経由で T=1 プロトコルまで確立できた。** 段4 の目的（内蔵カードを
+PC/SC のリーダーとして見せる）は達成。
+
+### 既知の不安定さ（CFW 側の問題）
+
+**毎回 1 回目の電源投入が失敗し、2 回目で成功する。**
+
+```
+power action 500
+power up: no ATR within 3000 ms (stage 4)     <- 1回目は失敗
+power action 500
+ATR 3B F0 12 00 FF 91 81 B1 7C 45 1F 03 99   <- 2回目は成功
+T=1 up: F 372 D 2 IFSC 124 IFSD 251 CWI 5 BWI 4
+```
+
+これは CFW の文書が「分かっていないこと」に挙げている
+「CFW を入れた直後の最初の `CARD_ON` が答えないことがある（2 回目からは通る）」
+と同じ挙動。**pcscd やアプリ側から見ると「接続に失敗した」ように見える**ので、
+実運用では再試行が要る。
+
+対応方針（未実装）:
+- `bcasd` は接続失敗時に再試行する実装になっているか確認する
+- ならなければ、pcscd を再起動するか、アプリ側で 1 回リトライする
+
+### 現在できていること
+
+| 項目 | 状態 |
+|---|---|
+| pcscd がリーダーとして認識 | **できる** |
+| カードの在否 | できる |
+| ATR / T=1 の確立 | **できる**（2 回目の試行で） |
+| APDU | 未確認（`CFWAllowAPDU` が false のため、まだ許可していない） |
+| `bcasd` からの利用 | 未着手 |
+
+## 次の段階（段2 へ）
+
+APDU を通すには `Info.plist` の `CFWAllowAPDU` を `true` にする。
+ただしコメントに「macOS はカードを見つけると自分で APDU を送るため既定は off」と
+ある。Linux の pcscd は自分からは送らないので、`true` にして問題ないはずだが、
+**確かめてからにする**。
