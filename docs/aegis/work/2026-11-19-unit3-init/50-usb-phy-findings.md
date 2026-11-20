@@ -1142,3 +1142,48 @@ mainline のバグ（`num_clks` の取り違え）が原因。3代目だけで�
 追加する必要がある。
 
 `ddr` に対応するクロック ID は `CLKID_USB1_DDR_BRIDGE`（55）。
+
+## 追記（round 136）: round 73 の成功時は U-Boot で `usb start` を実行していた
+
+### ログの照合
+
+round 73 で DT295 が認識されたときのログ（`work/unit3-boot-gxl2.log`）には
+`usb start` は含まれていない。**しかし round 73 の手順を思い返すと、U-Boot で
+`usb start` を実行して DT295 の認識を確認してから `booti` した**（round 73 の
+会話で `usb start` → `usb info` を実行し、PIXELA PIX-DT295 を確認している）。
+
+そのログは別ファイル（`work/unit3-uboot5.log` 等）に残っている可能性がある。
+
+### 仮説
+
+**U-Boot で `usb start` を実行すると、USB コントローラと PHY が初期化され、
+その状態が Linux に引き継がれる。** これにより mainline の `USB_R1` 書き込みが
+通るようになる。
+
+根拠:
+
+- U-Boot の `usb start` は XHCI を初期化し、PHY を立ち上げる
+- round 73 では `usb start` の後、DT295 が `2: Vendor specific, PIXELA PIX-DT295`
+  として見えていた（＝実際に動作していた）
+- 現在は `usb start` をせずに `booti` している
+
+### 検証方法
+
+```sh
+# U-Boot で
+usb start
+# その後 booti
+booti 0x01080000 0x10000000 0x08000000
+```
+
+これで `USB_R1` が通るか確認する。**すぐ試せる**（ビルド不要）。
+
+### なぜこれが効くか
+
+U-Boot の `usb start` は:
+1. `0xffe09000` の glue を初期化（vendor の実装）
+2. `0xff500000` の XHCI を初期化
+3. PHY を立ち上げる
+
+その結果、glue のレジスタが「書ける状態」になり、`0xff500000` の窓も開く。
+Linux はその状態を引き継ぐので、mainline の初期化が通る可能性がある。
