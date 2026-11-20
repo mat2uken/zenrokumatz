@@ -77,3 +77,63 @@ SD へ書き込み、起動した。
 現在の `tools/uboot_boot_linux.py` の `Console.pump(wait)` は指定時間だけ
 読む。起動ログは数百 KB になるため、`booti` 後にもっと長く、かつ頻繁に
 読む必要がある。`c.pump(85.0)` の 1 回では取りこぼす。
+
+## 追記（round 105）: `-nousb` DTB で Linux は完全に正常動作（例外なし）
+
+### 結果
+
+`meson-g12a-x96-max-p-nousb.dtb`（`a5690cdf`、全 USB コントローラ無効）で起動:
+
+```
+$ ssh root@192.168.99.56 'uname -a'
+Linux x96max-p3 6.18.62 #1 SMP PREEMPT aarch64 GNU/Linux
+
+$ ip -4 addr show eth0
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> inet 192.168.99.56/24
+
+$ uptime
+12:03:36 up 1 min, load average: 0.00
+
+$ dmesg | grep -ciE "error|abort|fault"
+4          ← 通常メッセージのみ。例外なし。
+```
+
+**`Internal error` が無く、Linux がユーザー空間まで正常に起動した。**
+
+### pix-stream も動作
+
+```
+$ ps | grep -c "[p]ix-simple"
+1
+
+$ tail -4 /tmp/pix-simple.log
+12:03:03 simple: tuner: still waiting (60s)
+```
+
+**round 77 で実装した `wait_for_tuner` が設計どおり動作している。**
+USB が無効なのでチューナーが見つからず待機を続けている（停止せず待つ）。
+
+### 問題の範囲が確定
+
+| 範囲 | 状態 |
+|---|---|
+| USB 以外（CPU、メモリ、eMMC、Ethernet、クロック、映像、サウンド） | **すべて正常** |
+| USB（dwc3/dwc2/PHY/glue） | **例外の発生源** |
+
+**例外は USB サブシステムに完全に限定された。** これは大きな前進で、
+切り分けの範囲が狭まった。
+
+### 次の一手
+
+USB を段階的に有効化して、どのノードが例外を出すかを特定する。
+現在 `-p-gxl`（dwc3 のみ有効、dwc2 無効）で `__bus_probe_device` 経由の
+例外が出ている。考えられる候補:
+
+1. `usb2_phy0` / `usb2_phy1`（`0xff636000` / `0xff63a000`）の PHY 初期化
+2. `usb3_pcie_phy`（`0xffe09080`）
+3. glue の残りの経路（`set_phy_mode`）
+
+**`dmesg` が読めるようになったので、次は USB 有効版で起動して Linux に
+到達できれば、シリアルに頼らず `dmesg` から完全なコールトレースを取れる。**
+ただし現状は例外で到達前に停止するため、まず「例外を出さずに起動できる
+最小の USB 構成」を探す。
