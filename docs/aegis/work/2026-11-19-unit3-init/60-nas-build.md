@@ -270,3 +270,58 @@ cat /dev/shm/netdiag.txt
 ### テスト
 
 `NetdiagScript` に 3 件追加。**272 テスト通過。**
+
+## 追記（round 144）: netdiag は動いたが、シリアルもネットワークも死んでいる
+
+### 起動結果（`usb start` + `ephy-4g` + netdiag 入り rootfs）
+
+```
+[   24.844876] In-situ OAM (IOAM) with IPv6
+OK
+Starting netdiag: OK          ← 診断スクリプトは実行された
+B-CAS: DT295 internal card (vendor firmware descrambles)
+Starting pix-stream: OK
+Starting pix-logo-weekly: OK
+
+X96Max_P3 RAM-root Linux
+x96max-p3 login:
+```
+
+**例外なしでユーザー空間まで起動。** `netdiag` も実行された。
+
+### しかし
+
+| 確認 | 結果 |
+|---|---|
+| シリアル入力（`\r`、`root`） | **無応答**（0 バイト） |
+| ping | **不通** |
+| SSH (22) | **不通** |
+| pix-stream (40774) | **不通** |
+
+**起動ログは取れているのに、起動後にシリアル入力もネットワークも死んでいる。**
+
+### 重要な矛盾
+
+シリアル出力（起動ログ）は流れたのに、**入力が届かない**。これは:
+
+1. Linux 起動後にコンソールが停止した（`pix-stream` が何かを壊した）
+2. カーネルは動いているが userspace の一部（getty、dhcpcd）が動いていない
+3. 電源/ハードの問題（DT295 の消費電力で給電が不安定など）
+
+### 次の切り分け
+
+**`pix-stream` を無効化**して起動する。それでシリアルとネットワークが
+復活すれば、`pix-stream`（USB を触る処理）が原因と確定する。
+
+方法: `S97pix-stream` を `S97pix-stream.disabled` にリネームした rootfs を作る。
+または `PIX_TUNER` を無効値にして起動。
+
+**`/etc/default/pix-stream-linux` の `PIX_TUNER` を空にすれば、
+pix-stream は起動するがチューナーを探さず待機するだけになる**（実装済みの
+`wait_for_tuner`）。これなら SD の書き換えだけで試せる。
+
+### 別の可能性
+
+`panic_on_oops=1` を入れたので、oops が起きれば panic → 8 秒で再起動する。
+**再起動を繰り返しているなら、シリアルログに panic の痕跡が残る**。
+今回のログには `panic` の文字が無いので、oops ではない。
