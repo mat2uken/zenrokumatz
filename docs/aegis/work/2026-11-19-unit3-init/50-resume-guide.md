@@ -432,3 +432,49 @@ curl -s http://192.168.99.80:40776/api/nodes | python3 -m json.tool  # state=rec
 - **`pix-usb-audit` は起動メディアの指紋監査**で、DT295 とは無関係。
 - **PORTSC3 は USB3 ポート。** DT295 は `1-1`（USB2 ポート1）で認識される。
 - **CM の安全装置**: 解析が 3 回失敗すると `PIX_FEATURES=0` にして録画を守る。
+
+## 訂正（round 96）: SD 上の Image には skip-glue-init が入っていない
+
+### 誤り
+
+round 95 の再開手順に「SD 上の `b3099f99` は DT295 認識に成功した実績があり、
+`--only rootfs.cpio.uboot` で rootfs だけ更新するのが安全」と書いた。**これは誤り。**
+
+### 実際
+
+`b3099f99` は round 73 で「例外は出ず Linux が起動し、DT295 が `1-1` に
+列挙された」版だが、**その後 `skip-glue-init` の修正を経て作られた
+`Image`（`6a9b20e4`）とは別物**。round 96 に `b3099f99` で起動したところ、
+`usb_init_glue+0x38` で synchronous external abort が出た。
+
+```
+[1.310848] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.319435] Internal error: synchronous external abort
+[1.360551] pc : regmap_mmio_read32le+0x8/0x20
+```
+
+つまり `b3099f99` は **glue の書き込みを回避する前の版**。
+
+### 確認方法（今後のために）
+
+`Image` は非圧縮のカーネルなので、文字列を直接確認できる:
+
+```sh
+python3 -c "
+d=open('output/ramboot-unit3/Image','rb').read()
+print('skip-glue-init:', b'amlogic,skip-glue-init' in d)
+print('port-power-control:', b'amlogic,port-power-control' in d)"
+```
+
+最新の `Image`（`6a9b20e4`）は両方 True。**`b3099f99` は False。**
+
+### 正しい手順
+
+**Image と rootfs の両方を更新する**（`--only` を付けない）。
+
+```sh
+/usr/bin/python3 scripts/write-sd.py --image output/ramboot-unit3/sdcard.img \
+  --device /dev/diskN --update-boot
+```
+
+SD 上の gxl.dtb（`e0cc1dbf`）は最新と同じなので、実質 Image と rootfs の更新になる。
