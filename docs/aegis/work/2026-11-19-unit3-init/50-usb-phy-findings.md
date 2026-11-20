@@ -2225,3 +2225,69 @@ probe 成功時は `dev_info` で `V4L2 H.264 encoder at /dev/videoN` が出る�
 5. エンコーダが生きているか
 
 **チューナー由来のハングと VPU 由来のハングを切り分けられる。**
+
+## 追記（round 165）: 必要な構成物がすべて揃っていることを確認
+
+### 最新 rootfs（`PIX_TUNER=none`）の中身
+
+```
+/build/output/target/lib/firmware/meson/venc/ga_h264_enc_cabac.bin   24,576 バイト
+/build/output/target/lib/modules/6.18.62/updates/amvenc_avc.ko
+/build/output/target/lib/modules/6.18.62/kernel/drivers/media/platform/verisilicon/  ← 空
+```
+
+**ファームウェア・エンコーダドライバ・hantro 排除、すべて確認。**
+
+### ucode の選択（`encoder.c`）
+
+```c
+const char *ucode_name[] = {
+        "gxl_h264_enc",           /* cavlc */
+        "txl_h264_enc_cavlc",
+        "ga_h264_enc_cabac",      /* cabac */
+};
+
+static const char *select_ucode(u32 ucode_index)
+{
+        if (ucode_index == UCODE_MODE_FULL)
+                ucode = UCODE_G12A;       /* SM1 もここ */
+        else
+                ucode = UCODE_GXL;
+        return (const char *)ucode_name[ucode];
+}
+```
+
+SM1 は `UCODE_MODE_FULL` なので **`ga_h264_enc_cabac`** を選ぶ。
+`get_data_from_name()` が `meson/venc/ga_h264_enc_cabac.bin` を
+`request_firmware()` で読む。**パスも名前も一致している。**
+
+### ファームウェア取得の分岐
+
+```c
+if (fw_tee_enabled() && (get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_SC2)) {
+        /* TEE + SC2 のみ。get_firmware_data() は -ENOENT を返すスタブ */
+} 
+/* 通常経路 */
+ret = get_data_from_name(p, (u8 *)mc_addr);   /* ← SM1 はこちら */
+```
+
+`fw_tee_enabled()` は `false` を返すので、スタブ経路には入らない。
+**SM1 は通常経路でファームウェアを読む。**
+
+### メモリ
+
+`codec_mm_get_total_size()` は `SZ_256M` 固定のスタブ。
+`cma_pool_size = min(MIN_SIZE*3, 256MB)`。実際の確保は
+`codec_mm_alloc_for_dma()` → `dma_alloc_pages()`。
+
+### つまり
+
+**起動して `amvenc_avc` が probe し、`vpu-probe.py` でエンコードを試す
+準備が完全に整っている。** あとは実機を動かすだけ。
+
+### 現在のブロッカー
+
+機体がハングしたまま（`PIX_TUNER=dt295` の rootfs で起動したため）。
+SD は機体の中にあり、Mac からは更新できない。
+
+**必要なこと: SD を Mac に接続して新しい rootfs を書き込む。**
