@@ -137,3 +137,40 @@ $ frc1_load restore /tmp/cfw/frc1-dt295.frc
 - 選局の作り直し。今は `ts_grab` 内蔵の選局を使っている。本番のランチャーに
   組み込むには、この選局列を `pix-userland` の代替として実装し直す必要がある。
 - 内蔵カードの ATR（段4）。
+
+## 重要な発見: 純正経路を動かすと CFW の hook が消える
+
+CFW 導入後に、念のため「今までの録画経路が壊れていないか」を確かめた。
+
+```
+$ pix-ts-legacy --model dt295 --assets /usr/share/pix-tuner -s bs -c 9 --slot 0 -t 5
+rc=0 / 11.5 MB 撮れた / locked=1
+```
+
+**純正経路は動く。** しかしその直後に状態を見ると:
+
+```
+0x000ea6fc  hook   00 49 8b 5a 8b 94 d9 80    ← 純正のバイトに戻っている
+$ ts_grab probe
+the hook at 0x000ea6fc does not hold a jump of ours: 00498b5a8b94d980
+```
+
+**`pix-ts-legacy` は純正ファームをチップに載せ直し、そのときにローダの hook も
+純正の値へ戻す。** つまり CFW と純正ファームは共存しない。
+
+### 含意（段4・段2 に効く）
+
+| 状況 | 状態 |
+|---|---|
+| CFW を入れ、純正経路を一度も動かさない | CFW が生きている |
+| 純正経路（`pix-ts-legacy`）を動かす | **CFW の hook が消える。入れ直しが必要** |
+| 入れ直し | `frc1_load install` が「別のファームが載っている」で止まるので、先に USB を cold にする |
+
+**切り替えは排他**なので、段4 以降に進むときは次を守る。
+
+1. 本番のランチャーから `pix-ts-legacy` の起動を外す（`S97pix-stream` を止める）
+2. USB ポートを電源切り直しして cold にする
+3. `frc1_load install` で CFW を入れ直す
+4. その状態で CFW 経路だけを使う
+
+元に戻すときは、USB を抜き差しすれば純正経路がそのまま使える（CFW は RAM なので消える）。
