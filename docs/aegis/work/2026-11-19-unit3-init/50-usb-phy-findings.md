@@ -1388,3 +1388,49 @@ USB 初期化）が本質。
 
 **シリアルが生きていれば、ネットワークが死んでいても調査できる。**
 round 137 ではシリアルも無応答だったので、まずそこを確認する。
+
+## 追記（round 142）: `nfs_check` は Buildroot 標準スクリプトだった（原因ではない）
+
+### 確認
+
+`/etc/network/nfs_check` は `board/x96max/overlay/` には無いが、
+**Buildroot が生成する標準スクリプト**:
+
+```sh
+#!/bin/sh
+# This allows NFS booting to work while also being able to configure
+# the network interface via DHCP when not NFS booting. ...
+# This script is run by ifup and will attempt to detect if a NFS root
+# mount uses the interface to be configured (IFACE), and if so does
+# not configure it.
+```
+
+**NFS ルート起動時にインターフェースを設定しないようにするためのもの。**
+RAM 起動では NFS を使わないので、`ifup` を止めない。
+
+**私の推測（`nfs_check` が無くて `ifup` が失敗）は誤り。**
+
+### ネットワーク不通の原因は未特定
+
+`nousb` DTB では SSH が通った（round 105）が、`usb start` + `ephy-4g` では
+通らない（round 137）。差分は:
+
+1. `usb start` の有無
+2. DTB（`nousb` は USB 全無効、`ephy-4g` は USB 有効）
+3. Image（round 105 は `b3099f99`、round 137 は `b8b68100`）
+
+**`usb start` が Ethernet に干渉している可能性**が残る。
+
+### 次の確認（シリアルが生きていれば）
+
+`login:` でログインして:
+
+```sh
+ip -4 addr show eth0
+dmesg | grep -i dwmac | tail -5
+cat /sys/class/net/eth0/carrier
+ethtool eth0 2>/dev/null | head -5
+```
+
+これで「リンクは上がっているが DHCP が失敗」か「リンク自体が落ちている」か
+分かる。
