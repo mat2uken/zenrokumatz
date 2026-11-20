@@ -1,0 +1,31 @@
+Temporary diagnostics: print which glue path is reached before the abort.
+The serial link drops most of the boot log, so a call trace cannot be read;
+short pr_err markers identify the last function entered instead.
+
+diff -ruN a/drivers/usb/dwc3/dwc3-meson-g12a.c b/drivers/usb/dwc3/dwc3-meson-g12a.c
+--- a/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-20 21:25:58
++++ b/drivers/usb/dwc3/dwc3-meson-g12a.c	2026-11-20 21:26:15
+@@ -344,6 +344,7 @@
+ 
+ static void dwc3_meson_g12a_usb3_init(struct dwc3_meson_g12a *priv)
+ {
++	pr_err("DBG usb3_init\n");
+ 	regmap_update_bits(priv->usb_glue_regmap, USB_R3,
+ 			USB_R3_P30_SSC_RANGE_MASK |
+ 			USB_R3_P30_REF_SSP_EN,
+@@ -374,6 +375,7 @@
+ static void dwc3_meson_g12a_usb_otg_apply_mode(struct dwc3_meson_g12a *priv,
+ 					       enum phy_mode mode)
+ {
++	pr_err("DBG otg_apply_mode\n");
+ 	if (mode == PHY_MODE_USB_DEVICE) {
+ 		if (priv->otg_mode != USB_DR_MODE_OTG &&
+ 		    priv->drvdata->otg_phy_host_port_disable)
+@@ -694,6 +696,7 @@
+ {
+ 	int ret;
+ 
++	pr_err("DBG gxl_usb_post_init\n");
+ 	/* The glue block is not writable on this board; see usb_init_glue. */
+ 	if (of_property_read_bool(priv->dev->of_node, "amlogic,skip-glue-init"))
+ 		return 0;

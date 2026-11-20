@@ -1088,3 +1088,38 @@ USB-Serial（CP2104）の転送能力が、この kernel の起動ログ（数�
    （`phys` リストの並び、`status` の組み合わせ）。
 
 現在の DTB（`-nousb`）は以前からビルド済みで、SD にも入っている。
+
+## 追記（round 108）: 診断 printk 入りのカーネルをビルドした
+
+### 目的
+
+シリアルが起動ログを落とすため、コールトレースが読めない。代わりに
+**短い `pr_err` マーカー**を glue 経路の入口に置き、「どこまで進んで落ちたか」
+を 1 行で分かるようにする。
+
+### 追加したマーカー（`0005-dwc3-meson-probe-trace.patch`）
+
+```
+DBG usb3_init            dwc3_meson_g12a_usb3_init の入口
+DBG gxl_usb_post_init    dwc3_meson_gxl_usb_post_init の入口
+DBG otg_apply_mode       dwc3_meson_g12a_usb_otg_apply_mode の入口
+```
+
+出力例（期待）:
+
+```
+[1.31] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.31] dwc3-meson-g12a ffe09000.usb: USB3 ports: 1
+[1.31] DBG gxl_usb_post_init        ← ここまで来た
+[1.32] Internal error
+```
+
+これで「`usb3_init` に到達したか」「`post_init` か」が分かる。
+
+### ビルド
+
+5 パッチすべて適用OK。`Image` = `76915354`。
+
+### 一時的なパッチであること
+
+`0005` はデバッグ専用。原因が判明したら削除する。
