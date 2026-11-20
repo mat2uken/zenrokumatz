@@ -339,3 +339,75 @@ GXL 経路では `set_phy_mode` は安全（PHY ドライバを呼ぶだけ）�
 
 `DBG usb_init_glue node=<name> skip=<0|1>` がこの 2 点を一撃で判別する。
 `Image` = `3d48ee0e`（4 マーカー確認済み）。**実機での確認が待たれる。**
+
+## 追記（round 114）: 診断が決着。glue は正しくスキップされ、例外は dwc3_core_probe
+
+### 実測（`Image` = `29ecb5ec`、7 パッチ）
+
+```
+[1.316034] dwc3-meson-g12a ffe09000.usb: USB2 ports: 2
+[1.316750] dwc3-meson-g12a ffe09000.usb: USB3 ports: 0
+[1.322095] DBG usb_init_glue node=usb@ffe09000 skip=1      ← ガードは正しく動く
+[1.329321] DBG gxl_usb_post_init
+[1.330377] DBG gxl_usb_post_init skip=1                    ← ここも正しくスキップ
+[1.336662] Internal error: synchronous external abort
+
+pc : dwc3_core_probe+0x96c/0x1600
+lr : dwc3_core_probe+0x95c/0x1600
+```
+
+### 判明したこと
+
+1. **`skip=1`**。`amlogic,skip-glue-init` は正しく読めている。
+   `of_node` は `usb@ffe09000`（glue ノード）を指している。
+2. **`usb3_init` と `otg_apply_mode` は呼ばれていない**（DBG が出ない）。
+   glue への書き込みは 1 つも発生していない。
+3. **例外は `dwc3_core_probe`**。glue ドライバではなく、**子の dwc3 コントローラ**。
+
+### 例外の正体
+
+`dwc3_core_probe+0x96c` は以前（round 27 頃）に逆アセンブルで特定した
+**`dwc3->regs + 0x20` の読み取り**、すなわち `0xff500020`。
+
+```asm
+ldr x0, [x19, #1064]   ; dwc3->regs
+add x0, x0, #0x20
+ldr w0, [x0]           ; ← ここで synchronous external abort
+```
+
+**`0xff500000` の dwc3 レジスタ窓が応答していない。**
+
+### これまでの遠回りの総括
+
+| 対処 | 結果 |
+|---|---|
+| glue の u2p 回避（0002） | 有効。例外が次へ進んだ |
+| glue 全体のスキップ（0004） | 有効。glue は完全に無音になった |
+| `dwc2` 無効化（DTS） | 有効。dwc2 の例外は消えた |
+| PPC（0003） | 未検証（ここまで到達していない） |
+| **残る唯一の障害** | **`dwc3_core_probe` が `0xff500020` を読めない** |
+
+### つまり
+
+**glue は無実だった**（少なくとも今の構成では完全にスキップできている）。
+本当の障害は最初から一貫して **dwc3 コントローラのレジスタ窓が開いていない**こと。
+
+これは round 37 で一度だけ「例外なく xhci まで到達した」現象と矛盾する。
+そのときは `USB2 ports: 2 / USB3 ports: 0` で xhci が登録された。今回と同じ
+`USB3 ports: 0` なのに、今回は `dwc3_core_probe` で落ちる。
+
+**差分は PPC パッチ（0003）と dwc2 無効化の有無**。PPC パッチは
+`xhci->hcc_params` を触るだけで `dwc3_core_probe` の前には効かない。
+
+### 次の一手
+
+dwc3 のレジスタ窓が開かない原因を追う。候補:
+
+1. **クロック**。`CLKID_USB`（`g12a_usb_general`、HHI_GCLK_MPEG1 bit 26）は
+   glue が取っている。dwc3 自身は `clocks` を持たない（GXL の drvdata は
+   `usb_ctrl` を要求するが、glue のもの）。
+2. **リセット**。dwc3 のリセットが解除されていない。
+3. **PHY の電源**。`phy_power_on` が dwc3 probe より後なら、窓が開く前に読む。
+
+**`dwc3_core_probe` は `phy_init`/`phy_power_on` より前に `core_init` を呼ぶ**
+はずなので、PHY の準備なしにレジスタを読んでいる可能性がある。
