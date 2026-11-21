@@ -3203,3 +3203,59 @@ enc_pr(LOG_INFO, "poweron: iso done, iso0 readback 0x%08x\n",
 `amvenc_avc.ko` = **`d5825643`**（483,832 バイト、未 strip）。
 `http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
 パッチは 0001〜0008 の 8 本、すべて適用検証済み。
+
+## 🎯 round 182: 読み返しで判明。ISO0（アイソレーション）が解除されていない
+
+### 実測値
+
+```
+poweron: sleep0 readback 0xfffdfefc
+poweron: mem pd done, hcodec 0x00000000 vdec 0x00000000
+poweron: iso done, iso0 readback 0xfffdfecf
+```
+
+| レジスタ | 下位バイト | 解釈 |
+|---|---|---|
+| `SLEEP0` | `0xfc` = 1111 1100 | **bits 1:0 = 0**（電源は落ちた） |
+| `ISO0` | `0xcf` = 1100 1111 | **bits 1:0 = 1（解除されず）**、bits 4:5 = 0 |
+
+**HCodec のアイソレーションが残っている** → レジスタ窓が応答しない、という
+筋と一致する。
+
+### 奇妙な点: `0xcf` は「非 SM1 側の分岐」の結果に見える
+
+vendor の ISO0 書き込みは 2 分岐:
+
+```c
+(get_cpu_type() == SM1 || get_cpu_type() >= TM2) ? ~0x3 : ~0x30
+```
+
+`0xcf` は **bits 4:5 が 0**（= `~0x30` を適用した形）で、bits 1:0 は 1 のまま。
+つまり **SM1 側の分岐が走っていない**可能性がある。
+
+`compat.h` の `get_cpu_type()` は `MESON_CPU_MAJOR_ID_SM1`（0x2b）を返す
+固定実装なので、条件は真になるはずだが、実機の値で確認する必要がある。
+
+### 追加した診断（パッチ 0009）
+
+```c
+enc_pr(LOG_INFO, "poweron: ao begin, cpu=0x%x sm1=%d\n",
+        get_cpu_type(), get_cpu_type() == MESON_CPU_MAJOR_ID_SM1);
+enc_pr(LOG_INFO, "poweron: before sleep0 0x%08x iso0 0x%08x\n",
+        READ_AOREG(AO_RTI_GEN_PWR_SLEEP0), READ_AOREG(AO_RTI_GEN_PWR_ISO0));
+```
+
+これで **書き込み前後の差分**が分かる:
+
+| 観測 | 意味 |
+|---|---|
+| `cpu=0x2b sm1=1` かつ before→after で bits 1:0 が 1→0 | 修正が効いている。まだ別の原因 |
+| `sm1=0` | 分岐条件が誤り。`compat.h` の `get_cpu_type` を疑う |
+| before も bits 1:0 = 0 | 元から 0。アイソレーションは原因ではない |
+| before が 1 で after も 1 | **書き込み自体が届いていない**（AO regmap を疑う） |
+
+### 配信
+
+`amvenc_avc.ko` = **`dc611ae2`**（484,464 バイト、未 strip）。
+`http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
+パッチは 0001〜0009 の 9 本、すべて適用検証済み。

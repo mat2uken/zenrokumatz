@@ -1,0 +1,17 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 10:54:55
++++ b/venc-h264/encoder.c	2026-11-21 12:34:09
+@@ -2983,7 +2983,12 @@
+             !pwr_ctrl_status_psci_smc(PDID_T3_DOS_HCODEC));
+         */
+ 	} else {
+-		enc_pr(LOG_INFO, "poweron: ao begin\n");
++		enc_pr(LOG_INFO, "poweron: ao begin, cpu=0x%x sm1=%d\n",
++			get_cpu_type(),
++			get_cpu_type() == MESON_CPU_MAJOR_ID_SM1);
++		enc_pr(LOG_INFO, "poweron: before sleep0 0x%08x iso0 0x%08x\n",
++			READ_AOREG(AO_RTI_GEN_PWR_SLEEP0),
++			READ_AOREG(AO_RTI_GEN_PWR_ISO0));
+ 		spin_lock_irqsave(&lock, flags);
+ 		WRITE_AOREG(AO_RTI_PWR_CNTL_REG0,
+ 			(READ_AOREG(AO_RTI_PWR_CNTL_REG0) & (~0x18)));
