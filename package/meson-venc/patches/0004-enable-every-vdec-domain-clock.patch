@@ -1,0 +1,59 @@
+diff --git a/venc-h264/compat.c b/venc-h264/compat.c
+--- a/venc-h264/compat.c	2026-11-21 10:35:05
++++ b/venc-h264/compat.c	2026-11-21 10:35:05
+@@ -45,7 +45,11 @@
+ 		 */
+ 		if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk))
+ 			WARN_ON(clk_prepare_enable(venc_hw.vdec1_clk));
++		for (int i = 0; i < venc_hw.num_clks; i++)
++			WARN_ON(clk_prepare_enable(venc_hw.clks[i]));
+ 	} else {
++		for (int i = venc_hw.num_clks - 1; i >= 0; i--)
++			clk_disable_unprepare(venc_hw.clks[i]);
+ 		if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk))
+ 			clk_disable_unprepare(venc_hw.vdec1_clk);
+ 		clk_disable_unprepare(venc_hw.dos_clk);
+@@ -170,6 +174,7 @@
+ 	struct device_node *np, *hhi;
+ 	struct resource res, irq_res;
+ 	int ret, irq;
++	int i;
+ 
+ 	/*
+ 	 * SM1 boards describe the decoder as "amlogic,sm1-vdec", which is what
+@@ -199,6 +204,22 @@
+ 	}
+ 	/* Optional: absent only on very old device trees. */
+ 	venc_hw.vdec1_clk = of_clk_get_by_name(np, "vdec_1");
++
++	/*
++	 * The DOS register window answers as soon as "dos" is on, but the HCodec
++	 * block behind it (0xff624000) needs the rest of the domain as well:
++	 * writing HCODEC_ASSIST_MMC_CTRL1 stalls the bus with interrupts
++	 * disabled otherwise. Take whatever the decoder node lists.
++	 */
++	venc_hw.num_clks = 0;
++	for (i = 0; i < ARRAY_SIZE(venc_hw.clks); i++) {
++		struct clk *c = of_clk_get(np, i);
++
++		if (IS_ERR(c))
++			break;
++		venc_hw.clks[venc_hw.num_clks++] = c;
++	}
++	pr_info("amvenc: %d vdec clock(s) for the encoder\n", venc_hw.num_clks);
+ 	ret = venc_alloc_canvases(np);
+ 	if (ret)
+ 		goto put_clk;
+diff --git a/venc-h264/compat.h b/venc-h264/compat.h
+--- a/venc-h264/compat.h	2026-11-21 10:35:05
++++ b/venc-h264/compat.h	2026-11-21 10:35:05
+@@ -22,6 +22,9 @@
+ 	struct regmap *ao, *hhi;
+ 	struct clk *dos_clk;
+ 	struct clk *vdec1_clk;
++	/* every clock the decoder node lists: the DOS domain has several */
++	struct clk *clks[5];
++	int num_clks;
+ 	struct meson_canvas *canvas;
+ 	u8 canvas_base;
+ 	struct platform_device *pdev;

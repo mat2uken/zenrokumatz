@@ -2938,3 +2938,70 @@ start: loadmc done
 `amvenc_avc.ko` = **`a8c333c5`**（118,336 バイト）。
 `poweron: ` / `start: ` 文字列 18 個を含むことを確認。
 `http://192.168.99.20:8000/amvenc_avc.ko` で配信中（HTTP 200）。
+
+# 🎯 停止箇所を 1 命令まで特定（round 177）
+
+### トレース結果（決定的）
+
+```
+add new work ok, cmd:1, ucode mode: 0
+start: begin, ucode=ga_h264_enc_cabac
+poweron: clock gate enabled
+poweron: ao begin
+poweron: ao pwr_cntl done
+poweron: ao sleep0 done
+poweron: taking lock for dos
+poweron: dos reset done
+poweron: enabling hcodec clock
+poweron: hcodec clock done
+poweron: mem pd done
+poweron: iso done
+poweron: gen ctrl done
+start: poweron done
+start: canvas done
+（← ここで停止。「start: mmc ctrl done」が出ない）
+```
+
+### 停止している命令
+
+```c
+enc_pr(LOG_INFO, "start: canvas done\n");
+WRITE_HREG(HCODEC_ASSIST_MMC_CTRL1, 0x32);     /* ← ここで停止 */
+enc_pr(LOG_INFO, "start: mmc ctrl done\n");
+```
+
+`WRITE_HREG(r, v)` = `WRITE_VREG(r, v)` = `writel(v, venc_hw.dos + ((r) << 2))`
+（`compat.h:35-37`）。
+
+`HCODEC_ASSIST_MMC_CTRL1 = 0x1002`（`hcodec_regs.h:22`）なので
+**`0xff620000 + (0x1002 << 2) = 0xff624008`**。
+
+### つまり
+
+- DOS レジスタ（`DOS_SW_RESET1`、`DOS_MEM_PD_HCODEC`、`DOS_GEN_CTRL0` など
+  低オフセット）は**すべて書けている**
+- **HCodec ブロック（`0xff624000` 以降）だけが応答しない**
+- DT の `reg` は `0xff620000` から 0x10000（64 KiB）で、`0xff624008` は範囲内。
+  マッピングは正しい
+
+**HCodec のクロック／電源がまだ足りていない。**
+
+### 修正（パッチ 0004）
+
+mainline は `vdec_1` ゲート（`HHI_VDEC_CLK_CNTL` bit 8）だけをモデル化するが、
+vendor の SM1 経路が使うのはそれだけではない可能性が高い。
+そこで **vdec ノードが列挙するクロックを全部**（`of_clk_get(np, i)` で
+`dos_parser`, `dos`, `vdec_1`, `vdec_hevc`, `vdec_hevcf`）取得し、
+`amports_switch_gate()` でまとめて有効化するようにした。
+
+```
+amvenc: 5 vdec clock(s) for the encoder
+```
+
+が `dmesg` に出れば 5 つとも取れている。
+
+### ビルド・配信
+
+`amvenc_avc.ko` = **`4d1054e9`**（118,816 バイト）。
+`http://192.168.99.20:8000/amvenc_avc.ko` で配信中（HTTP 200）。
+パッチは 0001〜0004 の 4 本、すべて `patch -p1 --forward` で適用できることを確認済み。
