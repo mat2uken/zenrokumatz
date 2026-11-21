@@ -1,0 +1,27 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 13:59:34
++++ b/venc-h264/encoder.c	2026-11-21 14:09:38
+@@ -3058,6 +3058,23 @@
+ 			enc_pr(LOG_INFO, "poweron: vdec_1 re-rated to %lu Hz\n",
+ 				clk_get_rate(venc_hw.vdec1_clk));
+ 		}
++		/*
++		 * The measured value of HHI_VDEC_CLK_CNTL was 0x02000A08, whose div
++		 * field ([6:0], mainline layout) is 8 - a 9x division that leaves the
++		 * HCodec far below the 666 MHz asked for, which matches the ~11 fps
++		 * that does not depend on resolution. Drive the divider to 1 here and
++		 * report the register so the real setting is visible.
++		 */
++		{
++			u32 cntl = READ_HHI_REG(HHI_VDEC_CLK_CNTL);
++
++			enc_pr(LOG_INFO, "poweron: clk_cntl before 0x%08x\n", cntl);
++			cntl &= ~0x7fU;			/* div [6:0] = 0 -> divide by 1 */
++			cntl |= (1U << 8);		/* vdec_1 gate on */
++			WRITE_HHI_REG(HHI_VDEC_CLK_CNTL, cntl);
++			enc_pr(LOG_INFO, "poweron: clk_cntl after  0x%08x\n",
++				READ_HHI_REG(HHI_VDEC_CLK_CNTL));
++		}
+ 		enc_pr(LOG_INFO, "poweron: hcodec clock done\n");
+ 	}
+ 	/* Powerup HCODEC memories */
