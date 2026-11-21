@@ -3561,3 +3561,51 @@ meson-vdec ff620000.video-decoder: Direct firmware load for
 | HCodec 窓アクセス | 通る |
 | HCodec ucode の IMEM DMA | **未完了** |
 | デコーダ | ファーム不足で未検証 |
+
+## round 188: vdec ファームウェアを overlay に追加（再ビルド済み）
+
+### 実施
+
+`vendor/meson-sm1-codecs/get-firmware.py` は `--dest` を受けるので、
+overlay に直接取得できる（md5 検証つき）:
+
+```sh
+python3 vendor/meson-sm1-codecs/get-firmware.py \
+    --dest board/x96max/overlay/lib/firmware
+```
+
+取得されたもの:
+
+```
+installed  meson/vdec/sm1_mpeg12_multi.bin     16384 バイト
+installed  meson/vdec/sm1_hevc_mmu_multi.bin   36864 バイト
+installed  meson/venc/monet.bin
+installed  meson/venc/LICENSE.monet.txt
+installed  meson/vdec/g12a_h264.bin            36864 バイト
+installed  meson/vdec/sm1_vp9_mmu.bin          16384 バイト
+kept       meson/venc/ga_h264_enc_cabac.bin    （既存）
+```
+
+`board/x96max/overlay/lib/firmware/` に置いたので **全ユニット共通**で
+rootfs に入る（`BR2_ROOTFS_OVERLAY`）。
+
+### ビルド結果
+
+NAS で再ビルドし、`output/target/lib/firmware/meson/vdec/` に
+`g12a_h264.bin` / `gxl_mpeg12.bin` / `sm1_hevc_mmu_multi.bin` /
+`sm1_mpeg12_multi.bin` / `sm1_vp9_mmu.bin` が入ることを確認。
+
+### これで何が試せるか
+
+1. **`mpeg2_v4l2m2m` でのデコードが成立するか**（mainline vdec の SM1
+   電源投入が正しく動くかの検証になる）
+2. デコードが通れば、エンコーダ側の IMEM DMA 失敗が
+   「VPU 全体の問題」か「エンコーダ固有の問題」かを切り分けられる
+
+### 注意（既知の落とし穴）
+
+`meson-vdec` の `vdec_1_start` は `DOS_GCLK_EN0` を丸ごと書き換えるため、
+**デコーダを動かした後にエンコーダを使うとクロックゲートが落ちる**
+（README 記載）。録画パイプラインでは
+**デコード → CPU コピー → エンコード** を別プロセスに分ける必要がある。
+round 187 でデコーダ先行 → エンコーダでハングしたのはこれが原因の可能性。
