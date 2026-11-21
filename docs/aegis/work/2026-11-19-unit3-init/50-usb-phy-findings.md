@@ -4227,3 +4227,55 @@ mainline のレイアウト（div [6:0]、sel [10:9]、gate [8]）で解釈す�
 **機能は動くが 11 fps。録画（30 fps 実時間）には不足。**
 性能改善が次の主要課題。ただし VPU の電源・クロック・割り込み・ucode
 ロードはすべて動作しており、残るはスループットの調整。
+
+## round 200: 実映像での測定。キャプチャは成功、エンコードは失敗
+
+### DT295 からの実キャプチャ（成功）
+
+```sh
+pix-ts-legacy --model dt295 -s terrestrial -c 15 \
+    -a /usr/share/pix-tuner -t 10 > /tmp/real.ts
+# CAP=0  /tmp/real.ts = 20,004,704 バイト（10 秒 = 約 16 Mbps の TS）
+```
+
+**ch15（SBS）で 10 秒 20MB の TS が取れた。** 受信経路は健全。
+
+### 実映像からの HW エンコード（失敗）
+
+```sh
+ffmpeg -i /tmp/real.ts -c:v h264_v4l2m2m -b:v 6000k -g 60 -c:a copy \
+    -f mpegts /tmp/rout.ts
+```
+
+- 1 回目: `Could not find a valid device`（モジュール未ロードだった）
+- 2 回目（ロード後）: `decode_slice_header error` / `no frame!` が多数、
+  最終的に **79 秒かけて出力 0 バイト**
+
+**キャプチャした TS の MPEG-2 が壊れている可能性が高い。**
+（`pix-ts-legacy` の統計に `writer_error` が出ていたのと整合）
+
+### ここまでの性能測定のまとめ
+
+| 入力 | 解像度 | 5 秒/10 秒分の所要 | 実効 |
+|---|---|---|---|
+| lavfi testsrc2 | 1080p | 14 秒/5 秒 | 約 11 fps |
+| rawvideo /dev/zero | 1080p | 13 秒/5 秒 | 約 11 fps |
+| rawvideo /dev/zero | 320x180 | 14 秒/5 秒 | 約 11 fps |
+| 実 TS（壊れている） | 1440x1080 | 失敗 | — |
+
+**解像度にも入力にも依存しない約 11 fps。** 割り込み・分周・再初期化の
+いずれでも説明できず、VPU 側のスループットそのものが要因。
+
+### 現状の評価
+
+- **機能**: VPU H.264 エンコードは動作（lavfi 入力で RC=0、有効な H.264）
+- **性能**: 約 11 fps（実時間 30 fps に不足）
+- **実運用**: 実 TS の品質問題（pix-ts-legacy の出力）と、性能の 2 点が残る
+
+### 次の一手（優先順）
+
+1. **実 TS の品質確認**: `ffprobe /tmp/real.ts` で MPEG-2 が正しいか。
+   `pix-ts-legacy` の出力が壊れているなら、そちらの修正が先
+2. **性能**: 参照実装の 58 fps との差を詰める。ucode 種別（cabac→cavlc）、
+   エンコード設定、ドライバの毎フレーム処理を見直す
+3. その後に `pix-stream` 統合と NAS 保存
