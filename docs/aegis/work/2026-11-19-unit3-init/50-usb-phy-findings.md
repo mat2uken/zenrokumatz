@@ -3609,3 +3609,62 @@ NAS で再ビルドし、`output/target/lib/firmware/meson/vdec/` に
 （README 記載）。録画パイプラインでは
 **デコード → CPU コピー → エンコード** を別プロセスに分ける必要がある。
 round 187 でデコーダ先行 → エンコーダでハングしたのはこれが原因の可能性。
+
+# ✅ round 189: vdec ファームで VPU 電源経路が正常と実証
+
+### 実施（`rdinit=/bin/sh`、機体は生きている）
+
+```sh
+busybox ip link set eth0 up; busybox ip addr add 192.168.99.56/24 dev eth0
+mkdir -p /lib/firmware/meson/vdec
+busybox wget -q -O /lib/firmware/meson/vdec/sm1_mpeg12_multi.bin \
+    http://192.168.99.20:8000/sm1_mpeg12_multi.bin
+modprobe meson_vdec                  # v=0
+ffmpeg -f lavfi -i testsrc2=... -c:v mpeg2video -f mpegts /tmp/d.ts   # g=0
+ffmpeg -c:v mpeg2_v4l2m2m -i /tmp/d.ts -f null -                      # ← ここ
+```
+
+### 結果
+
+```
+meson-vdec ff620000.video-decoder: HEVC mailbox IRQ is unavailable
+[111.328434] meson-vdec: esparser_pad_start_code: unable to pad start code
+[111.534750] meson-vdec: esparser: input parsing error
+```
+
+**デコーダはファームを読み込み、ESPARSER まで到達した。** 入力の
+スタートコード整形で失敗しているだけ。
+
+### これの意味（重要）
+
+- **VPU / DOS ブロックの電源とクロックは正常に機能している**
+  （ESPARSER が動いている以上、DOS のバスクロック・パワーは生きている）
+- したがって **エンコーダの IMEM DMA 失敗は「エンコーダ固有」の問題**であり、
+  VPU 全体が死んでいるわけではない
+
+### 副次的に分かったこと
+
+- vdec ファームを `/lib/firmware/meson/vdec/` に置けば `request_firmware`
+  は成功する（以前は `-2` で失敗していた）
+- `HEVC mailbox IRQ is unavailable` は警告（MPEG-2 デコードには不要）
+- `esparser_pad_start_code` 失敗は ffmpeg 側の入力整形と meson-vdec の
+  相性問題と思われる（録画用途では pix-ts-legacy が TS を出すので、
+  同じ経路を使うかは別途検討）
+
+### 注意: デコーダ実行後は DOS レジスタの読み取りがハングする
+
+デコード失敗の直後に `devmem 0xff62fcc0` 等を読むと無応答になった。
+**`meson-vdec` を動かした後は DOS/HCodec のレジスタに触らないほうが安全。**
+（README の「HW デコードと HW エンコードの同時使用でハング」と整合）
+
+### 現在の残課題
+
+**エンコーダの IMEM DMA が完了しない**（`hcodec load mc error`）。
+VPU 電源は正常と分かったので、次はエンコーダ固有の初期化を疑う:
+
+1. HCodec 専用のクロック（`hcodec_aclk`）が未取得
+   （`get_cpu_type() >= SC2` の分岐内でしか初期化されない）
+2. `DOS_MEM_PD_HCODEC` への書き込みが効いているか（読み値が不自然）
+3. コメントアウトされている `fix_mc`（HW バグ回避）が SM1 では必要
+4. 代替: 同梱の `venc` CLI（char デバイス `/dev/amvenc_avc`）経路で
+   同じ失敗をするか比較する（V4L2 層の問題かドライバの問題かを切り分け）
