@@ -1,0 +1,25 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 13:37:43
++++ b/venc-h264/encoder.c	2026-11-21 13:47:07
+@@ -3638,11 +3638,16 @@
+ 
+ 	ie_me_mode = (0 & ME_PIXEL_MODE_MASK) << ME_PIXEL_MODE_SHIFT;
+ 	avc_prot_init(wq, NULL, wq->pic.init_qppicture, true);
+-	if (request_irq(encode_manager.irq_num, enc_isr, IRQF_SHARED,
+-		"enc-irq", (void *)&encode_manager) == 0)
+-		encode_manager.irq_requested = true;
+-	else
+-		encode_manager.irq_requested = false;
++	{
++		int irq_ret = request_irq(encode_manager.irq_num, enc_isr,
++					  IRQF_SHARED, "enc-irq",
++					  (void *)&encode_manager);
++
++		encode_manager.irq_requested = (irq_ret == 0);
++		enc_pr(LOG_INFO, "encode: irq %d request -> %d (requested=%d)\n",
++			encode_manager.irq_num, irq_ret,
++			encode_manager.irq_requested);
++	}
+ 
+ 	/* decoder buffer , need set before each frame start */
+ 	avc_init_dblk_buffer(wq->mem.dblk_buf_canvas);
