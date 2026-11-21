@@ -1,0 +1,22 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 12:34:09
++++ b/venc-h264/encoder.c	2026-11-21 12:41:47
+@@ -3043,9 +3043,17 @@
+ 		/* Remove HCODEC ISO */
+ 		WRITE_AOREG(AO_RTI_GEN_PWR_ISO0,
+ 				READ_AOREG(AO_RTI_GEN_PWR_ISO0) &
++				/*
++				 * compat.h reports G12A, so the ~0x30 arm is the one
++				 * that runs here, but SM1 isolates VDEC/HCodec with
++				 * BIT(1) (mainline's GEN_PWR_VDEC_1_SM1). Measured on
++				 * the board: ISO0 reads 0xff at boot and 0xcf after
++				 * this write, i.e. BIT(1) never cleared, which leaves
++				 * the HCodec window at 0xff624000 dead. Clear both.
++				 */
+ 				((get_cpu_type() == MESON_CPU_MAJOR_ID_SM1 ||
+ 				  get_cpu_type() >= MESON_CPU_MAJOR_ID_TM2)
+-				? ~0x3 : ~0x30));
++				? ~0x33 : ~0x33));
+ 	}
+ 	enc_pr(LOG_INFO, "poweron: iso done, iso0 readback 0x%08x\n",
+ 		READ_AOREG(AO_RTI_GEN_PWR_ISO0));

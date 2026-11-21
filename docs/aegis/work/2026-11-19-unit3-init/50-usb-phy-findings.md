@@ -3315,3 +3315,59 @@ busybox devmem 0xff800014 32     # 同上（別候補）
 
 起動直後（エンコード前）の値を知ることで、`0xff` か `0xcf` か、
 `~0x18` すべきビットが何かを判断できる。
+
+# 🎯 round 184: 起動時の AO 値と HCodec 窓の実測。ISO bit1 が未クリアと確定
+
+### 実測（`rdinit=/bin/sh`、ドライバ無しの状態）
+
+```
+busybox devmem 0xff8000e8 32   → 0xFFFDFEFF   (AO_RTI_GEN_PWR_SLEEP0)
+busybox devmem 0xff8000ec 32   → 0xFFFDFEFF   (AO_RTI_GEN_PWR_ISO0)
+busybox devmem 0xff800010 32   → 0x00004200
+busybox devmem 0xff800014 32   → 0x00110011
+busybox devmem 0xff63c1e0 32   → 0x00000000   (HHI_VDEC_CLK_CNTL、起動時は停止)
+busybox devmem 0xff624008 32   → ハング（応答なし）
+```
+
+**決定的な事実:**
+
+1. 起動時の `SLEEP0` / `ISO0` はどちらも下位バイト **0xFF**（全ビット 1）。
+2. **`0xff624008`（HCodec 窓）はドライバを何も動かしていない起動直後でも
+   応答しない。** → ハードウェアのゲート/アイソレーションが閉じている。
+3. `HHI_VDEC_CLK_CNTL = 0` → 起動時は VDEC クロックも止まっている。
+
+### ドライバの書き込み結果と突き合わせ
+
+| レジスタ | 起動時 | ドライバ後 | 変化 |
+|---|---|---|---|
+| `SLEEP0` | `0xff` | `0xfc` | bits **1:0 をクリア** ✓ |
+| `ISO0` | `0xff` | `0xcf` | bits **4:5 のみ**クリア。**bits 1:0 は 1 のまま** ✗ |
+
+`SLEEP0` と `ISO0` は同じ条件式を使っているのに結果が違う:
+
+```c
+/* SLEEP0 */ ? ~0x3  : ~0x3      ← patch 0006 で両方 ~0x3 にした
+/* ISO0   */ ? ~0x33 : ~0x33     ← patch 0010 で両方 ~0x33 にした（今回）
+```
+
+`compat.h` の `get_cpu_type()` は **G12A** を返すので実際に走るのは else 側。
+SLEEP0 は `~0x3`（bit1:0 クリア）で正しく落ちるが、ISO0 は `~0x30` で
+**bit1:0 をクリアしていなかった**。
+
+mainline の SM1 定義 `GEN_PWR_VDEC_1_SM1 = BIT(1)` と一致する。
+**これが HCodec 窓が無応答な原因**と判断。
+
+### 修正（パッチ 0010）
+
+ISO0 の両アームを `~0x33`（bits 1:0 と 4:5 の両方をクリア）にした。
+
+### 配信
+
+`amvenc_avc.ko` = **`7aa6cae0`**（484,464 バイト、未 strip）。
+`http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
+パッチは 0001〜0010 の 10 本、すべて適用検証済み。
+
+### 次の確認
+
+`iso done, iso0 readback` が **`0xfc....`（bits 1:0 = 0）** になれば
+アイソレーションは解除。その後 `start: mmc ctrl done` が出るかが焦点。
