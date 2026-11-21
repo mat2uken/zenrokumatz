@@ -3259,3 +3259,59 @@ enc_pr(LOG_INFO, "poweron: before sleep0 0x%08x iso0 0x%08x\n",
 `amvenc_avc.ko` = **`dc611ae2`**（484,464 バイト、未 strip）。
 `http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
 パッチは 0001〜0009 の 9 本、すべて適用検証済み。
+
+## 🔵 訂正（round 183）: `get_cpu_type() == G12A` は上流の仕様。ISO0 の 0xcf は正常
+
+### 確認した事実
+
+`vendor/meson-sm1-codecs/venc-h264/compat.h:117-118`:
+
+```c
+static inline int get_cpu_type(void) { return MESON_CPU_MAJOR_ID_G12A; }
+static inline int get_cpu_major_id(void) { return MESON_CPU_MAJOR_ID_G12A; }
+```
+
+**`meson-sm1-codecs`（SM1 向けリポジトリ）でも G12A を返す。** これは
+意図的な設計で、SM1 は G12A と同じ分岐に乗せる（ucode 選択も
+`>= G12A` で `ga_h264_enc_cabac` になる）。
+
+したがって round 182 で「SM1 分岐が走っていないのが原因では」と考えたのは
+**誤り**。参照ボード（S905X3）でも同じ値で動いている。
+
+**`ISO0` の読み返し `0xcf`（bits 4:5 クリア、bits 1:0 は 1 のまま）は、
+参照実装と同じ挙動**であり、これ自体は異常ではない。
+
+### 追加で除外した候補
+
+`drivers/pmdomain/amlogic/meson-ee-pwrc.c` に **VDEC / HCODEC の記述は無い**。
+mainline の電源ドメインドライバは VDEC 系を管理していないので、
+「genpd がドメインを止めている」という仮説も**否定**。
+
+（dmesg の `sync_state() pending due to ff900000.vpu` は表示用 VPU の話）
+
+### 残る候補
+
+1. **`AO_RTI_PWR_CNTL_REG0` の書き込みを compat が捨てている**
+   （`compat.h:59-63`、オフセットを `0xffff` という仮値にして無効化。
+   コメントに "Revisit if the encoder stalls" とあり、まさに停止している）
+   → ただし正しいオフセットが不明。AO 領域への当て推量書き込みは危険
+     （UART 等を壊す可能性）なので、実機で「読んで確認」してからにする。
+2. 参照ボードと U-Boot が違う（参照は vendor U-Boot、こちらも vendor
+   U-Boot だが `usb start` 前提など初期化経路が異なる）
+3. SM1 実機での HCodec レジスタ窓のアドレスが `0xff624000` でない可能性
+   （vendor の `HCODEC_*` はワード添字で `dos + (r<<2)`、`MPSR=0x1301` が
+   `0xff624c04` になるので整合はしている）
+
+### 次の一手（実機で安全に確認できること）
+
+シェルから `busybox devmem` で **AO 領域を読む**（読み取りは書き込みより安全）:
+
+```sh
+busybox devmem 0xff8000e8 32     # AO_RTI_GEN_PWR_SLEEP0
+busybox devmem 0xff8000ec 32     # AO_RTI_GEN_PWR_ISO0
+busybox devmem 0xff800010 32     # AO_RTI_PWR_CNTL_REG0 候補
+busybox devmem 0xff800014 32     # 同上（別候補）
+```
+
+起動直後（エンコード前）の値を知ることで、`0xff` か `0xcf` か、
+`~0x18` すべきビットが何かを判断できる。
