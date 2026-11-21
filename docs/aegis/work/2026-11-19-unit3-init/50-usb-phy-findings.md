@@ -2640,3 +2640,63 @@ HHI は always-on ドメインなので、この読み取り自体は安全。
 
 さらに `0xff620000` 台（DOS）を読めば、バスが応答するかも分かる
 （**これはハングの危険があるので最後に単独で**）。
+
+## メモリ経路の確認（round 170）: ハングの原因ではない
+
+### 必要量
+
+`amvenc_buffspec[0].min_buffsize = 0x1400000` = **20 MiB**（1920x1088 用）。
+`cma_pool_size = min(MIN_SIZE*3, 256MB) = 60 MiB`、`max_instance = 3`。
+
+### CMA の実体
+
+DTB の `linux,cma`:
+
+```dts
+linux,cma {
+        compatible = "shared-dma-pool";
+        reusable;
+        size = <0x00 0x10000000>;      /* 256 MiB */
+        alignment = <0x00 0x400000>;
+        linux,cma-default;
+};
+```
+
+**256 MiB あり、20 MiB 要件は十分。**
+
+### 確保失敗は安全に失敗する
+
+`avc_instance_open()`:
+
+```c
+wq->mem.buf_start = codec_mm_alloc_for_dma(...);
+if (wq->mem.buf_start) { ... } else {
+        enc_pr(LOG_ERROR, "CMA failed to allocate dma buffer ...");
+        destroy_encode_work_queue(wq);
+        return ERR_PTR(-ENOMEM);
+}
+...
+if (wq->mem.buf_start == 0 || wq->mem.buf_size < MIN_SIZE) {
+        ... return ERR_PTR(-ENOMEM);
+}
+```
+
+**失敗すれば `-ENOMEM` を返すだけで、物理アドレス 0 への DMA は起きない。**
+（`phys_to_virt(dma)` もこの SoC は IOMMU 無しで同一写像なので問題ない）
+
+**したがってメモリ経路はハングの原因ではない。**
+
+### 残る唯一の候補
+
+**HCodec/DOS のレジスタアクセス時にコアクロック（`vdec_1`、bit 8）が
+閉じていること。** パッチ 0002 で `amports_switch_gate()` から
+クロックフレームワーク経由で有効化するよう修正した。
+
+### 検証は 1 コマンド
+
+```sh
+python3 tools/boot-debug-shell.py --vpu-test
+```
+
+（`eth0` を上げ → HTTP で修正版 `.ko` 取得 → `insmod encode_print_level=0`
+→ `0xff63c1e0` を前後で `devmem` 読み → 合成映像でエンコード）
