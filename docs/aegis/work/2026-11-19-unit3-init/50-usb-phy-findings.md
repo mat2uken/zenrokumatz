@@ -3712,3 +3712,72 @@ ucode は **24 KiB**（`MC_SIZE` は 32 KiB）。`0x1000` が
 - `hcodec load mc error` が消えて `start: loadmc done` が出れば**前進**
 - 変わらなければ転送サイズは原因ではない → 次は
   `hcodec_aclk`（HCodec 専用クロック）の取得を試す
+
+# 🎉🎉 round 191: VPU ハードウェア H.264 エンコーダが動作した
+
+### 決定的な修正: `DOS_SW_RESET0` もリセットパルスする（パッチ 0014）
+
+vendor は `DOS_SW_RESET1`（ワード `0x3f07` = バイト `0xfc1c`）だけを
+パルスしていたが、mainline が VDEC_1 をリセットするのは
+**`DOS_SW_RESET0`（バイト `0xfc00`、`BIT(12)|BIT(11)`）**。
+
+両方をパルスしたところ **ucode の IMEM DMA が完了した**:
+
+```
+start: loadmc done
+hwenc: wq->pic.encoder_width 64, framesize:6144
+Increase frame_num to 2
+RC=0
+```
+
+### 実証された出力
+
+| テスト | 結果 |
+|---|---|
+| 64x64 / 5fps / 0.4 秒 | `RC=0`、3,196 バイト、`ffprobe` で **h264, 64x64** |
+| **1920x1080 / 30fps / 6Mbps / 6 秒** | `RC=0`、**5,133,904 バイト**（6Mbps × 6s ≒ 4.5MB で妥当） |
+
+**Amlogic HCodec のハードウェア H.264 エンコードが mainline Linux 上で動作した。**
+
+### 性能（要改善）
+
+| 条件 | 実測 |
+|---|---|
+| 1080p、`testsrc2` 生成込み 10 秒 | 28 秒（0.36x） |
+| **1080p、rawvideo 入力 10 秒** | **27 秒（0.37x = 約 11 fps）** |
+
+参照実装（同リポジトリ）は 1080p で **58 fps**。**約 5 倍遅い。**
+原因候補はクロック（後述）。
+
+### 試して失敗したこと: vendor の HHI 書き込みを外す（パッチ 0015、撤回）
+
+`hvdec_clock_enable()` の `HDEC_L*`（`HHI_VDEC_CLK_CNTL` の bit 16/24/25 を書く）
+を外し、mainline の `clk_set_rate`（div/sel/gate）に任せる版を作ったが、
+**エンコード開始時にハングした。** → **vendor の書き込みは必要。** 撤回。
+
+### 性能改善の次の仮説（順序の入れ替え）
+
+現在の順序:
+
+1. `amports_switch_gate()` → `clk_prepare_enable(vdec_1)`（mainline:
+   div/sel/gate を設定）
+2. `avc_poweron()` → `hvdec_clock_enable(6)`（vendor: bit 16/24/25 を上書き）
+
+**vendor が後から上書きするので、最終的な mux/div は vendor の値**になる。
+これが遅い原因かもしれない。そこで **順序を逆にする**（vendor を先、
+clk フレームワークを後）と、機能を保ったまま mainline の 666 MHz 設定が
+最終値になる可能性がある。
+
+### 現在の配信
+
+`amvenc_avc.ko` = **`428394ee`**（パッチ 0001〜0014、動作確認済み）。
+`http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
+
+### 到達点の更新
+
+| 項目 | 状態 |
+|---|---|
+| VPU H.264 エンコード（機能） | **達成**（64x64 / 1080p とも RC=0、h264 出力） |
+| 1080p 実時間（30fps） | **未達**（約 11 fps） |
+| pix-stream への統合 | 未着手 |
+| NAS 保存・CM カット | 未達 |

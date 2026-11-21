@@ -1,0 +1,31 @@
+diff --git a/venc-h264/compat.h b/venc-h264/compat.h
+--- a/venc-h264/compat.h	2026-11-21 13:08:07
++++ b/venc-h264/compat.h	2026-11-21 13:16:25
+@@ -83,6 +83,7 @@
+ #define DOS_GCLK_EN0		0x3f01
+ #define DOS_GEN_CTRL0		0x3f02
+ #define DOS_SW_RESET1		0x3f07
++#define DOS_SW_RESET0_REG	0x3f00
+ #define DOS_MEM_PD_HCODEC	0x3f32
+ #define DOS_MEM_PD_VDEC		0x3f30
+ /* only used on chips with the in-DOS canvas LUT, never on SM1 */
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 13:08:07
++++ b/venc-h264/encoder.c	2026-11-21 13:16:25
+@@ -3024,7 +3024,15 @@
+ 	spin_lock_irqsave(&lock, flags);
+ 	WRITE_VREG(DOS_SW_RESET1, 0xffffffff);
+ 	WRITE_VREG(DOS_SW_RESET1, 0);
+-	enc_pr(LOG_INFO, "poweron: dos reset done\n");
++	/*
++	 * mainline resets VDEC_1 through DOS_SW_RESET0 (0xfc00, BIT(12)|BIT(11)),
++	 * which is a different register from the vendor's DOS_SW_RESET1
++	 * (0xfc1c). Pulse both so the HCodec sub-block is reset whatever the
++	 * right register is on this silicon.
++	 */
++	WRITE_VREG(DOS_SW_RESET0_REG, 0xffffffff);
++	WRITE_VREG(DOS_SW_RESET0_REG, 0);
++	enc_pr(LOG_INFO, "poweron: dos reset done (both)\n");
+ 	/* Enable Dos internal clock gating */
+ 	if ((get_cpu_major_id() == AM_MESON_CPU_MAJOR_ID_T3) || \
+ 		(get_cpu_major_id() == AM_MESON_CPU_MAJOR_ID_T5M) || \
