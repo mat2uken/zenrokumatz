@@ -1,0 +1,24 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 13:47:07
++++ b/venc-h264/encoder.c	2026-11-21 13:59:34
+@@ -3628,6 +3628,20 @@
+ 	if (amvenc_loadmc(p, wq) < 0)
+ 		return -EBUSY;
+ 	enc_pr(LOG_INFO, "start: loadmc done\n");
++
++	/*
++	 * HCODEC_CCPU_INTR_MSK is only written inside the commented-out
++	 * amvenc_dos_top_reg_fix(), so it is never programmed. The vendor note
++	 * says it is set while the HCodec runs; without it the mailbox interrupt
++	 * that signals frame completion never reaches the host (enc_isr is never
++	 * called, so every frame falls back to the wait timeout). Set it and
++	 * report the mailbox state so the effect is visible.
++	 */
++	WRITE_HREG(HCODEC_CCPU_INTR_MSK, 1);
++	enc_pr(LOG_INFO, "start: ccpu_int_msk=0x%x mbox2_irq=0x%x mask=0x%x\n",
++		READ_HREG(HCODEC_CCPU_INTR_MSK),
++		READ_HREG(HCODEC_ASSIST_MBOX2_IRQ_REG),
++		READ_HREG(HCODEC_ASSIST_MBOX2_MASK));
+ 	encode_manager.need_reset = true;
+ 	encode_manager.process_irq = false;
+ 	encode_manager.encode_hw_status = ENCODER_IDLE;
