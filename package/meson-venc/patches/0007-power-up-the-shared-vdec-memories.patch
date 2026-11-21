@@ -1,0 +1,28 @@
+diff --git a/venc-h264/compat.h b/venc-h264/compat.h
+--- a/venc-h264/compat.h	2026-11-21 10:51:07
++++ b/venc-h264/compat.h	2026-11-21 10:53:04
+@@ -84,6 +84,7 @@
+ #define DOS_GEN_CTRL0		0x3f02
+ #define DOS_SW_RESET1		0x3f07
+ #define DOS_MEM_PD_HCODEC	0x3f32
++#define DOS_MEM_PD_VDEC		0x3f30
+ /* only used on chips with the in-DOS canvas LUT, never on SM1 */
+ #ifndef HCODEC_MDEC_CAV_CFG0
+ #define HCODEC_MDEC_CAV_CFG0	0
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 10:51:07
++++ b/venc-h264/encoder.c	2026-11-21 10:53:04
+@@ -3021,6 +3021,13 @@
+ 	}
+ 	/* Powerup HCODEC memories */
+ 	WRITE_VREG(DOS_MEM_PD_HCODEC, 0x0);
++	/*
++	 * DOS_MEM_PD_VDEC (0xfcc0) sits next to DOS_MEM_PD_HCODEC (0xfcc8) and
++	 * is the one mainline powers up for SM1. Leaving the shared decoder
++	 * memories powered down keeps the HCodec window dead even though its
++	 * clock runs at 666 MHz.
++	 */
++	WRITE_VREG(DOS_MEM_PD_VDEC, 0x0);
+ 	enc_pr(LOG_INFO, "poweron: mem pd done\n");
+ 
+ 	if (get_cpu_type() >= MESON_CPU_MAJOR_ID_SC2) {

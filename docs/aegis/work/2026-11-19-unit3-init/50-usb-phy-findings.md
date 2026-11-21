@@ -3066,3 +3066,46 @@ SM1 のとき `~0x1`（bit 0 のみクリア）していた。
 | 0006 | SM1 の電源/ISO は bit 1:0 の両方をクリア |
 
 すべて `patch -p1 --forward` で順に適用できることを確認済み。
+
+## round 179: HCodec のベースは正しいと確認。共有 VDEC メモリ電源を追加
+
+### レジスタベースの検算（別候補を除外）
+
+vendor の `HCODEC_*` は `WRITE_HREG` = `dos + (r << 2)` で**ワード添字**:
+
+| レジスタ | ワード添字 | バイト | 絶対アドレス |
+|---|---|---|---|
+| `HCODEC_ASSIST_MMC_CTRL1` | 0x1002 | 0x4008 | **0xff624008** |
+| `HCODEC_MPSR` | 0x1301 | 0x4c04 | 0xff624c04 |
+| `HCODEC_CPSR` | 0x1321 | 0x4c84 | 0xff624c84 |
+
+**HCodec ブロックのベースは `0xff624000`** で一致している。
+`compat.h` が `WRITE_HREG` を `WRITE_VREG` にエイリアスしているのも正しい。
+
+→ **アドレスは疑わしくない。** 残るのは電源・メモリ電源。
+
+### メモリ電源レジスタの食い違い
+
+vendor（`compat.h`）は**ワード添字**:
+
+```
+#define DOS_MEM_PD_HCODEC	0x3f32   /* → バイト 0xfcc8 */
+```
+
+mainline（`dos_regs.h`、**バイト添字**）:
+
+```
+#define DOS_MEM_PD_VDEC		0xfcc0   /* → ワード 0x3f30 */
+```
+
+**隣接する別レジスタ。** mainline が SM1 で電源投入するのは `DOS_MEM_PD_VDEC`。
+vendor は `DOS_MEM_PD_HCODEC` しか書いていない。
+
+→ パッチ 0007 で `DOS_MEM_PD_VDEC`（ワード `0x3f30`）も 0 にする。
+
+### 配信
+
+`amvenc_avc.ko` = **`d3faec8c`**（482,952 バイト、未 strip）。
+`http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
+
+パッチは 0001〜0007 の 7 本。すべて `patch -p1 --forward` で適用できることを確認済み。
