@@ -4035,3 +4035,82 @@ mainline: `amvdec_write_dos(core, ASSIST_MBOX1_MASK, 1);`（有効化）
 
 **機能は動く（1080p で有効な H.264 を生成）が 11 fps。**
 録画（実時間）には 30 fps が必要なので、この IRQ 問題の解決が必須。
+
+# 🎯 round 197: vendor DTB で SPI 45 が正しいと確定。完了通知の経路も解明
+
+### vendor DTB（Android の `/proc/device-tree`）から確認
+
+```
+/proc/device-tree/vdec/interrupt-names:
+    vsync demux parser mailbox_0 mailbox_1 mailbox_2
+/proc/device-tree/vdec/interrupts（ビッグエンディアン u32 × 3）:
+    <0  3 1>  vsync
+    <0 23 1>  demux
+    <0 32 1>  parser
+    <0 43 1>  mailbox_0
+    <0 44 1>  mailbox_1
+    <0 45 1>  mailbox_2   ← ドライバの指定と一致
+```
+
+**`HCODEC_MBOX2_SPI = 45` は正しい。** 推測ではなく実機の DT で確定した。
+（`HCODEC_ASSIST_MBOX2_*` のレジスタ定義 `0x1078`〜`0x107b` も正しい）
+
+### 完了通知の経路
+
+```c
+static irqreturn_t enc_isr(...)          /* 3135 行 */
+{
+        enc_pr(LOG_INFO, "*****ENC_ISR*****\n");   /* ← 一度も出ていない */
+        WRITE_HREG(HCODEC_IRQ_MBOX_CLR, 1);
+        manager->encode_hw_status = READ_HREG(ENCODER_STATUS);
+        ...
+        tasklet_schedule(...)  →  encode_isr_tasklet()   /* 3121 行 */
+}
+
+static void encode_isr_tasklet(ulong data)
+{
+        ...
+        wake_up_interruptible(&manager->event.hw_complete);   /* 3130 行 */
+}
+```
+
+**`hw_complete` を起こすのは ISR 経由のタスクレットだけ。**
+ISR が走らないので `hw_complete` は永久に起きず、待ちは必ずタイムアウトする。
+
+### 待ちの分岐
+
+```c
+u32 timeout = (request->timeout == 0) ? 1 : msecs_to_jiffies(request->timeout);
+
+if (no_timeout) {
+        wait_event_interruptible(hw_complete, ...);          /* 無期限 */
+} else {
+        wait_event_interruptible_timeout(hw_complete, ..., timeout);  /* 既定 */
+}
+```
+
+`no_timeout` はモジュールパラメータで既定 0 → **常にタイムアウト待ち**。
+実測 90ms/フレームがこのタイムアウトに一致する。
+
+### したがって
+
+**性能問題は「ISR が走らないこと」に完全に帰着する。**
+SPI・マスク・クリアの定義はすべて正しいので、残るのは
+「HCodec が mailbox_2 を上げていない」＝
+**HCodec 側の割り込み有効化（`HCODEC_CCPU_INTR_MSK` = 0x1324 等）が
+されていない**可能性。
+
+`HCODEC_CCPU_INTR_MSK` は **コメントアウトされた `amvenc_dos_top_reg_fix()`
+の中でしか書かれておらず、実際には一度も設定されていない。**
+
+（ベンダーのコメント: "When hcodec is running, a protocol register
+HCODEC_CCPU_INTR_MSK is set to make hcodec access one CBUS out of DOS domain
+once to work around a HW bug"）
+
+### 次の一手
+
+1. `HCODEC_CCPU_INTR_MSK` に 1 を書く（コメントアウトされた関数の該当行だけ
+   有効化）して、ISR が走るか試す
+2. 併せて `HCODEC_ASSIST_MBOX2_IRQ_REG` を読んで、HCodec が割り込みを
+   立てているか（= マスクされているか）を確認
+   → **読み取りは安全**（ハングしないことは round 191 以降で確認済み）
