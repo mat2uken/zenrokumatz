@@ -7,7 +7,8 @@ cd ~/Desktop/work/X96MaxLinuxTSEnc
 python3 tools/boot-debug-shell.py --vpu-test
 ```
 
-配信中モジュール: `amvenc_avc.ko` = **`a8c333c5`**（トレース 18 箇所入り）。
+配信中モジュール: `amvenc_avc.ko` = **`d5825643`**（パッチ 0001〜0008、トレース
+18 箇所＋電源レジスタ読み返し 3 箇所入り）。
 `cp` → `modprobe meson_vdec` → `modprobe amvenc_avc encode_print_level=0`
 → 合成映像エンコード、まで自動。**`insmod` では依存が解決せず失敗する**
 （`Unknown symbol v4l2_m2m_*`）ので `modprobe` を使うこと。
@@ -29,8 +30,14 @@ python3 tools/boot-debug-shell.py --vpu-test
 
 ```sh
 cd /tmp && python3 -m http.server 8000 --bind 192.168.99.20 --directory /tmp
-# /tmp/amvenc_avc.ko = d73bd5f7
+# /tmp/amvenc_avc.ko = d5825643 （483,832 バイト、未 strip）
 ```
+
+**この HTTP サーバはセッションのバックグラウンドジョブなので、
+セッションが終わると止まる。** 再開時は上記で起動し直すこと。
+モジュールは NAS の
+`/build/output/build/meson-venc-*/venc-h264/amvenc_avc.ko`（未 strip）から
+取るのが確実（インストール済みの strip 版は更新されないことがあった）。
 
 ## 判定
 
