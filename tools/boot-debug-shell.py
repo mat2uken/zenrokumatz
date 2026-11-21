@@ -29,6 +29,22 @@ INITRD_ADDR = "0x10000000"
 DTB_ADDR = "0x08000000"
 PROMPT = re.compile(r"(^|\n)[^\n]*[#\$] $")
 
+# eth0 is a built-in driver, so it exists even without init scripts. That makes
+# the network the one channel left for replacing files while the card is stuck
+# inside a wedged unit.
+VPU_TEST = """
+busybox ip link set eth0 up
+busybox ip addr add 192.168.99.56/24 dev eth0
+busybox devmem 0xff63c1e0 32
+busybox wget -q -O /tmp/a.ko http://{mac}:8000/amvenc_avc.ko; echo wget=$?
+ls -l /tmp/a.ko
+insmod /tmp/a.ko encode_print_level=0; echo insmod=$?
+busybox devmem 0xff63c1e0 32
+dmesg | tail -8
+ffmpeg -hide_banner -v info -f lavfi -i testsrc2=size=64x64:rate=5:duration=0.4 -vf format=nv12 -c:v h264_v4l2m2m -b:v 500k -f mpegts /tmp/t.ts; echo ffmpeg=$?
+ls -l /tmp/t.ts
+"""
+
 
 def catch(fd, console, wait=180.0):
     """Reach the U-Boot prompt, rebooting Android out of the way if it booted.
@@ -54,6 +70,11 @@ def main():
                     help="command to run in the debug shell (repeatable)")
     ap.add_argument("--wait-boot", type=float, default=45.0)
     ap.add_argument("--wait-uboot", type=float, default=180.0)
+    ap.add_argument("--vpu-test", action="store_true",
+                    help="bring eth0 up, fetch the rebuilt encoder module over "
+                         "HTTP, load it with full logging and encode a test clip")
+    ap.add_argument("--mac", default="192.168.99.20",
+                    help="host serving amvenc_avc.ko on port 8000")
     ap.add_argument("--cmd-wait", type=float, default=20.0,
                     help="seconds to read the console after each --cmd")
     args = ap.parse_args()
@@ -107,6 +128,15 @@ def main():
                   "/bin/mount -t sysfs sys /sys",
                   "/bin/mount -t devtmpfs dev /dev 2>/dev/null"):
         run(console, fd, setup, 2.0)
+
+    if args.vpu_test:
+        for command in VPU_TEST.format(mac=args.mac) .strip().splitlines():
+            command = command.strip()
+            if not command:
+                continue
+            print(f"\n$ {command}")
+            output = run(console, fd, command, args.cmd_wait)
+            print(output.strip()[-1500:])
 
     for command in args.cmd:
         print(f"\n$ {command}")
