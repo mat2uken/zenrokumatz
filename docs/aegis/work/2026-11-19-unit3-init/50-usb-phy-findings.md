@@ -3781,3 +3781,50 @@ clk フレームワークを後）と、機能を保ったまま mainline の 66
 | 1080p 実時間（30fps） | **未達**（約 11 fps） |
 | pix-stream への統合 | 未着手 |
 | NAS 保存・CM カット | 未達 |
+
+## round 192: 性能改善のため、vendor のクロック書き込み後に mainline の設定を再適用（パッチ 0015）
+
+### 狙い
+
+現在の順序は
+
+1. `amports_switch_gate()` → `clk_prepare_enable(vdec_1)`（mainline: div [6:0],
+   sel [10:9], gate [8] を設定）
+2. `avc_poweron()` → `hvdec_clock_enable(6)`（vendor: bit 16/24/25 を上書き）
+
+**vendor が後から上書きするので、最終的な mux/div は vendor の値**になる。
+参照実装はこの状態で 58 fps だが、こちらは 11 fps。同じはずなので、
+こちらの HHI の初期状態が参照と違う可能性がある。
+
+### 修正
+
+`hvdec_clock_enable(clock)` の直後に `clk_set_rate(vdec_1, 666MHz)` を
+呼び直し、**mainline の mux/div を最終値**にする。vendor の書き込みは
+残す（外すとハングするため。round 191 で実証）。
+
+```c
+hvdec_clock_enable(clock);
+if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk)) {
+        clk_set_rate(venc_hw.vdec1_clk, 666666667);
+        enc_pr(LOG_INFO, "poweron: vdec_1 re-rated to %lu Hz\n",
+                clk_get_rate(venc_hw.vdec1_clk));
+}
+```
+
+### 配信
+
+`amvenc_avc.ko` = **`20b09689`**（パッチ 0001〜0015、15 本すべて適用検証済み）。
+`http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
+
+### 判定
+
+| 結果 | 意味 |
+|---|---|
+| 1080p で 30fps 前後（実時間） | **性能問題も解決**。pix-stream 統合へ |
+| 11 fps のまま | クロック以外が原因（DMA/メモリ帯域、または参照との初期状態差） |
+| ハング | 再適用が悪影響。0014 版（`428394ee`）に戻す |
+
+### 復帰手順（ハングした場合）
+
+`package/meson-venc/patches/0015-*.patch` を削除して再ビルドすれば
+動作確認済みの `428394ee` に戻る。

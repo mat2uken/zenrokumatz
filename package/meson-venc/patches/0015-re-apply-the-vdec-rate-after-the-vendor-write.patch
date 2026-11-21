@@ -1,0 +1,23 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 13:16:25
++++ b/venc-h264/encoder.c	2026-11-21 13:26:13
+@@ -3045,6 +3045,19 @@
+ 	} else {
+ 		enc_pr(LOG_INFO, "poweron: enabling hcodec clock\n");
+ 		hvdec_clock_enable(clock);
++		/*
++		 * hvdec_clock_enable() programs the mux/divider fields of
++		 * HHI_VDEC_CLK_CNTL using the vendor layout (bits 16/24/25), which
++		 * is not mainline's (div [6:0], sel [10:9], gate [8]). Re-apply the
++		 * rate afterwards so the clock framework's 666 MHz selection is
++		 * what stays programmed; leaving the vendor value in place is what
++		 * the reference does and it only reaches ~11 fps.
++		 */
++		if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk)) {
++			clk_set_rate(venc_hw.vdec1_clk, 666666667);
++			enc_pr(LOG_INFO, "poweron: vdec_1 re-rated to %lu Hz\n",
++				clk_get_rate(venc_hw.vdec1_clk));
++		}
+ 		enc_pr(LOG_INFO, "poweron: hcodec clock done\n");
+ 	}
+ 	/* Powerup HCODEC memories */
