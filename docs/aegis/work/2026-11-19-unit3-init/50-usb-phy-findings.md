@@ -4279,3 +4279,49 @@ ffmpeg -i /tmp/real.ts -c:v h264_v4l2m2m -b:v 6000k -g 60 -c:a copy \
 2. **性能**: 参照実装の 58 fps との差を詰める。ucode 種別（cabac→cavlc）、
    エンコード設定、ドライバの毎フレーム処理を見直す
 3. その後に `pix-stream` 統合と NAS 保存
+
+## round 201: 実 TS が壊れている。B-CAS 起動後も同じ
+
+### 実測
+
+```sh
+/etc/init.d/S96bcas start
+# B-CAS: DT295 internal card (vendor firmware descrambles)   BC=0
+
+pix-ts-legacy --model dt295 -s terrestrial -c 15 \
+    -a /usr/share/pix-tuner -t 8 > /tmp/r2.ts
+# CAP=0 SIZE=15,958,004
+
+ffprobe /tmp/r2.ts
+# [mpeg2video] Invalid frame dimensions 0x0.   ← 壊れている
+```
+
+B-CAS を起動しても **TS の中身は壊れたまま**。PSI（PAT/PMT）は読めるが
+映像 PES が壊れている。
+
+### 有力な仮説: DT295 の内蔵カードがスクランブルを解除できていない
+
+- 本機の設定は `PIX_DECRYPT=0`（DT295 内蔵 B-CAS で復号）
+- `S96bcas` は「DT295 internal card (vendor firmware descrambles)」と出る
+- しかし**カードが挿さっていない／初期化できていない**場合、
+  PSI はクリアなので読めるが映像・音声の PES はスクランブルされたまま
+  → `Invalid frame dimensions 0x0`、AAC のスケールファクタ超過
+
+**これは物理的な確認が必要**（カードの有無・向き）。
+
+### 副次的な事実
+
+- `pix-ts-legacy` 自体は `CAP=0` で 8 秒 16MB を書き出している（経路は動く）
+- したがって「受信できていない」のではなく「**復号できていない**」
+
+### 確認していただきたいこと
+
+1. **DT295 のカードスロットに B-CAS カードが挿さっているか**（向きも）
+2. 2代目で同じ DT295 を使っているなら、その個体にはカードが挿さっているか
+3. カードを挿す／挿し直したうえで、もう一度キャプチャして ffprobe で
+   `mpeg2video, 1440, 1080` が出るか
+
+### もしカードが挿さっているのに駄目なら
+
+`PIX_DECRYPT=1`（CFW 経由で torne-b25 が復号）への切り替えを検討する。
+2代目はその構成（`BR2_PACKAGE_CFW=y`）で動いている。
