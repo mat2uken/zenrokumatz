@@ -2769,3 +2769,77 @@ Mac の `/tmp` に置き、`http://192.168.99.20:8000/amvenc_avc.ko` で配信�
 
 **機体が停止中の今は変更しない**（NAS 側だけ変えても、機体が
 ch17 で配信している間は不整合になる）。
+
+# 大きく前進（round 174）: vdec_1 ゲート修正でエンコーダが初期化・実行まで到達
+
+### 実測（`rdinit=/bin/sh`、修正版 `amvenc_avc.ko` = `d73bd5f7`）
+
+まず `insmod` では依存が解決せず失敗した:
+
+```
+amvenc_avc: Unknown symbol v4l2_m2m_buf_copy_metadata (err -2)
+```
+
+→ **`modprobe` を使う必要がある。** RAM rootfs は書き込み可能なので、
+`cp /tmp/a.ko /lib/modules/6.18.62/updates/amvenc_avc.ko` してから
+`modprobe amvenc_avc encode_print_level=0` で依存ごとロードできた。
+
+ロード結果:
+
+```
+amvenc: dos [mem 0xff620000-0xff62ffff] irq 22 canvas 0..11
+amvenc_avc probe start.
+amvenc_avc_probe -- reserved memory config fail.
+amvenc_avc - cma memory pool size: 60 MB
+encode_wq_init.
+amvenc_avc amvenc_avc: V4L2 H.264 encoder at /dev/video0
+amvenc_avc probe end.
+```
+
+`0xff63c1e0`（`HHI_VDEC_CLK_CNTL`）は insmod 直後は `0x00000000`
+（クロック有効化はエンコード開始時なので想定どおり）。
+
+### エンコード開始 → 以前より遥かに進んだ
+
+```
+check CMA pool success, max instance: 3.
+allocating phys 0xc2300000, size 20480k
+memory config success, buff start:0xc2300000, size is 0x1400000
+dct_buff_start_addr is 0xc2300000
+assit_buffer_offset is 0xc3110000
+BitstreamStart is 0xc3200000
+CBR: dump_info_ddr_start_addr:c3600000
+new work request 00000000421d0819, vaddr 0000000000000000, paddr 0000000000000000
+add new work ok, cmd:1, ucode mode: 0
+```
+
+**以前は最初のレジスタアクセスで即死だったのが、CMA 確保・バッファ設定・
+ワークキュー登録まで到達した。** `vdec_1` ゲート（bit 8）の修正は効いている。
+
+しかし**その直後にハング**（シリアル無応答）。
+
+### 残る原因の候補
+
+1. **`meson-vdec`（デコーダ）が未ロード**。`meson-sm1-codecs` の README は
+   「HW デコード + HW エンコードを 1 つの ffmpeg で同時に使うとハングする」
+   と書いており、参照環境（Armbian/ophub）は `install.sh` で
+   **デコーダも常時ロード**している。HCodec は DOS ブロックをデコーダと
+   共有するため、デコーダ側の DOS 初期化（ESPARSER/DOS メモリ電源）が
+   前提かもしれない。
+2. `new work request ... paddr 0000000000000000` の値が不穏。ワーク記述子の
+   物理アドレスが 0 のまま VPU に渡っていれば、VPU が address 0 を読んで
+   バスロックする可能性。
+3. ucode と本体のプロトコル不一致（md5 は一致しているので可能性は低い）。
+
+### 次の検証（1 回の電源投入で）
+
+```sh
+cp /tmp/a.ko /lib/modules/6.18.62/updates/amvenc_avc.ko
+busybox devmem 0xff63c1e0 32
+modprobe meson_vdec                  # ← デコーダもロード（新規）
+modprobe amvenc_avc encode_print_level=0
+busybox devmem 0xff63c1e0 32
+ffmpeg ... -c:v h264_v4l2m2m ... /tmp/o2.ts
+```
+
+**`meson_vdec` を先にロードするのが今回の差分。**
