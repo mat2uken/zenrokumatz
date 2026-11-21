@@ -1,0 +1,35 @@
+diff --git a/venc-h264/compat.c b/venc-h264/compat.c
+--- a/venc-h264/compat.c	2026-11-21 10:35:05
++++ b/venc-h264/compat.c	2026-11-21 10:43:13
+@@ -43,8 +43,11 @@
+ 		 * takes the whole machine down. Take the gate through the clock
+ 		 * framework instead of relying on the decoder driver.
+ 		 */
+-		if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk))
++		if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk)) {
+ 			WARN_ON(clk_prepare_enable(venc_hw.vdec1_clk));
++			pr_info("amvenc: vdec_1 = %lu Hz\n",
++				clk_get_rate(venc_hw.vdec1_clk));
++		}
+ 		for (int i = 0; i < venc_hw.num_clks; i++)
+ 			WARN_ON(clk_prepare_enable(venc_hw.clks[i]));
+ 	} else {
+@@ -204,6 +207,18 @@
+ 	}
+ 	/* Optional: absent only on very old device trees. */
+ 	venc_hw.vdec1_clk = of_clk_get_by_name(np, "vdec_1");
++	if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk)) {
++		/*
++		 * The vendor macros only write the fields at bits 16/24/25 of
++		 * HHI_VDEC_CLK_CNTL, while mainline puts the divider in [6:0],
++		 * the source mux in [10:9] and the gate in bit 8. If that mux or
++		 * divider is left unprogrammed the block gets no clock at all and
++		 * the first HCodec access stalls the bus. Ask the clock framework
++		 * for 666 MHz (fclk_div3) so sel/div are written too.
++		 */
++		if (clk_set_rate(venc_hw.vdec1_clk, 666666667))
++			pr_warn("amvenc: could not set the vdec_1 rate\n");
++	}
+ 
+ 	/*
+ 	 * The DOS register window answers as soon as "dos" is on, but the HCodec

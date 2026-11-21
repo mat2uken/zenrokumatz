@@ -3005,3 +3005,64 @@ amvenc: 5 vdec clock(s) for the encoder
 `amvenc_avc.ko` = **`4d1054e9`**（118,816 バイト）。
 `http://192.168.99.20:8000/amvenc_avc.ko` で配信中（HTTP 200）。
 パッチは 0001〜0004 の 4 本、すべて `patch -p1 --forward` で適用できることを確認済み。
+
+## round 178: クロックは 666 MHz で動作確認。それでも HCodec 窓は無応答
+
+### 実測
+
+```
+start: begin, ucode=ga_h264_enc_cabac
+amvenc: vdec_1 = 666666667 Hz      ← クロックは正しく 666 MHz で動いている
+poweron: clock gate enabled
+... (全段階通過) ...
+poweron: gen ctrl done
+start: poweron done
+start: canvas done
+（← ここで停止。WRITE_HREG(HCODEC_ASSIST_MMC_CTRL1) = 0xff624008）
+```
+
+**`vdec_1` は 666 MHz で動作しているのに、HCodec のレジスタ窓
+（`0xff624000`〜）は応答しない。** クロック不足ではない。
+
+### mainline との決定的な差
+
+`drivers/staging/media/meson/vdec/vdec_1.c`:
+
+```c
+#define AO_RTI_GEN_PWR_SLEEP0	0xe8
+#define AO_RTI_GEN_PWR_ISO0	0xec
+#define GEN_PWR_VDEC_1		(BIT(3) | BIT(2))   /* SM1 以外 */
+#define GEN_PWR_VDEC_1_ISO	(BIT(7) | BIT(6))
+#define GEN_PWR_VDEC_1_SM1	(BIT(1))            /* SM1 */
+```
+
+**SM1 の電源/アイソレーションは `BIT(1)`。** 一方 vendor の `encoder.c` は
+SM1 のとき `~0x1`（bit 0 のみクリア）していた。
+
+→ **bit が食い違っている。** 修正（パッチ 0006）で SM1 では **bit 1:0 の
+両方**をクリアするようにした（どちらが正しくても動く）。
+
+### ビルド/インストールの落とし穴
+
+パッチ 0006 適用後もインストール済み `.ko` のハッシュが変わらなかった
+（`9d7c030d` のまま）。ビルドツリー側の
+`output/build/meson-venc-*/venc-h264/amvenc_avc.ko`（482,672 バイト、未 strip）
+は更新されていたので、**そちらを直接配信**することにした。
+
+`amvenc_avc.ko` = **`475f4201`**（482,672 バイト、未 strip）。
+カーネルは未 strip のモジュールも問題なくロードできる。
+`http://192.168.99.20:8000/amvenc_avc.ko` で配信中（HTTP 200）。
+`vdec_1 = ` 文字列を含むことを確認。
+
+### パッチ一覧
+
+| # | 内容 |
+|---|---|
+| 0001 | vdec ノードを `amlogic,sm1-vdec` で探す |
+| 0002 | `vdec_1` ゲート（bit 8）をクロックフレームワークと直接書き込みの二段で立てる |
+| 0003 | `avc_poweron()` 11 箇所 + `amvenc_avc_start()` 7 箇所のトレース |
+| 0004 | vdec ノードのクロックを全部有効化 |
+| 0005 | `clk_set_rate(vdec_1, 666MHz)` で sel/div も書く |
+| 0006 | SM1 の電源/ISO は bit 1:0 の両方をクリア |
+
+すべて `patch -p1 --forward` で順に適用できることを確認済み。

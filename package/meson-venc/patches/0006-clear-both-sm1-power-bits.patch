@@ -1,0 +1,21 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 10:43:09
++++ b/venc-h264/encoder.c	2026-11-21 10:51:07
+@@ -2995,7 +2995,7 @@
+ 				READ_AOREG(AO_RTI_GEN_PWR_SLEEP0) &
+ 				((get_cpu_type() == MESON_CPU_MAJOR_ID_SM1 ||
+ 				 get_cpu_type() >= MESON_CPU_MAJOR_ID_TM2)
+-				? ~0x1 : ~0x3));
++				? ~0x3 : ~0x3));
+ 		enc_pr(LOG_INFO, "poweron: ao sleep0 done\n");
+ 		udelay(10);
+ 		spin_unlock_irqrestore(&lock, flags);
+@@ -3030,7 +3030,7 @@
+ 				READ_AOREG(AO_RTI_GEN_PWR_ISO0) &
+ 				((get_cpu_type() == MESON_CPU_MAJOR_ID_SM1 ||
+ 				  get_cpu_type() >= MESON_CPU_MAJOR_ID_TM2)
+-				? ~0x1 : ~0x30));
++				? ~0x3 : ~0x30));
+ 	}
+ 	enc_pr(LOG_INFO, "poweron: iso done\n");
+ 	udelay(10);
