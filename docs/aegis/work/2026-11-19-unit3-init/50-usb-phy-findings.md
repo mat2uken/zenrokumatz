@@ -3451,3 +3451,59 @@ modprobe amvenc_avc encode_print_level=0
 
 実測で `rmmod` → `cp` → `modprobe` → 再エンコードまで通ることを確認した。
 **イテレーションが劇的に速くなる。**
+
+## round 186: HCodec レジスタの読み値が不自然。次の切り分け方針
+
+### 計測
+
+`0xff624008` は通るようになった（ハングしない）が、ucode の IMEM DMA が
+完了せず、レジスタの読み値が不自然:
+
+```
+mc dma: adr 0x40601080 count 0x40601080 ctrl 0x40601080   ← 3つとも同一値
+poweron: mem pd done, hcodec 0x40608080 vdec 0x40608080   ← 2つとも同一値
+```
+
+`HCODEC_IMEM_DMA_CTRL/ADR/COUNT = 0x1340/0x1341/0x1342`（別オフセット）、
+`DOS_MEM_PD_HCODEC/VDEC = 0x3f32/0x3f30`（別オフセット）なのに同じ値が返る。
+
+**HCodec/DOS 窓の読み取りが実値を返していない可能性が高い。**
+書き込みが通らない（読み出しが別物）なら、DMA が始まらないのも説明できる。
+
+### エンコード後の読み値（参考）
+
+```
+0xff63c1e0 (HHI_VDEC_CLK_CNTL) = 0x02000A08
+0xff620000 (DOS base)          = 0x00000000
+0xff62fcc0 (DOS_MEM_PD_VDEC)   = 0x00000000
+```
+
+`0x02000A08` は bit8（vdec_1 ゲート）が 0。ただしこれは**エンコード失敗後の
+`avc_poweroff()` が走った後**の値なので、動作中の状態ではない。
+
+### 次の切り分け（機体が生きているうちにやるべきこと）
+
+**エンコードをバックグラウンドで走らせ、その最中にシェルから
+HHI と DOS/HCodec のレジスタを読む。** これで
+
+- 動作中に `HHI_VDEC_CLK_CNTL` の bit8 が立っているか
+- `0xff624008` が書いた値（0x32）を読み返せるか
+- `DOS_MEM_PD_*` が 0 を読み返せるか
+
+が分かる。書いた値が読めなければ、窓はまだ機能していない。
+
+```sh
+ffmpeg ... /tmp/o5.ts &        # バックグラウンドで開始
+sleep 2
+busybox devmem 0xff63c1e0 32   # HHI
+busybox devmem 0xff624008 32   # HCODEC_ASSIST_MMC_CTRL1（0x32 を書いた）
+busybox devmem 0xff62fcc0 32   # DOS_MEM_PD_VDEC（0 を書いた）
+```
+
+### 到達点の更新
+
+| 項目 | 状態 |
+|---|---|
+| ハング | **解消**（ISO0 bit1 クリア） |
+| HCodec 窓へのアクセス | **通る**（`mmc ctrl done`） |
+| HCodec の実機能 | **未達**（読み値が不自然、IMEM DMA 未完了） |

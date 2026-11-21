@@ -1,0 +1,14 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 12:50:53
++++ b/venc-h264/encoder.c	2026-11-21 12:53:52
+@@ -2773,6 +2773,10 @@
+ 	WRITE_HREG(HCODEC_MPSR, 0);
+ 	WRITE_HREG(HCODEC_CPSR, 0);
+ 
++	enc_pr(LOG_ALL, "mc dma: adr 0x%x count 0x%x ctrl 0x%x\n",
++		READ_HREG(HCODEC_IMEM_DMA_ADR),
++		READ_HREG(HCODEC_IMEM_DMA_COUNT),
++		READ_HREG(HCODEC_IMEM_DMA_CTRL));
+ 	while (READ_HREG(HCODEC_IMEM_DMA_CTRL) & 0x8000) {
+ 		if (time_after(jiffies, timeout))
+ 			break;
