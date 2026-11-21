@@ -3986,3 +3986,52 @@ encode: irq 22 request -> 0 (requested=1)     ← 登録は成功
 
 **エンコード機能は完成**（64x64 / 1080p とも `RC=0`、有効な H.264）。
 性能は 11 fps で、原因は「完了割り込みが来ないこと」と特定済み。
+
+## round 196: ISR は一度も呼ばれていない。マスクの極性は mainline と同じで問題なし
+
+### 確認
+
+`enc_isr()` は**先頭で必ず** `enc_pr(LOG_INFO, "*****ENC_ISR*****")` を出す:
+
+```c
+static irqreturn_t enc_isr(s32 irq_number, void *para)
+{
+	enc_pr(LOG_INFO, "*****ENC_ISR*****\n");
+	WRITE_HREG(HCODEC_IRQ_MBOX_CLR, 1);
+	...
+```
+
+`encode_print_level=0`（= LOG_ALL）で実行したログに
+**`ENC_ISR` が一度も出ていない** → **割り込みハンドラは一度も走っていない。**
+
+### マスクの極性は正しい
+
+vendor: `WRITE_HREG(HCODEC_IRQ_MBOX_MASK, 1);`（"enable mailbox interrupt"）
+mainline: `amvdec_write_dos(core, ASSIST_MBOX1_MASK, 1);`（有効化）
+
+**どちらも 1 = 有効**なので、マスク設定は原因ではない。
+
+### 残る原因
+
+**HCodec がそもそも割り込みを上げていない**か、**SPI が違って別の
+割り込み線に繋がっている**かのどちらか。
+
+- `request_irq` は成功（`irq 22 request -> 0`）しているが、
+  `/proc/interrupts` に `enc-irq` が現れない点は依然として不可解
+- 誤った SPI を総当たりすると **oops して再起動**するので危険（round 194）
+
+### 確実な次の一手
+
+**vendor DT（Android の boot パーティション）から `mailbox_2` の SPI を読む。**
+これが分かれば推測が消える。手順案:
+
+1. Android 側で `su -c "dd if=/dev/block/by-name/boot of=/tmp/boot.img"` 相当
+2. boot.img から DTB を取り出す（`dtb` オフセット探索）
+3. `mbox` / `mailbox` ノードの `interrupts` を読む
+
+あるいは U-Boot の `fdt` 関連コマンドで vendor DTB をダンプする方法も考えられる。
+
+### 現時点の実用性
+
+**機能は動く（1080p で有効な H.264 を生成）が 11 fps。**
+録画（実時間）には 30 fps が必要なので、この IRQ 問題の解決が必須。
