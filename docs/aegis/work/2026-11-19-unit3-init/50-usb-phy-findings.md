@@ -2379,3 +2379,82 @@ ch17 で受信した局名とは限らない。
 - 旧ノード `192.168.99.56-17`（X96Max-Plus2 / テレビ静岡）の削除。
   3代目は ch15 になるので、NAS 側のノードも `192.168.99.56-15` として
   登録し直す必要がある。
+
+# 🎉 エンコーダ probe 成功、ただしエンコードでハング（round 167）
+
+### 成功: `amvenc_avc` が probe して `/dev/video0` に登録された
+
+`rdinit=/bin/sh` で起動し、手動で `modprobe amvenc_avc`:
+
+```
+[71.299195] amvenc_avc: loading out-of-tree module taints kernel.
+[71.302456] amvenc: dos [mem 0xff620000-0xff62ffff] irq 22 canvas 0..11
+[71.307497] amvenc_avc amvenc_avc: V4L2 H.264 encoder at /dev/video0
+```
+
+**`venc_hw_init()` が通り、V4L2 エンコーダが登録された。**
+（`rdinit=/bin/sh` では meson-vdec を読み込まないので、`/dev/video0` が
+エンコーダになる）
+
+`compatible` の修正（0001 パッチ）と `hantro` の無効化が効いた。
+
+### しかし: エンコードでシステム全体がハング
+
+```sh
+ffmpeg -f lavfi -i testsrc2=size=320x180:rate=30:duration=2 \
+    -vf format=nv12 -c:v h264_v4l2m2m -b:v 2000k -g 30 -f mpegts /tmp/t.ts
+```
+
+→ コマンドのエコー以降、**何も出力されずシリアルも無応答**。
+
+```
+$ \r
+（0 バイト）
+```
+
+**チューナーを一切使わない合成映像でもハングする。**
+つまり原因は `pix-stream` でも DT295 でもなく、**VPU エンコードそのもの**。
+
+### 確認済みで問題ないもの
+
+| 項目 | 状態 |
+|---|---|
+| ucode | `54dd341ef2d06bdbce243837355e20fc` = **期待値と完全一致** |
+| ドライバ | probe 成功、`/dev/video0` 登録 |
+| DOS ウィンドウ | `0xff620000-0xff62ffff` をマップ、irq 22、canvas 0..11 |
+| SM1 の電源投入 | レガシー AO 経路で実装あり（`AO_RTI_PWR_CNTL_REG0`、`GEN_PWR_SLEEP0` bit0、`GEN_PWR_ISO0` bit0） |
+| SM1 のクロック | `hvdec_clock_enable(6)` → `HHI_VDEC_CLK_CNTL` + `DOS_GCLK_EN0[26:12]` |
+| `dos` クロック | `amports_switch_gate(1)` で `clk_prepare_enable` |
+
+### ハングの性質
+
+ドライバは DOS レジスタ書き込みを `spin_lock_irqsave` で囲んでいる。
+**レジスタアクセスがバスレベルで完了しないと、IRQ 禁止のまま CPU が
+ストールし、システム全体が停止する**（シリアルもネットワークも死ぬ）。
+症状はまさにこれ。
+
+### 次の一手: `encode_print_level=0` で全ログを出す（再ビルド不要）
+
+`encode_print_level` は**モジュールパラメータ**:
+
+```c
+static u32 encode_print_level = LOG_ERROR;      /* 3 */
+module_param(encode_print_level, uint, 0664);
+
+#define LOG_ALL 0
+#define LOG_INFO 1
+#define LOG_DEBUG 2
+#define LOG_ERROR 3
+#define enc_pr(level, x...) do { if (level >= encode_print_level) printk(x); } while (0)
+```
+
+```sh
+modprobe amvenc_avc encode_print_level=0
+```
+
+これで `avc_poweron()` の各段階がシリアルに出る。
+**ハング直前の最後の行が、止まっているレジスタ操作を指す。**
+
+### 注意
+
+1 回のテストごとに電源再投入が必要（ハングすると復帰しない）。
