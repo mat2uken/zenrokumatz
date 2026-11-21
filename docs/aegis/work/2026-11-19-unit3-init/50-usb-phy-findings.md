@@ -3507,3 +3507,57 @@ busybox devmem 0xff62fcc0 32   # DOS_MEM_PD_VDEC（0 を書いた）
 | ハング | **解消**（ISO0 bit1 クリア） |
 | HCodec 窓へのアクセス | **通る**（`mmc ctrl done`） |
 | HCodec の実機能 | **未達**（読み値が不自然、IMEM DMA 未完了） |
+
+## round 187: デコーダ先行初期化を試すもハング再発。vdec ファームが不足
+
+### 分かったこと
+
+`modprobe meson_vdec` は成功し、mainline の電源投入シーケンスが走ったが、
+**ファームウェア不足**でデコードは失敗:
+
+```
+meson-vdec ff620000.video-decoder: Direct firmware load for
+    meson/vdec/sm1_mpeg12_multi.bin failed with error -2
+```
+
+**rootfs にはエンコーダの ucode（`ga_h264_enc_cabac.bin`）しか入れておらず、
+デコーダ用ファームが無い。** `meson-sm1-codecs/get-firmware.py` は以下を取得する:
+
+| ファイル | 入手元 |
+|---|---|
+| `meson/vdec/sm1_mpeg12_multi.bin` | CoreELEC/media_modules-aml |
+| `meson/vdec/sm1_hevc_mmu_multi.bin` | 同上 |
+| `meson/vdec/g12a_h264.bin`, `sm1_vp9_mmu.bin` | linux-firmware |
+
+### その後エンコードを試したら再びハング
+
+デコーダの電源投入を先に走らせた後で HCodec のエンコードを実行 →
+**シリアル無応答（ハング再発）**。
+
+考えられる理由:
+
+- `meson_vdec` が `DOS_GCLK_EN0` を丸ごと書き換える（README に
+  "in-kernel meson-vdec's vdec_1_start does a full write of DOS_GCLK_EN0 = 0"
+  とある）ため、エンコーダが必要とするクロックゲートが落とされた
+- デコード失敗後に vdec が中途半端な状態でブロックを残した
+
+**「デコーダを先に動かす」作戦は逆効果**の可能性が高い。
+
+### 次の一手（順序が大事）
+
+1. **vdec ファームを rootfs に入れる**（`get-firmware.py` 相当を Buildroot に）
+   → デコードが成立するか確認（VPU 電源経路の検証になる）
+2. ただしエンコーダとデコーダの同時使用は README の既知問題（HW 同時使用で
+   ハング）。録画パイプラインでは
+   **デコード→CPU コピー→エンコード** の分離が必要
+3. エンコーダ単体の IMEM DMA 失敗は依然未解決。読み値が不自然な点から、
+   HCodec 窓がまだ完全には機能していない可能性
+
+### 到達点
+
+| 項目 | 状態 |
+|---|---|
+| ハング（ISO bit1） | **修正済み**（この原因によるハングは解消） |
+| HCodec 窓アクセス | 通る |
+| HCodec ucode の IMEM DMA | **未完了** |
+| デコーダ | ファーム不足で未検証 |
