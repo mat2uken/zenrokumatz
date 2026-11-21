@@ -2892,3 +2892,49 @@ poweron: gen ctrl done
 
 `0001`（sm1-vdec 探索）→ `0002`（vdec_1 ゲート）→ `0003`（電源投入トレース）。
 `patch -p1 --forward` で 3 つとも適用できることを確認済み。
+
+## round 176: トレースを `amvenc_avc_start()` まで拡張
+
+### 停止箇所の候補が 2 つに絞れた
+
+`amvenc_avc_start()`（3544 行〜）の流れ:
+
+```c
+const char *p = select_ucode(encode_manager.ucode_index);
+avc_poweron(clock);                       /* ← 候補1: 電源投入 */
+avc_canvas_init(wq);                      /* ← 候補2 */
+WRITE_HREG(HCODEC_ASSIST_MMC_CTRL1, 0x32);/* ← 最初の HCODEC レジスタ書き込み */
+if (amvenc_loadmc(p, wq) < 0) return -EBUSY;  /* ← ucode ロード */
+```
+
+`add new work ok` の後にモニタスレッドがここへ入る。**どこで止まるか**を
+特定するため、`avc_poweron()` の 11 箇所に加えて `amvenc_avc_start()` の
+7 箇所にもログを入れた:
+
+```
+start: begin, ucode=ga_h264_enc_cabac
+start: poweron done
+start: canvas done
+start: mmc ctrl done
+start: loadmc done
+```
+
+### 待ち機構の確認（ハングの性質）
+
+| 箇所 | 種別 |
+|---|---|
+| `wait_event_timeout`（3849） | タイムアウト付き |
+| `wait_event_interruptible`（4195） | 割り込み可能 |
+| `wait_event_interruptible_timeout`（4201） | タイムアウト付き |
+| `wait_for_completion`（4478） | 無期限だが**スリープ**（ボックス全体は止まらない） |
+| `wait_for_completion_interruptible`（4532） | 割り込み可能 |
+
+**IRQ が来ないだけではシステム全体はハングしない。** 全体が止まるのは
+`spin_lock_irqsave` 区間でのレジスタアクセスがバスレベルで完了しない場合。
+したがってトレースの最後の行が決定的。
+
+### ビルド・配信
+
+`amvenc_avc.ko` = **`a8c333c5`**（118,336 バイト）。
+`poweron: ` / `start: ` 文字列 18 個を含むことを確認。
+`http://192.168.99.20:8000/amvenc_avc.ko` で配信中（HTTP 200）。

@@ -1,6 +1,6 @@
 diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
 --- a/venc-h264/encoder.c	2026-11-21 10:20:34
-+++ b/venc-h264/encoder.c	2026-11-21 10:20:34
++++ b/venc-h264/encoder.c	2026-11-21 10:23:06
 @@ -2962,6 +2962,7 @@
  
  	data32 = 0;
@@ -68,3 +68,23 @@ diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
  	spin_unlock_irqrestore(&lock, flags);
  	mdelay(10);
  
+@@ -3545,14 +3557,19 @@
+ {
+ 	const char *p = select_ucode(encode_manager.ucode_index);
+ 
++	enc_pr(LOG_INFO, "start: begin, ucode=%s\n", p);
+ 	avc_poweron(clock);
++	enc_pr(LOG_INFO, "start: poweron done\n");
+ 
+ 	avc_canvas_init(wq);
++	enc_pr(LOG_INFO, "start: canvas done\n");
+ 
+ 	WRITE_HREG(HCODEC_ASSIST_MMC_CTRL1, 0x32);
++	enc_pr(LOG_INFO, "start: mmc ctrl done\n");
+ 
+ 	if (amvenc_loadmc(p, wq) < 0)
+ 		return -EBUSY;
++	enc_pr(LOG_INFO, "start: loadmc done\n");
+ 	encode_manager.need_reset = true;
+ 	encode_manager.process_irq = false;
+ 	encode_manager.encode_hw_status = ENCODER_IDLE;
