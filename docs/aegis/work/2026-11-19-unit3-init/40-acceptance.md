@@ -57,8 +57,8 @@ PIX_CAPTURE_SECONDS=1800
 ### B. DT295 受信
 
 - `lsusb` に `06b8:103b Pixela Corp. PIX-DT295` が出る
-- `pix-ts-legacy --model dt295 --assets /usr/share/pix-tuner -s terrestrial -c 17 -t 5` が `rc=0`、`locked:1`、`tables_ready:1`、`packets > 0`
-- EIT から `service=35864`（SBS）が取れる
+- `pix-ts-legacy --model dt295 --assets /usr/share/pix-tuner -s terrestrial -c 15 -t 5` が `rc=0`、`locked:1`、`tables_ready:1`、`packets > 0`
+- SDT/EIT の局名が SBS（静岡放送）であること（`ffprobe -show_programs` で確認）
 
 ### C. 配信
 
@@ -69,7 +69,7 @@ PIX_CAPTURE_SECONDS=1800
 
 ### D. NAS 保存
 
-- NAS の `/api/nodes` に 3代目（`192.168.99.56`、ch17）が `recording` で現れる
+- NAS の `/api/nodes` に 3代目（`192.168.99.56`、ch15）が `recording` で現れる
 - 録画ファイルが NAS に生成され、サイズが時間に比例して伸びる
 - 番組境界で分割される（`PIX_CAPTURE_SECONDS=1800` ではなく番組単位）
 
@@ -93,7 +93,7 @@ PIX_CAPTURE_SECONDS=1800
 ## 既知の前提と注意
 
 - **NAS に `192.168.99.56-17`（X96Max-Plus2、テレビ静岡）という古いノードが残っている。** 3代目が同じ IP を使うため、登録前に削除が必要。放置すると名前・チャンネル割当が衝突する。
-- 3代目の設定は意図的に2代目と差分がある（地上波・ch17・衛星オプション無し）。「同等」は画質・安定性・保存の成立で判定し、チャンネルとチューナー系の値は合わせない。
+- 3代目の設定は意図的に2代目と差分がある（地上波・ch15=SBS・衛星オプション無し）。「同等」は画質・安定性・保存の成立で判定し、チャンネルとチューナー系の値は合わせない。
 
 ## 追記（round 79）: NAS 側の設定は2代目と完全一致
 
