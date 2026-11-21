@@ -7,6 +7,11 @@ cd ~/Desktop/work/X96MaxLinuxTSEnc
 python3 tools/boot-debug-shell.py --vpu-test
 ```
 
+配信中モジュール: `amvenc_avc.ko` = **`a8c333c5`**（トレース 18 箇所入り）。
+`cp` → `modprobe meson_vdec` → `modprobe amvenc_avc encode_print_level=0`
+→ 合成映像エンコード、まで自動。**`insmod` では依存が解決せず失敗する**
+（`Unknown symbol v4l2_m2m_*`）ので `modprobe` を使うこと。
+
 これが自動で行うこと:
 
 1. U-Boot に入る（Android なら自動で再起動）
@@ -31,10 +36,18 @@ cd /tmp && python3 -m http.server 8000 --bind 192.168.99.20 --directory /tmp
 
 | 観測 | 意味 | 次にやること |
 |---|---|---|
-| エンコードが完走し `/tmp/t.ts` ができる | **VPU 解決** | pix-stream に組み込む（下記 A） |
-| bit 8 = 1 だがハング | ゲートではない別の原因 | `0xff620000` 台を単独で読み、バス応答を確認 |
-| bit 8 = 0 のまま | クロック制御が届いていない | HHI への書き込み経路（`venc_hw.hhi` regmap）を確認 |
-| `insmod` が失敗 | probe 失敗 | `dmesg` の `amvenc:` 行を見る |
+| エンコードが完走し `/tmp/o2.ts` ができる | **VPU 解決** | pix-stream に組み込む（下記 A） |
+| `start: begin` の後で止まる | `avc_poweron()` 内 | `poweron:` の最後の行を見る |
+| `poweron: gen ctrl done` まで出て止まる | 電源投入は完了 | `canvas done` / `mmc ctrl done` / `loadmc done` のどこで止まるか |
+| `start: loadmc done` まで出て止まる | ucode 投入後に VPU が応答しない | HCODEC の IRQ（irq 22）が来ているか、`/proc/interrupts` を見る |
+
+`poweron:` の各段階:
+
+```
+clock gate enabled → ao begin → ao pwr_cntl done → ao sleep0 done
+→ taking lock for dos → dos reset done → enabling hcodec clock
+→ hcodec clock done → mem pd done → iso done → gen ctrl done
+```
 
 ## A. VPU が動いた後に必要なこと
 
@@ -68,5 +81,6 @@ cd /tmp && python3 -m http.server 8000 --bind 192.168.99.20 --directory /tmp
 | DT295 認識 | **達成** |
 | DT295 から TS 受信（6MB, `tables_ready:1`） | **達成** |
 | VPU エンコーダ `probe` → `/dev/video0` | **達成** |
-| **VPU エンコード** | **ハング中**（`vdec_1` ゲート未設定が原因と特定、修正版を検証待ち） |
+| VPU エンコードの初期化（CMA 20MB 確保・バッファ設定・キュー登録） | **達成** |
+| **VPU エンコードの実行** | **ハング中**（`avc_poweron` 以降をトレースで特定中） |
 | NAS 保存 / CM カット | 未達（VPU 待ち） |
