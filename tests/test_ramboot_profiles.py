@@ -208,7 +208,7 @@ class ProfileContracts(unittest.TestCase):
             "PIX_LOGO_WEEKLY_WAIT": "900",
         })
 
-    def test_unit3_uses_dt295_on_gr_channel17_without_external_card(self):
+    def test_unit3_uses_dt295_on_the_sbs_physical_channel(self):
         fragment = (ROOT / "board/x96max/ramboot-unit3.fragment").read_text()
         self.assertIn('BR2_TARGET_GENERIC_HOSTNAME="x96max-p3"', fragment)
         self.assertIn("ramboot-unit3-overlay", fragment)
@@ -217,7 +217,10 @@ class ProfileContracts(unittest.TestCase):
         values = dict(line.split("=", 1) for line in text.splitlines() if line.startswith("PIX_"))
         self.assertEqual(values["PIX_TUNER"], "dt295")
         self.assertEqual(values["PIX_SYSTEM"], "terrestrial")
-        self.assertEqual(values["PIX_CHANNEL"], "17")
+        # SBS (静岡放送) is physical 15 on 日本平; 17 would be テレビ静岡, which
+        # unit 1 already records. Physical channels 13..62 are what pix-ts
+        # accepts, so the remote key (6) is not a substitute.
+        self.assertEqual(values["PIX_CHANNEL"], "15")
         self.assertEqual(values["PIX_DISPLAY"], "X96Max-P3")
         # DT295 decrypts on its internal card: no external reader, no torne-b25.
         self.assertEqual(values["PIX_DECRYPT"], "0")

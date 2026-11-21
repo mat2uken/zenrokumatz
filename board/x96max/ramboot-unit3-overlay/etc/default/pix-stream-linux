@@ -1,14 +1,16 @@
 # Unit 3: PIX-DT295 on GR terrestrial SBS. Runtime root is volatile RAM.
-# SBS is the 5th remote-controller key but its physical channel is 17
-# (service_id 35864, measured 2026-11-19); pix-ts takes physical channels
-# 13..62, and ch5 fails the range check.
+# SBS (静岡放送) is remote-controller key 6 and physical channel 15 on the
+# 日本平 transmitter, per NHK静岡's published table. Physical 17 is テレビ静岡,
+# which is what this unit used to record before the channel was corrected;
+# pix-ts takes physical channels 13..62, so the remote key can never be passed.
 # The DT295 decrypts on its internal card slot, so no external B-CAS reader and
 # no torne-b25 stage are used (PIX_DECRYPT=0). One tuner per unit: unit 1 keeps
-# PX-S1UD/ch17 and unit 2 keeps DT295/BS11, so the same channel is not recorded twice.
+# PX-S1UD/ch17 (テレビ静岡) and unit 2 keeps DT295/BS11, so no station is
+# recorded twice.
 PIX_TUNER=dt295
 PIX_DECRYPT=0
 PIX_SYSTEM=terrestrial
-PIX_CHANNEL=17
+PIX_CHANNEL=15
 # Leave PIX_SAT_SLOT and PIX_PIDS unset, do not set them empty: the launcher
 # applies ${PIX_SAT_SLOT:=0} and a satellite PID list, which adds "--slot 0"
 # to terrestrial capture and pix-ts rejects it (exit 2, usage).
