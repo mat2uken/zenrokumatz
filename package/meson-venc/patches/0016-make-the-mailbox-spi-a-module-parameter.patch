@@ -1,0 +1,45 @@
+diff --git a/venc-h264/compat.c b/venc-h264/compat.c
+--- a/venc-h264/compat.c	2026-11-21 13:26:13
++++ b/venc-h264/compat.c	2026-11-21 13:37:43
+@@ -22,6 +22,19 @@
+ #define VENC_NUM_CANVAS		12	/* encoder.c uses enc_canvas_offset + 0..11 */
+ #define HCODEC_MBOX2_SPI	45	/* "mailbox_2" in the vendor DT */
+ 
++/*
++ * The mailbox SPI is a guess taken from the vendor DT, and the encoder's
++ * completion interrupt never fires on this board (irq count stays 0, so every
++ * frame waits for a poll timeout and the encoder is stuck at ~11 fps whatever
++ * the resolution). Make it a module parameter so the right SPI can be found by
++ * insmod without a rebuild:
++ *
++ *   modprobe amvenc_avc mbox_spi=46
++ */
++static int venc_mbox_spi = HCODEC_MBOX2_SPI;
++module_param_named(mbox_spi, venc_mbox_spi, int, 0444);
++MODULE_PARM_DESC(mbox_spi, "GIC SPI of the HCodec mailbox (default 45)");
++
+ struct venc_hw venc_hw;
+ 
+ void canvas_read(u32 index, struct canvas_s *p)
+@@ -119,7 +132,7 @@
+ 	struct device_node *gic;
+ 	struct irq_fwspec spec = {
+ 		.param_count = 3,
+-		.param = { 0 /* GIC_SPI */, HCODEC_MBOX2_SPI, IRQ_TYPE_EDGE_RISING },
++		.param = { 0 /* GIC_SPI */, venc_mbox_spi, IRQ_TYPE_EDGE_RISING },
+ 	};
+ 	int irq;
+ 
+@@ -129,6 +142,12 @@
+ 	spec.fwnode = of_fwnode_handle(gic);
+ 	irq = irq_create_fwspec_mapping(&spec);
+ 	of_node_put(gic);
++	if (irq > 0) {
++		struct irq_data *d = irq_get_irq_data(irq);
++
++		pr_info("amvenc: mailbox spi %d -> virq %d hwirq %lu\n",
++			venc_mbox_spi, irq, d ? irqd_to_hwirq(d) : 0UL);
++	}
+ 	return irq ? irq : -EINVAL;
+ }
+ 

@@ -3885,3 +3885,60 @@ $ grep GICv2 /proc/interrupts
 
 **エンコードの機能自体は完成している**（64x64 / 1080p とも RC=0、有効な
 H.264）。残るのは**性能（割り込み）**と**pix-stream への統合**。
+
+## round 194: 割り込みの実装を解明。SPI 探索は oops を誘発
+
+### 判明したこと
+
+1. **SPI のマッピングは `SPI N → hwirq N+32`**（実測）:
+   ```
+   mailbox spi 45 -> virq 22 hwirq 77
+   mailbox spi 47 -> virq 24 hwirq 79
+   mailbox spi 48 -> virq 25 hwirq 80
+   mailbox spi 50 -> virq 27 hwirq 82
+   ```
+2. **`request_irq` は probe 時ではなく `amvenc_avc_start()`（エンコード開始時）**
+   に呼ばれる:
+
+   ```c
+   if (request_irq(encode_manager.irq_num, enc_isr, IRQF_SHARED,
+                   "enc-irq", (void *)&encode_manager) == 0)
+           encode_manager.irq_requested = true;
+   else
+           encode_manager.irq_requested = false;
+   ```
+
+3. **完了待ちは IRQ の有無で分岐**:
+   ```c
+   if (irq_requested)
+           wait_event_interruptible(hw_complete, ...);          /* 無期限 */
+   else
+           wait_event_interruptible_timeout(hw_complete, ..., timeout);
+   ```
+   → **`request_irq` が失敗するとタイムアウト待ちになり、
+   1 フレーム約 90ms の固定遅延**（解像度に依存しない 11 fps の正体）。
+
+4. probe 直後の `/proc/interrupts` に `enc-irq` が出ないのは仕様（開始時登録）。
+
+### SPI 総当たりの結果
+
+`mbox_spi` を 45/46/47/48 で切り替えてエンコードする探索を実行したところ、
+**機体が oops → `panic_on_oops=1 panic=8` により自動再起動**した。
+
+**誤った SPI を要求すると、無関係な割り込みが `enc_isr` に入って
+oops する危険がある。** 総当たりは安全ではない。
+
+### 安全な進め方（次回）
+
+1. **vendor DT の `mailbox_2` の実際の SPI を知る**のが確実。
+   Android 側の DTB（eMMC の boot パーティション）から
+   `mbox` / `mailbox` ノードを読む。
+2. あるいは **`irq_requested` が真になったか**をログに出し、
+   エンコード時間で判定する（誤 SPI で oops しないよう、
+   まず `request_irq` の戻り値だけ確認する版を作る）。
+3. 正しい SPI が分かれば割り込み駆動になり、11 fps → 30 fps 以上が見込める。
+
+### 到達点（変わらず）
+
+**エンコード機能は完成**（64x64 / 1080p とも `RC=0`、有効な H.264）。
+残るは**割り込み（性能）**と **pix-stream 統合**。
