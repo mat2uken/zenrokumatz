@@ -4549,3 +4549,32 @@ ch15 で `program_count:5`、ch17 でも複数プログラムを含む mux な�
 | 性能 | 約 11 fps |
 | ch15(SBS) 受信 | 不良（物理的な要因） |
 | NAS 保存 / CM カット | 未達 |
+
+## round 207: 実映像のエンコードは全プログラムで失敗
+
+### 観測
+
+`/tmp/c17.ts`（ch17、9.9MB）:
+
+- `ffprobe -select_streams v:0` → `mpeg2video,1440,1080` ✓
+- ストリーム一覧には **`mpeg2video`（複数）と `h264`（ワンセグ）が混在**
+  ```
+  0,mpeg2video,video
+  10,h264,video        ← ワンセグ（H.264）
+  ```
+- `ffmpeg -i`（既定選択）→ `PPS` エラー（H.264 を掴む）
+- `-map 0:0` → `Invalid frame dimensions 0x0`（MPEG-2 だが別プログラム）
+- `-map 0:p:{0,1,2,3}:v:0` → **すべて出力 0 バイト**
+
+**ISDB-T の 12セグ（MPEG-2）と 1セグ（H.264）が同居**しており、
+目的の 12セグ映像を ffmpeg に正しく掴ませる必要がある。
+
+`/dev/video0` は存在し、`amvenc_avc` もロード済み（エンコーダ側の問題ではない）。
+
+### 次の一手（新しいセッションでも再現できる形で）
+
+1. `ffprobe -show_programs` で**プログラムごとの PID と解像度**を一覧化し、
+   1440x1080 の MPEG-2 がどの program/PID か特定する
+2. その PID を `-map 0:<pid>` で指定、または `PIX_PIDS` に設定
+3. 2代目の `PIX_PIDS` 設定（`0 17 18 257 ...` のような値）を参考にする
+   → `board/x96max/ramboot-unit2-overlay` などに実例があるはず
