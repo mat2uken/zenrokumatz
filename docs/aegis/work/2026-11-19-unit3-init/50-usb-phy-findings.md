@@ -3166,3 +3166,40 @@ WRITE_AOREG(AO_RTI_GEN_PWR_ISO0, rd & ~0x1);     /* bit0。mainline は bit1 */
 呼び出しは `get_cpu_type() >= SC2` の分岐内のみ。SM1 では通らない。
 `s_hcodec_clks` は `hcodec_clk_prepare()`（これも SC2 専用）でしか
 初期化されないので、SM1 で呼ぶと NULL 参照になる。**触らないのが正しい。**
+
+## round 181: 電源レジスタの読み返し診断（パッチ 0008）
+
+### 目的
+
+これまで「`WRITE_AOREG` / `WRITE_VREG` を書いた」ことだけをログで確認していたが、
+**その書き込みが実際にレジスタへ反映されたか**は確認していなかった。
+反映されていなければ、犯人は「レジスタ番号の誤り」であり、電源順序ではない。
+
+### 追加したログ
+
+```c
+/* SLEEP0 書き込み後 */
+enc_pr(LOG_INFO, "poweron: sleep0 readback 0x%08x\n",
+        READ_AOREG(AO_RTI_GEN_PWR_SLEEP0));
+/* MEM_PD 書き込み後 */
+enc_pr(LOG_INFO, "poweron: mem pd done, hcodec 0x%08x vdec 0x%08x\n",
+        READ_VREG(DOS_MEM_PD_HCODEC), READ_VREG(DOS_MEM_PD_VDEC));
+/* ISO0 書き込み後 */
+enc_pr(LOG_INFO, "poweron: iso done, iso0 readback 0x%08x\n",
+        READ_AOREG(AO_RTI_GEN_PWR_ISO0));
+```
+
+### 判定
+
+| 観測 | 意味 |
+|---|---|
+| `sleep0 readback` の bit0/bit1 が **0** | 電源は落ちた。原因は別 |
+| 同じビットが **1 のまま** | **書き込みが届いていない** → AO レジスタ番号か regmap が誤り |
+| `vdec 0x00000000` / `hcodec 0x00000000` | メモリ電源は落ちた |
+| 0 以外 | `DOS_MEM_PD_*` の番号が誤り |
+
+### 配信
+
+`amvenc_avc.ko` = **`d5825643`**（483,832 バイト、未 strip）。
+`http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
+パッチは 0001〜0008 の 8 本、すべて適用検証済み。
