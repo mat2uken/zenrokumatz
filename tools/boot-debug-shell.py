@@ -30,14 +30,14 @@ DTB_ADDR = "0x08000000"
 PROMPT = re.compile(r"(^|\n)[^\n]*[#\$] $")
 
 
-def catch(fd, console, tries=250, pause=0.1):
-    console.tail = ""
-    for _ in range(tries):
-        os.write(fd, b"\r")
-        console.pump(pause)
-        if uboot.UBOOT_PROMPT.search(console.tail.replace("\r", "")):
-            return True
-    return False
+def catch(fd, console, wait=180.0):
+    """Reach the U-Boot prompt, rebooting Android out of the way if it booted.
+
+    uboot.catch_prompt already does exactly this; an earlier local loop here
+    gave up as soon as Android appeared, which is the normal outcome when the
+    box was powered on a while ago.
+    """
+    return uboot.catch_prompt(console, wait) is not None
 
 
 def run(console, fd, command, wait=6.0):
@@ -53,6 +53,9 @@ def main():
     ap.add_argument("--cmd", action="append", default=[],
                     help="command to run in the debug shell (repeatable)")
     ap.add_argument("--wait-boot", type=float, default=45.0)
+    ap.add_argument("--wait-uboot", type=float, default=180.0)
+    ap.add_argument("--cmd-wait", type=float, default=20.0,
+                    help="seconds to read the console after each --cmd")
     args = ap.parse_args()
 
     log_path = ROOT / "work" / "debug-shell.log"
@@ -61,7 +64,7 @@ def main():
     console = uboot.Console(fd, log)
     console.pump(1.0)
 
-    if not catch(fd, console):
+    if not catch(fd, console, args.wait_uboot):
         print("could not reach U-Boot", file=sys.stderr)
         return 1
     print("U-Boot prompt reached")
@@ -107,7 +110,7 @@ def main():
 
     for command in args.cmd:
         print(f"\n$ {command}")
-        output = run(console, fd, command, 20.0)
+        output = run(console, fd, command, args.cmd_wait)
         print(output.strip()[-2000:])
 
     os.close(fd)

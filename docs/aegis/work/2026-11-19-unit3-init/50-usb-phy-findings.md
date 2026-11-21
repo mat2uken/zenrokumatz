@@ -2589,3 +2589,30 @@ DT の vdec ノードは `clock-names = "dos_parser", "dos", "vdec_1", ...` を
 ### 未実施
 
 SD への書き込みと実機検証（機体がハングしたまま、SD も機体内）。
+
+## SD を Mac に挿さずに修正版モジュールを試す方法（round 169）
+
+機体がハングすると SD も取り出せず、rootfs を更新できない。しかし
+**`rdinit=/bin/sh` でも eth0 は存在する**（ドライバはカーネル組込み）ので、
+ネットワーク経由でモジュールだけ差し替えられる。
+
+1. Mac（`192.168.99.20`）で配信サーバ:
+   ```sh
+   cd /tmp && python3 -m http.server 8000 --bind 192.168.99.20 --directory /tmp
+   ```
+   `/tmp/amvenc_avc.ko`（`e3a67aa8`、パッチ 0002 入り）を置く。
+
+2. `rdinit=/bin/sh` で起動したシェルで:
+   ```sh
+   busybox ip link set eth0 up
+   busybox ip addr add 192.168.99.56/24 dev eth0
+   busybox wget -q -O /tmp/a.ko http://192.168.99.20:8000/amvenc_avc.ko
+   insmod /tmp/a.ko encode_print_level=0
+   ```
+
+3. エンコードを実行して挙動を確認。
+
+**SD の抜き差しも rootfs の再書き込みも不要。** 電源再投入だけで試せる。
+
+`tools/boot-debug-shell.py --cmd ...` に `--cmd-wait` を追加し、
+複数コマンドを順に流せるようにした。
