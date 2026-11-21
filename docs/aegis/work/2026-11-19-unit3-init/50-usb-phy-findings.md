@@ -3828,3 +3828,60 @@ if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk)) {
 
 `package/meson-venc/patches/0015-*.patch` を削除して再ビルドすれば
 動作確認済みの `428394ee` に戻る。
+
+# 🎯 round 193: 性能 11 fps の原因は「完了割り込みが来ていない」
+
+### 実測
+
+| 解像度 | 10 秒分のエンコード時間 | 実効 fps |
+|---|---|---|
+| 1920x1080 | 27 秒 | 約 11 fps |
+| **320x180** | **27 秒** | **約 11 fps** |
+
+**解像度に依存しない固定のフレームあたりオーバーヘッド（約 90ms）。**
+エンコーダの処理能力ではなく、**完了待ちの仕組み**が原因。
+
+### 割り込みの実測
+
+```
+$ grep GICv2 /proc/interrupts
+22:  0 0 0 0  GICv2 76 Edge  vdec-mbox
+23:  0 0 0 0  GICv2 64 Edge  esparseri
+```
+
+**HCodec の完了割り込みが一度も発生していない（カウント 0）。**
+そのためドライバはポーリング／タイムアウトで完了を待っており、
+1 フレームあたり約 90ms の固定遅延になっている。
+
+### 原因の候補
+
+`venc_map_irq()` は **SPI 45**（vendor DT の "mailbox_2"）を要求する:
+
+```c
+#define HCODEC_MBOX2_SPI	45
+.param = { 0 /* GIC_SPI */, HCODEC_MBOX2_SPI, IRQ_TYPE_EDGE_RISING },
+```
+
+しかし probe のログは `irq 22` で、`/proc/interrupts` の 22 は
+**GICv2 hwirq 76（= SPI 44）で名前が `vdec-mbox`**。つまり
+**meson_vdec が既に使っている IRQ と同じ**ものを掴んでいる可能性が高い。
+
+- DTB の vdec ノード: `interrupts = <0 0x2c 1>, <0 0x20 1>`
+  （0x2c = SPI 44、0x20 = SPI 32）→ hwirq 76 と 64 → irq 22, 23
+- エンコーダが要求した SPI 45 は hwirq 77 になるはずだが、
+  `/proc/interrupts` に hwirq 77 の行が無い
+
+**SPI 45 の解決が期待どおりでなく、デコーダの IRQ と衝突している**疑い。
+
+### 次の一手
+
+1. `venc_map_irq()` の `irq_create_fwspec_mapping` の戻り値を詳しくログし、
+   hwirq を確認する（`irq_get_irq_data` → `irqd_to_hwirq`）
+2. SPI を 45 → 46/47 に変えて `/proc/interrupts` に新しい行が現れ、
+   エンコード中にカウントが増えるか試す
+3. 正しい SPI が分かれば、割り込み駆動になって実時間性能（30fps）に届く見込み
+
+### 重要な意味
+
+**エンコードの機能自体は完成している**（64x64 / 1080p とも RC=0、有効な
+H.264）。残るのは**性能（割り込み）**と**pix-stream への統合**。
