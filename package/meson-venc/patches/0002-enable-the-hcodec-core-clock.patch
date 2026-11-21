@@ -1,0 +1,50 @@
+diff --git a/venc-h264/compat.c b/venc-h264/compat.c
+--- a/venc-h264/compat.c	2026-11-21 09:44:44
++++ b/venc-h264/compat.c	2026-11-21 09:44:44
+@@ -32,10 +32,24 @@
+ 
+ void amports_switch_gate(const char *name, int enable)
+ {
+-	if (enable)
++	if (enable) {
+ 		WARN_ON(clk_prepare_enable(venc_hw.dos_clk));
+-	else
++		/*
++		 * The HCodec core clock is gated by bit 8 of HHI_VDEC_CLK_CNTL,
++		 * which mainline models as the "vdec_1" gate. The vendor macros
++		 * only program the mux/divider fields of that register, so unless
++		 * something else has already enabled the gate, every HCodec
++		 * register access stalls the bus with interrupts disabled and
++		 * takes the whole machine down. Take the gate through the clock
++		 * framework instead of relying on the decoder driver.
++		 */
++		if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk))
++			WARN_ON(clk_prepare_enable(venc_hw.vdec1_clk));
++	} else {
++		if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk))
++			clk_disable_unprepare(venc_hw.vdec1_clk);
+ 		clk_disable_unprepare(venc_hw.dos_clk);
++	}
+ }
+ 
+ int get_data_from_name(const char *name, u8 *buf)
+@@ -176,6 +190,8 @@
+ 		ret = PTR_ERR(venc_hw.dos_clk);
+ 		goto out;
+ 	}
++	/* Optional: absent only on very old device trees. */
++	venc_hw.vdec1_clk = of_clk_get_by_name(np, "vdec_1");
+ 	ret = venc_alloc_canvases(np);
+ 	if (ret)
+ 		goto put_clk;
+diff --git a/venc-h264/compat.h b/venc-h264/compat.h
+--- a/venc-h264/compat.h	2026-11-21 09:44:44
++++ b/venc-h264/compat.h	2026-11-21 09:44:44
+@@ -21,6 +21,7 @@
+ 	void __iomem *dos;
+ 	struct regmap *ao, *hhi;
+ 	struct clk *dos_clk;
++	struct clk *vdec1_clk;
+ 	struct meson_canvas *canvas;
+ 	u8 canvas_base;
+ 	struct platform_device *pdev;

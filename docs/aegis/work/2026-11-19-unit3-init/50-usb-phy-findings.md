@@ -2507,3 +2507,85 @@ ffmpeg -f lavfi -i testsrc2=size=64x64:rate=5:duration=0.4 \
 シリアルは `Console.pump` が逐次 stdout へ出すので、
 **ハングしても直前までの出力は取れる**（前回 ffmpeg が何も出さなかったのは
 `-v error` で、かつハングが非常に早かったため）。
+
+# 🎯 ハングの原因を特定（round 168）: `vdec_1` ゲート（bit 8）が開いていない
+
+### 決定的な不一致
+
+mainline の G12A クロックドライバ（`drivers/clk/meson/g12a.c`）:
+
+```c
+static struct clk_regmap g12a_vdec_1 = {
+        .data = &(struct clk_regmap_gate_data){
+                .offset = HHI_VDEC_CLK_CNTL,   /* 0x1e0 */
+                .bit_idx = 8,                 /* ← HCodec コアクロックのゲート */
+        },
+        ...
+};
+```
+
+vendor の `HDEC_L*` マクロ（`encoder.h`）:
+
+```c
+#define HDEC_L6()   WRITE_HHI_REG(HHI_VDEC_CLK_CNTL, \
+                         (1 << 25) | (0 << 16) | (1 << 24) | \
+                         (0xffff & READ_HHI_REG(HHI_VDEC_CLK_CNTL)))
+```
+
+**同じレジスタ `0x1e0` に対して bit 24/25/16 しか書かず、bit 8 を立てていない。**
+
+`HHI_VDEC_CLK_CNTL` のオフセット（`0x1e0`）は mainline と一致しているので、
+レジスタ自体は正しい。**ゲートビットだけが立っていない。**
+
+### なぜこれでシステム全体が落ちるか
+
+HCodec のコアクロックが止まったまま DOS/HCodec のレジスタへアクセスすると、
+バスが応答せず CPU がストールする。ドライバはその区間を
+`spin_lock_irqsave` で囲んでいるので **IRQ 禁止のまま固まり、シリアルも
+ネットワークも死ぬ**。round 167 の症状と完全に一致する。
+
+### なぜ GXL 移植では動いていたか
+
+`meson-gxl-codecs` の `install.sh` は **`meson-vdec`（デコーダ）も
+ロードする**。デコーダドライバが `vdec_1` クロックを取得・有効化するため、
+エンコーダは bit 8 を立てなくても動いていた。
+
+こちらの `rdinit=/bin/sh` 検証ではデコーダをロードしないので、
+ゲートが閉じたまま → ハング。**通常起動でも、エンコーダがデコーダより先に
+DOS へ触るため同じことが起きる。**
+
+### 修正（パッチ 0002）
+
+`amports_switch_gate()` で、`dos` クロックに加えて DT の `vdec_1`
+クロックもクロックフレームワーク経由で有効化する:
+
+```c
+static struct clk *venc_vdec1_clk;   /* -> venc_hw.vdec1_clk */
+
+void amports_switch_gate(const char *name, int enable)
+{
+        if (enable) {
+                WARN_ON(clk_prepare_enable(venc_hw.dos_clk));
+                if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk))
+                        WARN_ON(clk_prepare_enable(venc_hw.vdec1_clk));
+        } else {
+                if (!IS_ERR_OR_NULL(venc_hw.vdec1_clk))
+                        clk_disable_unprepare(venc_hw.vdec1_clk);
+                clk_disable_unprepare(venc_hw.dos_clk);
+        }
+}
+
+/* venc_hw_init() */
+venc_hw.vdec1_clk = of_clk_get_by_name(np, "vdec_1");
+```
+
+DT の vdec ノードは `clock-names = "dos_parser", "dos", "vdec_1", ...` を
+持っているので `of_clk_get_by_name(np, "vdec_1")` で取れる。
+
+### ビルド
+
+`exit=0`、パッチ 2 件適用、`vdec1_clk` がビルド済みソースに反映（5 箇所）。
+
+### 未実施
+
+SD への書き込みと実機検証（機体がハングしたまま、SD も機体内）。
