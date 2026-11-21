@@ -3109,3 +3109,60 @@ vendor は `DOS_MEM_PD_HCODEC` しか書いていない。
 `http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
 
 パッチは 0001〜0007 の 7 本。すべて `patch -p1 --forward` で適用できることを確認済み。
+
+## round 180: mainline の SM1 電源投入シーケンス（既知の正解）と vendor の比較
+
+### mainline `vdec_1_start()`（`drivers/staging/media/meson/vdec/vdec_1.c`）
+
+```c
+clk_set_rate(core->vdec_1_clk, 666666666);
+ret = clk_prepare_enable(core->vdec_1_clk);
+
+if (SM1)
+        regmap_update_bits(regmap_ao, AO_RTI_GEN_PWR_SLEEP0,
+                           GEN_PWR_VDEC_1_SM1 /* BIT(1) */, 0);
+else
+        regmap_update_bits(regmap_ao, AO_RTI_GEN_PWR_SLEEP0,
+                           GEN_PWR_VDEC_1 /* BIT(3)|BIT(2) */, 0);
+usleep_range(10, 20);
+
+amvdec_write_dos(core, DOS_MEM_PD_VDEC /* 0xfcc0 */, 0);
+
+if (SM1)
+        regmap_update_bits(regmap_ao, AO_RTI_GEN_PWR_ISO0,
+                           GEN_PWR_VDEC_1_SM1 /* BIT(1) */, 0);
+else
+        regmap_update_bits(regmap_ao, AO_RTI_GEN_PWR_ISO0,
+                           GEN_PWR_VDEC_1_ISO /* BIT(7)|BIT(6) */, 0);
+```
+
+### vendor の SM1 経路（パッチ適用前）
+
+```c
+WRITE_AOREG(AO_RTI_PWR_CNTL_REG0, rd & ~0x18);   /* mainline には無い */
+WRITE_AOREG(AO_RTI_GEN_PWR_SLEEP0, rd & ~0x1);   /* bit0。mainline は bit1 */
+WRITE_VREG(DOS_SW_RESET1, 0xffffffff); WRITE_VREG(DOS_SW_RESET1, 0);
+hvdec_clock_enable(6);
+WRITE_VREG(DOS_MEM_PD_HCODEC, 0);                /* mainline は DOS_MEM_PD_VDEC */
+WRITE_AOREG(AO_RTI_GEN_PWR_ISO0, rd & ~0x1);     /* bit0。mainline は bit1 */
+```
+
+### 現在のパッチで mainline 相当を満たしているか
+
+| mainline の要求 | パッチ適用後 |
+|---|---|
+| `clk_set_rate(666MHz)` | **0005 で対応**（`vdec_1 = 666666667 Hz` を実測確認） |
+| `clk_prepare_enable` | **0002 で対応** |
+| `SLEEP0` bit1 をクリア | **0006 で bit1:0 をクリア**（bit1 を含む） |
+| `DOS_MEM_PD_VDEC` を 0 | **0007 で対応** |
+| `ISO0` bit1 をクリア | **0006 で bit1:0 をクリア**（bit1 を含む） |
+
+**mainline の SM1 シーケンスはパッチ 0001〜0007 で網羅できている。**
+次の実機テストで `start: mmc ctrl done` が出るかが焦点。
+
+### 補足
+
+`hcodec_clk_config()` は `hcodec_aclk` を `clk_enable` するだけで、
+呼び出しは `get_cpu_type() >= SC2` の分岐内のみ。SM1 では通らない。
+`s_hcodec_clks` は `hcodec_clk_prepare()`（これも SC2 専用）でしか
+初期化されないので、SM1 で呼ぶと NULL 参照になる。**触らないのが正しい。**
