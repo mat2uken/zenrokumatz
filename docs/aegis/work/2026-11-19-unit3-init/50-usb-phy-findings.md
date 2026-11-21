@@ -4325,3 +4325,57 @@ B-CAS を起動しても **TS の中身は壊れたまま**。PSI（PAT/PMT）�
 
 `PIX_DECRYPT=1`（CFW 経由で torne-b25 が復号）への切り替えを検討する。
 2代目はその構成（`BR2_PACKAGE_CFW=y`）で動いている。
+
+## 🔵 round 202 訂正: TS はスクランブルされていない（スクランブル仮説は否定）
+
+### 実測（TS ヘッダのバイト 3 = scrambling control）
+
+```sh
+od -An -v -tx1 -w188 -j3 /tmp/r2.ts | head -2000 | sed 's/^ *//' \
+    | cut -c1-2 | sort | uniq -c | sort -rn | head -5
+```
+
+結果:
+
+```
+82 35
+81 3e
+81 3a
+81 37
+81 30
+```
+
+ヘッダのバイト 3 は **0x30〜0x3e** に集中 = **上位 2 ビット（スクランブル制御）が 00**。
+低い 2 ビットは連続性カウンタ、ビット 5-4 は adaptation+payload。
+
+**TS パケットはスクランブルされていない。** round 201 の「復号できていない」
+仮説は**否定**される。カードの有無は原因ではない可能性が高い。
+
+### では何が壊れているのか
+
+- ffprobe は `mpeg2video: Invalid frame dimensions 0x0` を出す
+- PSI は読める（PAT/PMT は取得できている前提）
+- しかし映像のシーケンスヘッダが 0x0 として読める
+
+**`pix-ts-legacy` が書き出した TS の映像 PES が壊れている**か、
+**映像 PID のデータが欠落**しているかのどちらか。
+
+### 確認したいこと（次回）
+
+1. `ffprobe -show_streams /tmp/r2.ts` の `id`（PID）と `codec_name`
+   → PID が PMT と一致しているか
+2. `pix-ts-legacy` の統計 JSON（`have_pat`, `have_pmt`, `missing_pmts`,
+   `rejected_bytes`, `continuity_errors`）を再取得
+3. 2代目で同様にキャプチャした TS と比較できれば理想（2代目は録画実績あり）
+
+### 現在の状態
+
+| 項目 | 状態 |
+|---|---|
+| VPU H.264 エンコード（機能） | **動作** |
+| 完了割り込み | **動作**（`CCPU_INTR_MSK`） |
+| 性能 | 約 11 fps（実時間に不足） |
+| **DT295 からの TS の中身** | **壊れている**（未スクランブルだが MPEG-2 ヘッダ不正） |
+| pix-stream 統合 / NAS 保存 | 未達 |
+
+**録画の可否を握るのは VPU より先に「TS の中身」かもしれない。**
