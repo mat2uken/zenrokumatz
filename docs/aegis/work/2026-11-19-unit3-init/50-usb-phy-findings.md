@@ -3668,3 +3668,47 @@ VPU 電源は正常と分かったので、次はエンコーダ固有の初期�
 3. コメントアウトされている `fix_mc`（HW バグ回避）が SM1 では必要
 4. 代替: 同梱の `venc` CLI（char デバイス `/dev/amvenc_avc`）経路で
    同じ失敗をするか比較する（V4L2 層の問題かドライバの問題かを切り分け）
+
+## round 190: fix_mc は使えないと判明。DMA 転送サイズを試す（パッチ 0013）
+
+### fix_mc ワークアラウンドは循環参照で不可
+
+`amhcodec_loadmc` / `amhcodec_start` / `amhcodec_stop` は
+**コメントブロックの中でしか参照されておらず、定義も存在しない**
+（`grep` で呼び出し 3 箇所のみ、定義 0 箇所）。有効化するには関数自体を
+書く必要がある。
+
+しかも `fix_mc` は「小さな ucode を読み込んで実行する」回避策なので、
+**同じ IMEM DMA 経路を使う**。DMA が壊れている現状では fix_mc も
+ロードできない。**循環するのでこの方向は採らない。**
+
+### 別候補: DMA 転送サイズ
+
+`amvenc_loadmc()`:
+
+```c
+WRITE_HREG(HCODEC_IMEM_DMA_ADR, mc_addr_map);
+WRITE_HREG(HCODEC_IMEM_DMA_COUNT, 0x1000);       /* ← これ */
+WRITE_VREG(HCODEC_IMEM_DMA_CTRL, (0x8000 | (0xf << 16)));
+while (READ_HREG(HCODEC_IMEM_DMA_CTRL) & 0x8000) ...
+```
+
+ucode は **24 KiB**（`MC_SIZE` は 32 KiB）。`0x1000` が
+- バイト単位なら 4 KiB
+- 32bit ワード単位なら 16 KiB
+
+いずれも ucode 全体を覆わない。**短い転送をエンジンが拒否して
+ビジー解除しない**可能性があるので、`MC_SIZE / 4`（= 0x2000 ワード = 32 KiB）
+に変更して試す。
+
+### 配信
+
+`amvenc_avc.ko` = **`fb6823b5`**（485,120 バイト）。
+`http://192.168.99.20:8000/amvenc_avc.ko`（HTTP 200）。
+パッチは 0001〜0013 の 13 本、すべて適用検証済み。
+
+### 判定
+
+- `hcodec load mc error` が消えて `start: loadmc done` が出れば**前進**
+- 変わらなければ転送サイズは原因ではない → 次は
+  `hcodec_aclk`（HCodec 専用クロック）の取得を試す

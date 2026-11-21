@@ -1,0 +1,18 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 12:53:52
++++ b/venc-h264/encoder.c	2026-11-21 13:08:07
+@@ -2880,7 +2880,13 @@
+ 	timeout = jiffies + HZ;
+ 
+ 	WRITE_HREG(HCODEC_IMEM_DMA_ADR, mc_addr_map);
+-	WRITE_HREG(HCODEC_IMEM_DMA_COUNT, 0x1000);
++	/*
++	 * The ucode blob is 24 KiB (MC_SIZE is 32 KiB) but upstream transfers
++	 * only 0x1000. If the count is in 32-bit words that is 16 KiB, short of
++	 * the whole ucode; if the engine refuses a short transfer it would never
++	 * clear the busy bit. Cover the full buffer instead.
++	 */
++	WRITE_HREG(HCODEC_IMEM_DMA_COUNT, MC_SIZE / 4);
+ 	//WRITE_HREG(HCODEC_IMEM_DMA_CTRL, (0x8000 | (7 << 16)));
+ 	WRITE_VREG(HCODEC_IMEM_DMA_CTRL, (0x8000 | (0xf << 16)));
+ 
