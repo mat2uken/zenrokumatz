@@ -1,0 +1,70 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 10:20:34
++++ b/venc-h264/encoder.c	2026-11-21 10:20:34
+@@ -2962,6 +2962,7 @@
+ 
+ 	data32 = 0;
+ 	amports_switch_gate("vdec", 1);
++	enc_pr(LOG_INFO, "poweron: clock gate enabled\n");
+ 	if (get_cpu_type() >= MESON_CPU_MAJOR_ID_SC2) {
+ 		hcodec_clk_config(1);
+ 		udelay(20);
+@@ -2982,9 +2983,11 @@
+             !pwr_ctrl_status_psci_smc(PDID_T3_DOS_HCODEC));
+         */
+ 	} else {
++		enc_pr(LOG_INFO, "poweron: ao begin\n");
+ 		spin_lock_irqsave(&lock, flags);
+ 		WRITE_AOREG(AO_RTI_PWR_CNTL_REG0,
+ 			(READ_AOREG(AO_RTI_PWR_CNTL_REG0) & (~0x18)));
++		enc_pr(LOG_INFO, "poweron: ao pwr_cntl done\n");
+ 		udelay(10);
+ 		/* Powerup HCODEC */
+ 		/* [1:0] HCODEC */
+@@ -2993,12 +2996,15 @@
+ 				((get_cpu_type() == MESON_CPU_MAJOR_ID_SM1 ||
+ 				 get_cpu_type() >= MESON_CPU_MAJOR_ID_TM2)
+ 				? ~0x1 : ~0x3));
++		enc_pr(LOG_INFO, "poweron: ao sleep0 done\n");
+ 		udelay(10);
+ 		spin_unlock_irqrestore(&lock, flags);
+ 	}
++	enc_pr(LOG_INFO, "poweron: taking lock for dos\n");
+ 	spin_lock_irqsave(&lock, flags);
+ 	WRITE_VREG(DOS_SW_RESET1, 0xffffffff);
+ 	WRITE_VREG(DOS_SW_RESET1, 0);
++	enc_pr(LOG_INFO, "poweron: dos reset done\n");
+ 	/* Enable Dos internal clock gating */
+ 	if ((get_cpu_major_id() == AM_MESON_CPU_MAJOR_ID_T3) || \
+ 		(get_cpu_major_id() == AM_MESON_CPU_MAJOR_ID_T5M) || \
+@@ -3008,10 +3014,14 @@
+ 		/*
+ 		 * WRITE_VREG(DOS_GCLK_EN0, 0xffffffff);
+ 		*/
+-	} else
++	} else {
++		enc_pr(LOG_INFO, "poweron: enabling hcodec clock\n");
+ 		hvdec_clock_enable(clock);
++		enc_pr(LOG_INFO, "poweron: hcodec clock done\n");
++	}
+ 	/* Powerup HCODEC memories */
+ 	WRITE_VREG(DOS_MEM_PD_HCODEC, 0x0);
++	enc_pr(LOG_INFO, "poweron: mem pd done\n");
+ 
+ 	if (get_cpu_type() >= MESON_CPU_MAJOR_ID_SC2) {
+ 	} else  {
+@@ -3022,12 +3032,14 @@
+ 				  get_cpu_type() >= MESON_CPU_MAJOR_ID_TM2)
+ 				? ~0x1 : ~0x30));
+ 	}
++	enc_pr(LOG_INFO, "poweron: iso done\n");
+ 	udelay(10);
+ 	/* Disable auto-clock gate */
+ 	WRITE_VREG(DOS_GEN_CTRL0,
+ 		(READ_VREG(DOS_GEN_CTRL0) | 0x1));
+ 	WRITE_VREG(DOS_GEN_CTRL0,
+ 		(READ_VREG(DOS_GEN_CTRL0) & 0xFFFFFFFE));
++	enc_pr(LOG_INFO, "poweron: gen ctrl done\n");
+ 	spin_unlock_irqrestore(&lock, flags);
+ 	mdelay(10);
+ 

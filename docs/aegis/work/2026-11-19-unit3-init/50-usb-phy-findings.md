@@ -2843,3 +2843,52 @@ ffmpeg ... -c:v h264_v4l2m2m ... /tmp/o2.ts
 ```
 
 **`meson_vdec` を先にロードするのが今回の差分。**
+
+## round 175: `avc_poweron()` に段階トレースを追加（パッチ 0003）
+
+### 現状の切り分け
+
+| 事実 | 意味 |
+|---|---|
+| `meson_vdec` を先にロードしても同じ箇所で停止 | デコーダの有無は無関係 |
+| `add new work ok` まで到達 | CMA 確保・バッファ設定・キュー登録は成功 |
+| その直後に停止 | **モニタスレッドがワークを VPU に投入する段階**で停止 |
+| `new work request ... paddr 0000000000000000` | `dma_cfg[0]` は zero-copy 用。通常経路では未使用なので **異常ではない**（`wq->mem.buf_start` = `0xc2300000` を使う） |
+
+### 疑わしいのは `avc_poweron()`
+
+`create_encode_work_queue()` は `svc conf enable 0, duration 0`（4379 行）を出すが、
+`avc_poweron()`（2958 行）は SM1 の else 経路にログが無い。**停止していても
+ログからは分からない。**
+
+### 追加したトレース（パッチ 0003）
+
+`avc_poweron()` の各段階に `enc_pr(LOG_INFO, ...)` を入れた:
+
+```
+poweron: clock gate enabled
+poweron: ao begin
+poweron: ao pwr_cntl done
+poweron: ao sleep0 done
+poweron: taking lock for dos
+poweron: dos reset done
+poweron: enabling hcodec clock
+poweron: hcodec clock done
+poweron: mem pd done
+poweron: iso done
+poweron: gen ctrl done
+```
+
+`encode_print_level=0` で有効。**ハング直前の最後の行が、止まっている
+レジスタ操作を指す。**
+
+### ビルド・配信
+
+`amvenc_avc.ko` = **`c95fa4d0`**（117,592 バイト）。
+`poweron: ` 文字列 11 個を含むことを確認。
+`http://192.168.99.20:8000/amvenc_avc.ko` で配信中（HTTP 200）。
+
+### パッチ適用順
+
+`0001`（sm1-vdec 探索）→ `0002`（vdec_1 ゲート）→ `0003`（電源投入トレース）。
+`patch -p1 --forward` で 3 つとも適用できることを確認済み。
