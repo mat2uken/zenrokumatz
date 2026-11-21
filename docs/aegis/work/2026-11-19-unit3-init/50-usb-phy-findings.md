@@ -2700,3 +2700,41 @@ python3 tools/boot-debug-shell.py --vpu-test
 
 （`eth0` を上げ → HTTP で修正版 `.ko` 取得 → `insmod encode_print_level=0`
 → `0xff63c1e0` を前後で `devmem` 読み → 合成映像でエンコード）
+
+## 修正の強化（round 171）: クロックフレームワークと直接書き込みの二段構え
+
+`clk_prepare_enable(venc_hw.vdec1_clk)` だけに頼ると、
+- DT の `vdec_1` クロックが取れない
+- クロックが既に「有効」と見なされていて実際には書かれない
+
+といった場合に無力。**`hvdec_clock_enable()` でも bit 8 を直接立てる**
+ようにして、どちらか一方が効けば HCodec が応答するようにした:
+
+```c
+WRITE_VREG_BITS(DOS_GCLK_EN0, 0x7fff, 12, 15);
+/*
+ * HCodec core clock gate. mainline models this bit as the "vdec_1" gate
+ * and the HDEC_L* macros only touch the mux/divider fields.
+ */
+WRITE_HHI_REG(HHI_VDEC_CLK_CNTL,
+        (1 << 8) | READ_HHI_REG(HHI_VDEC_CLK_CNTL));
+```
+
+読み書きは `(1 << 8) | READ(...)` なので、他のビット（mux/divider）は保たれる。
+
+### vendor は元に戻した
+
+`vendor/meson-sm1-codecs/` は追跡対象で、プロジェクトの規約どおり
+**上流固定のまま**にする。変更はすべて
+`package/meson-venc/patches/0002-enable-the-hcodec-core-clock.patch`
+（compat.c / compat.h / encoder.h の 3 ファイル、4 ハンク）に持つ。
+
+`patch -p1` で 3 ファイルすべてに適用できることを確認済み。
+
+### ビルドと配信
+
+`amvenc_avc.ko` = `d73bd5f7`（115,912 バイト）。
+Mac の `/tmp` に置き、`http://192.168.99.20:8000/amvenc_avc.ko` で配信中（HTTP 200）。
+`vdec_1` 文字列を含むことも確認。
+
+**次回の電源投入で `--vpu-test` を実行すれば、この強化版が試される。**

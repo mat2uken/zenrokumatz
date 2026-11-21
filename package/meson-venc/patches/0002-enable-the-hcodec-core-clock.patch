@@ -1,6 +1,6 @@
 diff --git a/venc-h264/compat.c b/venc-h264/compat.c
---- a/venc-h264/compat.c	2026-11-21 09:44:44
-+++ b/venc-h264/compat.c	2026-11-21 09:44:44
+--- a/venc-h264/compat.c	2026-11-21 09:50:15
++++ b/venc-h264/compat.c	2026-11-21 09:50:15
 @@ -32,10 +32,24 @@
  
  void amports_switch_gate(const char *name, int enable)
@@ -38,8 +38,8 @@ diff --git a/venc-h264/compat.c b/venc-h264/compat.c
  	if (ret)
  		goto put_clk;
 diff --git a/venc-h264/compat.h b/venc-h264/compat.h
---- a/venc-h264/compat.h	2026-11-21 09:44:44
-+++ b/venc-h264/compat.h	2026-11-21 09:44:44
+--- a/venc-h264/compat.h	2026-11-21 09:50:15
++++ b/venc-h264/compat.h	2026-11-21 09:50:15
 @@ -21,6 +21,7 @@
  	void __iomem *dos;
  	struct regmap *ao, *hhi;
@@ -48,3 +48,23 @@ diff --git a/venc-h264/compat.h b/venc-h264/compat.h
  	struct meson_canvas *canvas;
  	u8 canvas_base;
  	struct platform_device *pdev;
+diff --git a/venc-h264/encoder.h b/venc-h264/encoder.h
+--- a/venc-h264/encoder.h	2026-11-21 09:50:15
++++ b/venc-h264/encoder.h	2026-11-21 09:50:15
+@@ -92,6 +92,16 @@
+ 		else if (level == 6)  \
+ 			HDEC_L6(); \
+ 		WRITE_VREG_BITS(DOS_GCLK_EN0, 0x7fff, 12, 15); \
++		/* \
++		 * HCodec core clock gate. mainline models this bit as the \
++		 * "vdec_1" gate and the HDEC_L* macros above only touch the \
++		 * mux/divider fields, so without it every HCodec access stalls \
++		 * the bus with interrupts disabled and takes the machine down. \
++		 * Set it here as well as through the clock framework: one of the \
++		 * two must land for the block to answer. \
++		 */ \
++		WRITE_HHI_REG(HHI_VDEC_CLK_CNTL, \
++			(1 << 8) | READ_HHI_REG(HHI_VDEC_CLK_CNTL)); \
+ 	} while (0)
+ 
+ #define hvdec_clock_disable() \
