@@ -4379,3 +4379,63 @@ od -An -v -tx1 -w188 -j3 /tmp/r2.ts | head -2000 | sed 's/^ *//' \
 | pix-stream 統合 / NAS 保存 | 未達 |
 
 **録画の可否を握るのは VPU より先に「TS の中身」かもしれない。**
+
+## round 203: TS は PSI 正常・MPEG-2 検出できるがシーケンスヘッダが 0x0
+
+### 実測
+
+```sh
+pix-ts-legacy ... -c 15 -t 5 > /tmp/r3.ts 2>/tmp/r3.err
+# have_pat:1  program_count:5  missing_pmts:0  tables_ready:1   ← PSI は完全
+```
+
+ストリーム一覧（`ffprobe -show_entries stream=...`、`/tmp/pr.txt`）:
+
+```
+7,mpeg2video,video        ← 映像は MPEG-2 として検出できている
+8,aac,audio
+9,arib_caption,subtitle   ← ARIB 字幕も認識
+10,bin_data,data
+11..16,unknown,unknown
+```
+
+**TS の構造は正しく、PID も解決できている。**
+
+しかし映像の実体は:
+
+```
+[mpeg2video] Invalid frame dimensions 0x0.
+```
+
+`probesize 100M` / `analyzeduration 100M` / `-map 0:v:0` を付けても同じ。
+
+### バイナリの鮮度は問題ではない
+
+`pix-ts-legacy` の SHA-256 は **機体と NAS ビルドで同一**（`6df432fe`）。
+古いバイナリが原因ではない。
+
+### したがって
+
+**PSI は正しいが映像 PES の中身が壊れている。**
+`pix-ts-legacy` が DT295 から受け取った映像データ自体が不正、または
+PES の組み立てに問題がある。
+
+### 次の一手
+
+1. **2代目（`192.168.99.123`、稼働中）との比較**。同じ DT295 ドライバを
+   使っているので、2代目の `pix-ts-legacy` で同じ ch をキャプチャできれば
+   差分が分かる（ただし録画中の可能性があるので注意）
+2. `pix-ts-legacy` の `writer_error` / `rejected_bytes` /
+   `continuity_errors` を再取得し、破損の規模を確認
+3. DT295 のファームウェア（`dt295.bin`）が正しくロードされているか確認
+
+### 現在の全体状況
+
+| 項目 | 状態 |
+|---|---|
+| Linux 起動 / ネットワーク / DT295 認識 | **達成** |
+| VPU H.264 エンコード（機能） | **達成** |
+| 完了割り込み | **達成**（`CCPU_INTR_MSK`） |
+| 性能 | 約 11 fps（要改善） |
+| **TS の映像データ** | **壊れている**（PSI は正常） |
+| NAS 保存 / CM カット | 未達 |
