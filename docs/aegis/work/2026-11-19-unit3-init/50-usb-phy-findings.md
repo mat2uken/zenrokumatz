@@ -2616,3 +2616,27 @@ SD への書き込みと実機検証（機体がハングしたまま、SD も�
 
 `tools/boot-debug-shell.py --cmd ...` に `--cmd-wait` を追加し、
 複数コマンドを順に流せるようにした。
+
+### 次回の検証に加える直接観測（再ビルド不要）
+
+`HHI` のベースは `0xff63c000`（`bus@3c000/system-controller@0`）。
+`HHI_VDEC_CLK_CNTL = 0x1e0` なので **`0xff63c1e0`**。
+
+`rdinit=/bin/sh` のシェルで `busybox devmem` を使えば、
+**bit 8（vdec_1 ゲート）が実際に立っているか**を前後で確認できる:
+
+```sh
+busybox devmem 0xff63c1e0 32        # insmod 前
+insmod /tmp/a.ko encode_print_level=0
+busybox devmem 0xff63c1e0 32        # insmod 後（エンコード前）
+```
+
+HHI は always-on ドメインなので、この読み取り自体は安全。
+
+| 観測 | 意味 |
+|---|---|
+| insmod 後も bit 8 = 0 | クロックフレームワークが動いていない → 別の手段が必要 |
+| insmod 後 bit 8 = 1 | ゲートは開いた。それでもハングするなら原因は他 |
+
+さらに `0xff620000` 台（DOS）を読めば、バスが応答するかも分かる
+（**これはハングの危険があるので最後に単独で**）。
