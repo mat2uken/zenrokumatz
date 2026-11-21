@@ -2458,3 +2458,52 @@ modprobe amvenc_avc encode_print_level=0
 ### 注意
 
 1 回のテストごとに電源再投入が必要（ハングすると復帰しない）。
+
+### スピンロックの確認（デッドロックではない）
+
+`avc_poweron()` の SM1 経路:
+
+```
+} else {
+        spin_lock_irqsave(&lock, flags);        ← 取得
+        ... AO レジスタ書き込み ...
+        spin_unlock_irqrestore(&lock, flags);   ← 解放
+}
+spin_lock_irqsave(&lock, flags);                ← 再取得
+WRITE_VREG(DOS_SW_RESET1, 0xffffffff);
+WRITE_VREG(DOS_SW_RESET1, 0);
+... hvdec_clock_enable(clock) ...
+spin_unlock_irqrestore(&lock, flags);           ← 解放
+```
+
+**対応は取れている（デッドロックではない）。**
+
+### 気になる順序
+
+```c
+WRITE_VREG(DOS_SW_RESET1, 0xffffffff);   /* ← DOS 書き込み */
+WRITE_VREG(DOS_SW_RESET1, 0);
+if (T3/T5M/T3X/S7D) ... else hvdec_clock_enable(clock);  /* ← クロックは後 */
+```
+
+DOS レジスタへの書き込みがクロックゲート設定より**前**にある。
+`amports_switch_gate("vdec", 1)` が先に `dos` クロック
+（DT の `clock-names` の 2 番目 = `CLKID_DOS`）を有効化しているので
+アクセス自体は通るはずだが、**ここが止まっている可能性は残る**。
+
+### 次の検証手順（電源投入後、1 回で決着させる）
+
+```sh
+modprobe amvenc_avc encode_print_level=0
+dmesg | tail -20
+ffmpeg -f lavfi -i testsrc2=size=64x64:rate=5:duration=0.4 \
+    -vf format=nv12 -c:v h264_v4l2m2m -b:v 500k -f mpegts /tmp/t.ts
+```
+
+`encode_print_level=0`（= `LOG_ALL`）で `avc_poweron()` の各段階が
+シリアルに出る。**合成映像・極小サイズなので DMA 量も最小。**
+ハング直前の行が止まっている操作を指す。
+
+シリアルは `Console.pump` が逐次 stdout へ出すので、
+**ハングしても直前までの出力は取れる**（前回 ffmpeg が何も出さなかったのは
+`-v error` で、かつハングが非常に早かったため）。
