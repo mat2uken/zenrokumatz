@@ -79,7 +79,7 @@ clock gate enabled → ao begin → ao pwr_cntl done → ao sleep0 done
 | 起動 | U-Boot で **`usb start` が必須**（無いと USB が動かない） |
 | NAS | `192.168.99.56-15` として登録される見込み。旧 `-17` は削除する |
 
-## 到達点
+## 到達点（round 188 時点）
 
 | 項目 | 状態 |
 |---|---|
@@ -87,7 +87,48 @@ clock gate enabled → ao begin → ao pwr_cntl done → ao sleep0 done
 | Ethernet 1Gbps / SSH | **達成** |
 | DT295 認識 | **達成** |
 | DT295 から TS 受信（6MB, `tables_ready:1`） | **達成** |
-| VPU エンコーダ `probe` → `/dev/video0` | **達成** |
-| VPU エンコードの初期化（CMA 20MB 確保・バッファ設定・キュー登録） | **達成** |
-| **VPU エンコードの実行** | **ハング中**（`avc_poweron` 以降をトレースで特定中） |
+| VPU エンコーダ `probe` → `/dev/videoN` | **達成** |
+| CMA 20MB 確保・バッファ設定・キュー登録 | **達成** |
+| `vdec_1` クロック 666 MHz | **達成**（実測） |
+| **HCodec レジスタ窓へのアクセス** | **達成**（パッチ 0010 でハング解消） |
+| **HCodec ucode の IMEM DMA** | **未完了**（`hcodec load mc error`） |
+| vdec ファームウェア | **追加済み**（overlay、再ビルド済み） |
+
+## 現在の最重要ポイント: ISO0 の BIT(1)
+
+起動直後の実測（`rdinit=/bin/sh`、ドライバ無し）:
+
+```
+AO_RTI_GEN_PWR_SLEEP0 (0xff8000e8) = 0xFFFDFEFF
+AO_RTI_GEN_PWR_ISO0   (0xff8000ec) = 0xFFFDFEFF
+HHI_VDEC_CLK_CNTL     (0xff63c1e0) = 0x00000000
+devmem 0xff624008                  → ハング（HCodec 窓が死んでいる）
+```
+
+`compat.h` の `get_cpu_type()` は **G12A** を返す（上流仕様）ため、ISO0 には
+`~0x30` が適用され **BIT(1) が残る**。SM1 の分離ビットは BIT(1)
+（mainline `GEN_PWR_VDEC_1_SM1`）。**パッチ 0010 で両アームを `~0x33` に
+して BIT(1) も落とす**と、`iso0 readback 0xfffdfecc` になり
+**`0xff624008` への書き込みが通る**（ハング解消）。
+
+## 次の一手
+
+1. **デコード検証**: vdec ファームを入れた rootfs で
+   `ffmpeg -c:v mpeg2_v4l2m2m -i x.ts -f null -` が通るか。
+   通れば VPU 電源経路は正常で、問題はエンコーダ固有と確定。
+2. **エンコーダの IMEM DMA**: `HCODEC_IMEM_DMA_CTRL` の 0x8000 が落ちない。
+   DMA アドレスは `0xbbe0000` で妥当。レジスタ読み値が不自然
+   （別オフセットが同値）なので、窓が実値を返していない疑い。
+3. デコーダとエンコーダの同時使用は既知のハング要因。録画では
+   **デコード → CPU コピー → エンコード** を別プロセスに分ける。
+
+## ハングしないので電源再投入なしで反復できる
+
+```sh
+busybox wget -q -O /tmp/b.ko http://192.168.99.20:8000/amvenc_avc.ko
+rmmod amvenc_avc ; cp /tmp/b.ko /lib/modules/6.18.62/updates/amvenc_avc.ko
+modprobe amvenc_avc encode_print_level=0
+```
+
+（ただし HCodec レジスタを動作中に `devmem` で読むとハングするので注意）
 | NAS 保存 / CM カット | 未達（VPU 待ち） |
