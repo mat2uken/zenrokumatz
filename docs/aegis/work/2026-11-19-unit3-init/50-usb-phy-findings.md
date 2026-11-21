@@ -3371,3 +3371,83 @@ ISO0 の両アームを `~0x33`（bits 1:0 と 4:5 の両方をクリア）に�
 
 `iso done, iso0 readback` が **`0xfc....`（bits 1:0 = 0）** になれば
 アイソレーションは解除。その後 `start: mmc ctrl done` が出るかが焦点。
+
+# 🎉 round 185: ハング解消。HCodec 窓が応答。次の障害は ucode の IMEM DMA
+
+### パッチ 0010（ISO0 の bit1:0 クリア）が効いた
+
+```
+poweron: ao begin, cpu=0x28 sm1=0
+poweron: before sleep0 0xfffdfeff iso0 0xfffdfefc
+poweron: sleep0 readback 0xfffdfefc
+poweron: mem pd done, hcodec 0x40608080 vdec 0x40608080
+poweron: iso done, iso0 readback 0xfffdfecc     ← bits 1:0 がクリアされた
+start: poweron done
+start: canvas done
+start: mmc ctrl done                             ← ★ HCodec 窓が応答した
+avc encode ucode name is ga_h264_enc_cabac
+```
+
+**`WRITE_HREG(HCODEC_ASSIST_MMC_CTRL1)` = `0xff624008` が通った。**
+長く続いた「ハング」は解消。`ISO0` の `BIT(1)` が閉じていたのが原因だった
+（`get_cpu_type()` が G12A を返すため else 側 `~0x30` が走っていた）。
+
+### 新しい障害: ucode の IMEM DMA が完了しない
+
+```
+mc: va ffff00000bbe0000 dma 0xbbe0000 wq assit 0xc3110000 buf 0xc2300000
+address 0 is 0x6810001
+address 1 is 0x6800000
+address 2 is 0xd000001
+address 3 is 0x7400040
+[  261.958871] hcodec load mc error
+amvenc_avc_light_reset finish, ret=-16
+amvenc_avc amvenc_avc: frame 1: -5
+```
+
+`amvenc_loadmc()` の該当部:
+
+```c
+mc_addr_map = dma_map_single(&pdev->dev, mc_addr, MC_SIZE, DMA_TO_DEVICE);
+WRITE_HREG(HCODEC_MPSR, 0);
+WRITE_HREG(HCODEC_CPSR, 0);
+WRITE_HREG(HCODEC_IMEM_DMA_ADR, mc_addr_map);
+WRITE_HREG(HCODEC_IMEM_DMA_COUNT, 0x1000);
+WRITE_VREG(HCODEC_IMEM_DMA_CTRL, (0x8000 | (0xf << 16)));
+while (READ_HREG(HCODEC_IMEM_DMA_CTRL) & 0x8000) { ... 1 秒でタイムアウト ... }
+```
+
+**確認できたこと:**
+
+- ucode の中身は正しくメモリに載っている（`0x6810001` 等は ucode 命令）
+- `dma_map_single` の結果 **`0xbbe0000`** は妥当な物理アドレス
+- それでも DMA 完了ビット（0x8000）が落ちない
+
+**つまり HCodec の DMA エンジンが動いていない。** レジスタ読み書きは
+できるので、バスとクロックは生きている。
+
+### 残る候補
+
+1. **`hcodec_clk_config(1)` = `hcodec_aclk` が未取得・未 enable**
+   `get_cpu_type() >= SC2` の分岐内でしか呼ばれず、SM1 では通らない。
+   バスアクセスは通るが DMA エンジンには別クロックが要る可能性。
+   （ただし `s_hcodec_clks` は `hcodec_clk_prepare()`（SC2 専用）でしか
+   初期化されないので、そのまま呼ぶと NULL 参照になる。DT のクロック名
+   `vdec_hevc` 等から取る必要がある）
+2. `HCODEC_IMEM_DMA_COUNT = 0x1000` の単位（ucode は 24 KiB）
+3. コメントアウトされている HW バグ回避（`fix_mc` / `amhcodec_loadmc`）が
+   このチップでは必要
+
+### 運用上の大きな改善
+
+**ハングしなくなったので、電源再投入なしでモジュールを差し替えて試せる。**
+
+```sh
+busybox wget -q -O /tmp/b.ko http://192.168.99.20:8000/amvenc_avc.ko
+rmmod amvenc_avc          # rc=0 で成功することを確認済み
+cp /tmp/b.ko /lib/modules/6.18.62/updates/amvenc_avc.ko
+modprobe amvenc_avc encode_print_level=0
+```
+
+実測で `rmmod` → `cp` → `modprobe` → 再エンコードまで通ることを確認した。
+**イテレーションが劇的に速くなる。**

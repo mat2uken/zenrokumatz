@@ -1,0 +1,13 @@
+diff --git a/venc-h264/encoder.c b/venc-h264/encoder.c
+--- a/venc-h264/encoder.c	2026-11-21 12:41:47
++++ b/venc-h264/encoder.c	2026-11-21 12:50:53
+@@ -2859,6 +2859,9 @@
+ 	/* mc_addr_map = wq->mem.assit_buffer_offset; */
+ 	/* mc_addr = ioremap_wc(mc_addr_map, MC_SIZE); */
+ 	/* memcpy(mc_addr, p, MC_SIZE); */
++	enc_pr(LOG_ALL, "mc: va %px dma 0x%llx wq assit 0x%x buf 0x%x\n",
++		(void *)mc_addr, (u64)mc_addr_map,
++		wq->mem.assit_buffer_offset, wq->mem.buf_start);
+ 	enc_pr(LOG_ALL, "address 0 is 0x%x\n", *((u32 *)mc_addr));
+ 	enc_pr(LOG_ALL, "address 1 is 0x%x\n", *((u32 *)mc_addr + 1));
+ 	enc_pr(LOG_ALL, "address 2 is 0x%x\n", *((u32 *)mc_addr + 2));
