@@ -1,4 +1,8 @@
-# Unit 3: SD/mmc boot, PIX-DT295, GR terrestrial SBS (PIX_CHANNEL=17).
+# Unit 3: SD/mmc boot, PIX-DT295, GR terrestrial SBS (PIX_CHANNEL=15), CFW.
+# Unit 3 is the second CFW unit: the tuner hands over the stream before
+# descrambling and torne-b25 does the ARIB work with the tuner's own card
+# reader (pcscd -> bcasd -> cardrelay), like unit 2.
+BR2_PACKAGE_CFW=y
 BR2_TARGET_GENERIC_HOSTNAME="x96max-p3"
 BR2_TARGET_GENERIC_ISSUE="X96Max_P3 RAM-root Linux"
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/overlay $(BR2_EXTERNAL_X96MAX_PATH)/board/x96max/ramboot-unit3-overlay"

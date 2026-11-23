@@ -25,6 +25,7 @@ ASSETS=/usr/share/pix-tuner
 # 差し替えはテスト用 (scripts では既定のまま)
 PARSER=${PIX_LOGO_PARSER:-/usr/bin/pix-dt295-logo}
 CAPTURE=${PIX_LOGO_CAPTURE:-/usr/bin/pix-ts-legacy}
+GRAB=${PIX_LOGO_GRAB:-/usr/bin/pix-cfw-grab}
 out=${PIX_LOGO_DIR:-/var/lib/pix/logos}
 wait_seconds=180
 force=0
@@ -62,8 +63,16 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') pix-logo-fetch: $*" | tee -a "$LOG" >
 restore_note=""
 restore_pipeline() {
     # Every released borrowing owner inherits desired-running intent, even if
-    # cancelled before pause. Only S97's desired-stop fence can revoke it.
-    if [ -e "$STOPFILE" ]; then
+    # cancelled before pause. Only a live desired-stop fence can revoke it: the
+    # fence's owner decides, through the one command that owns that judgement.
+    # A fence left by a process that has since died used to strand the pipeline
+    # here, with recording stopped until someone looked at the box.
+    if [ -x /usr/bin/pix-stream-unfence ]; then
+        if [ "$(/usr/bin/pix-stream-unfence 2>/dev/null)" = "held" ]; then
+            log 'stop requested; leaving the pipeline stopped'
+            return 0
+        fi
+    elif [ -e "$STOPFILE" ]; then
         log 'stop requested; leaving the pipeline stopped'
         return 0
     fi
@@ -86,11 +95,19 @@ if [ "$system" != "bs" ]; then
     log "system is $system; the logos are on BS-15. set PIX_SYSTEM=bs to use this"
     exit 2
 fi
-if [ "${PIX_TUNER:-}" != "dt295" ]; then
-    log "PIX_TUNER is '${PIX_TUNER:-}' (not dt295); this box cannot tune BS-15 over the DT295 path"
+if [ "${PIX_TUNER:-}" != "dt295" ] && [ "${PIX_TUNER:-}" != "dt295-cfw" ]; then
+    log "PIX_TUNER is '${PIX_TUNER:-}'; BS-15 logos need a DT295 tuner"
     exit 2
 fi
-for binary in "$PARSER" "$CAPTURE"; do
+# The vendor firmware descrambles in the tuner and pix-ts-legacy reads it. The
+# CFW hands over the raw multiplex instead, so the carousel is read through
+# pix-cfw-grab: tune the transponder, then stream it to the parser.
+if [ "${PIX_TUNER:-}" = "dt295-cfw" ]; then
+    binaries="$PARSER $GRAB"
+else
+    binaries="$PARSER $CAPTURE"
+fi
+for binary in $binaries; do
     if [ ! -x "$binary" ]; then
         log "$binary is missing; install the pix-tuner build that has pix-dt295-logo"
         exit 2
@@ -102,7 +119,15 @@ if [ "$dry_run" = "0" ] && [ "$force" = "0" ]; then
     exit 2
 fi
 
-capture_cmd="$CAPTURE --model dt295 --assets $ASSETS -s bs -c $channel --tsid $tsid -t $wait_seconds"
+if [ "${PIX_TUNER:-}" = "dt295-cfw" ]; then
+    # Parenthesised so the pipe feeds the parser from the whole group.
+    # tune reports on stdout; letting it into the pipe shifts every TS packet
+    # by a few bytes and the parser never resynchronises (it counted 0 PATs
+    # while the grab itself counted 400).
+    capture_cmd="( $GRAB tune BS${channel}/$tsid >/dev/null && $GRAB save - --seconds $wait_seconds )"
+else
+    capture_cmd="$CAPTURE --model dt295 --assets $ASSETS -s bs -c $channel --tsid $tsid -t $wait_seconds"
+fi
 parse_cmd="$PARSER --out $out --wait $wait_seconds --system bs --tsid $tsid"
 
 if [ "$dry_run" = "1" ]; then

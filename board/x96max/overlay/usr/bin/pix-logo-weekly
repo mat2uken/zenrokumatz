@@ -94,6 +94,7 @@ trap 'exit 143' INT TERM
 echo "$$" > "$OWNER/pid" || exit 1
 
 log "scheduled for weekday $day at ${hour}時台 (wait ${wait_seconds}s), poll ${SLEEP_SECONDS}s"
+tuner_warned=0
 
 while [ ! -e "$STOPFILE" ]; do
     now=$(date +%s 2>/dev/null || echo 0)
@@ -102,6 +103,16 @@ while [ ! -e "$STOPFILE" ]; do
         continue
     fi
     if [ "${PIX_LOGO_WEEKLY:-1}" != "1" ] || [ ! -x "$FETCH" ]; then
+        run_child sleep "$SLEEP_SECONDS"
+        continue
+    fi
+    # BS-15 の局ロゴは dt295 系のチューナーでしか取れない。取れない機体で
+    # 毎週失敗し続けても意味がないので、設定を見て止める (ログは 1 回だけ)。
+    if [ "${PIX_TUNER:-}" != "dt295" ]; then
+        if [ "$tuner_warned" = 0 ]; then
+            log "PIX_TUNER is '${PIX_TUNER:-}'; BS-15 logos need dt295, weekly fetch disabled"
+            tuner_warned=1
+        fi
         run_child sleep "$SLEEP_SECONDS"
         continue
     fi

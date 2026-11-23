@@ -9,6 +9,7 @@ CONTROL=/var/run/pix-stream.control
 OWNER=/var/run/pix-stream.owner
 LEGACY_GROUP=/var/run/pix-stream.legacy-group
 FETCH_LOCK=/var/run/pix-logo-fetch.lock
+UNFENCE=/usr/bin/pix-stream-unfence
 
 alive() {
     case "$1" in ''|*[!0-9]*|0|1) return 1;; esac
@@ -37,6 +38,14 @@ lock_control() {
 
 start() {
     printf 'Starting pix-stream: '
+    # A fence or an ownership left by a dead process blocks every later start
+    # and there is nothing left to lift it; the box then records nothing while
+    # its streamer keeps answering. pix-stream-unfence decides that, and a live
+    # owner always keeps its fence. This is what lets the box recover on its
+    # own after a teardown dies half way (2026-11-23: thirteen hours lost).
+    case "$("$UNFENCE" 2>/dev/null)" in
+        held) echo 'stop requested'; return 1 ;;
+    esac
     [ ! -e "$STOPFILE" ] || { echo 'stop requested'; return 1; }
     [ ! -e /run/pix-usb-reset.lock ] || { echo 'USB reset in progress'; return 1; }
     [ ! -d "$FETCH_LOCK" ] || { echo 'tuner borrowed for logo fetch'; return 1; }
@@ -55,7 +64,9 @@ start() {
         echo 'already running'; return 0
     fi
     # A failed teardown deliberately retains ownership: do not launch over it.
-    [ ! -d "$OWNER" ] && [ ! -e "$LEGACY_GROUP" ] || { echo 'previous owner not drained'; return 1; }
+    # Only ownership whose pids are all gone has been cleared above.
+    [ ! -d "$OWNER" ] || { echo 'previous owner not drained'; return 1; }
+    [ ! -e "$LEGACY_GROUP" ] || { echo 'previous owner not drained'; return 1; }
     mkdir -p /dev/shm/pix || return 1
     # dt295-cfw needs the replacement firmware in the tuner's RAM.  That RAM is
     # volatile, so a reboot brings back the vendor loader and the tuner stops

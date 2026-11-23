@@ -1,5 +1,5 @@
-# Unit 2: DT295 internal B-CAS, BS11. Runtime root is volatile RAM.
-PIX_TUNER=dt295
+# Unit 2: DT295-CFW + torne-b25 (external B-CAS), BS11. Runtime root is volatile RAM.
+PIX_TUNER=dt295-cfw
 PIX_DECRYPT=0
 PIX_SYSTEM=bs
 PIX_CHANNEL=9
@@ -31,7 +31,10 @@ PIX_LOGO_DIR=/var/lib/pix/logos
 # CFW（MB8AC031-CFW）を使うときの設定。PIX_TUNER=dt295-cfw で有効になる。
 #
 # 純正ファームは複合済みの TS しか出さないが、CFW は複合前の生 TS を出す。
-# チャンネルは「トランスポンダと TSID」で指す（実測: BS11 は BS15、TSID 0x40f1）。
-# PIX_CHANNEL=9 / PIX_SAT_SLOT=0 は純正ファーム用の書き方で、CFW では
-# BS9 になりロックしないので、CFW 用の値を別に持つ。
-PIX_CFW_CHANNEL=BS15/0x40f1
+# チャンネルは「トランスポンダと TSID」で指す。
+#
+# 実測（2026-11-21 スキャン + PAT 確認）: BS11 は BS9、TSID 0x4090。
+# 2026-11 の衛星再編で配列が変わり、旧実測「BS15/0x40f1」には NHK BS
+# （service 101）が乗っている。BS7/BS11/BS17 の各 IF は現状ロックしない。
+# PAT の program 番号で局を判別できる（BS11=211、NHK BS=101）。
+PIX_CFW_CHANNEL=BS9/0x4090

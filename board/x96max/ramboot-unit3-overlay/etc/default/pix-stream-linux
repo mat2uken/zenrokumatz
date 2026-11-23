@@ -1,19 +1,32 @@
-# Unit 3: PIX-DT295 on GR terrestrial SBS. Runtime root is volatile RAM.
+# Unit 3: PIX-DT295 (CFW) on GR terrestrial SBS. Runtime root is volatile RAM.
 # SBS (静岡放送) is remote-controller key 6 and physical channel 15 on the
 # 日本平 transmitter, per NHK静岡's published table. Physical 17 is テレビ静岡,
-# which is what this unit used to record before the channel was corrected;
-# pix-ts takes physical channels 13..62, so the remote key can never be passed.
-# The DT295 decrypts on its internal card slot, so no external B-CAS reader and
-# no torne-b25 stage are used (PIX_DECRYPT=0). One tuner per unit: unit 1 keeps
-# PX-S1UD/ch17 (テレビ静岡) and unit 2 keeps DT295/BS11, so no station is
-# recorded twice.
-PIX_TUNER=dt295
+# which is what this unit used to record before the channel was corrected.
+# One tuner per unit: unit 1 keeps PX-S1UD/ch17 (テレビ静岡) and unit 2 keeps
+# DT295/BS11, so no station is recorded twice.
+#
+# CFW (round 214): like unit 2, the tuner runs MB8AC031-CFW and hands over the
+# stream BEFORE descrambling. pix-stream-simple derives PIX_DECRYPT=1 from
+# PIX_TUNER=dt295-cfw, and S96bcas brings up pcscd -> bcasd -> cardrelay so
+# torne-b25 can reach the tuner's own card reader. PIX_DECRYPT stays 0 here
+# on purpose: the launcher forces 1 for dt295-cfw, and the value below only
+# documents that this unit configures nothing else around it.
+PIX_TUNER=dt295-cfw
 PIX_DECRYPT=0
 PIX_SYSTEM=terrestrial
+# CFW では地上波の選局は UHF 物理チャンネルそのまま（pix-cfw-ts が ts_grab に
+# 渡す）。PIX_CFW_CHANNEL は衛星用（BS15/0x40f1 形式）なので地上波では不要。
 PIX_CHANNEL=15
-# Leave PIX_SAT_SLOT and PIX_PIDS unset, do not set them empty: the launcher
-# applies ${PIX_SAT_SLOT:=0} and a satellite PID list, which adds "--slot 0"
-# to terrestrial capture and pix-ts rejects it (exit 2, usage).
+# Leave PIX_SAT_SLOT unset, do not set it empty: the launcher applies
+# ${PIX_SAT_SLOT:=0}, which adds "--slot 0" to terrestrial capture and pix-ts
+# rejects it (exit 2, usage).
+#
+# PIX_PIDS は設定しない（2代目と同じ理由）。CFW の生 TS は復号前なので、
+# ARIB の複合で必要な ECM とその ES を PID 絞りで落とすと復号できなくなる。
+# また pix-cfw-ts は PID フィルタを受け取らないので、絞る手段自体が無い。
+# 誤ストリーム選択（round 206/207）は pix-stream-simple が -map 0:v:0/0:a:0 を
+# 明示するため起きない（mux の先頭 PMT が主サービスで、unit2 が無絞りで
+# 運用している実績と同じ）。
 PIX_DISPLAY=X96Max-P3
 PIX_PORT=40774
 PIX_ALLOWED_IP=192.168.99.80,192.168.99.52
@@ -22,7 +35,11 @@ PIX_BITRATE=6000k
 PIX_AUDIO_BITRATE=192k
 PIX_GOP=60
 PIX_DEINTERLACE=1
-PIX_CAPTURE_SECONDS=1800
+# - は「切り直さない」。1800 秒切り直しは DT295 のカード交換停止を避けるための
+# 措置だったが、番組分割の原因になった（docs/recording-split-and-stb-recovery.md）。
+# CFW + torne-b25 のカードセッションは切りの目が要らないため、2代目と同じく
+# 無期限にする。数値を書くと その秒数で切り直す。先頭 0 は 8 進になるため書かない。
+PIX_CAPTURE_SECONDS=-
 # Preserve CM feature sideband; analysis and final cuts remain NAS-owned.
 # pix-stream-simple generates and forwards it (encode_with_features), so this
 # is what makes CM chapters appear on this unit as they do on unit 2.

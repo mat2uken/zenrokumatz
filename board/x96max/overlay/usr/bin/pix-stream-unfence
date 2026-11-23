@@ -1,0 +1,61 @@
+#!/bin/sh
+#
+# pix-stream-unfence - 死んだプロセスが残した停止マーカーを片付ける
+#
+# 停止・再起動の処理が途中で落ちると、停止要求 (pix-stream.stopped) と
+# 所有権 (pix-stream.owner) が残る。S97 の start はどちらかがあると起動を
+# 拒否するため、片付ける主体が死んでいると二度と録画が始まらない。
+#
+# 2026-11-23 にこれで 13 時間止まった (NAS 側の監視は「復旧した」と誤認して
+# いた)。解除を判断する場所をここ 1 か所にし、S97 はその結果に従う。
+#
+# 生きている所有者のマーカーは絶対に消さない。owner の pid だけでなく
+# worker.<pid> の生存も見るのは、親だけ死んで子が残っている状態で
+# 二重に起動しないため。
+#
+# 使い方: pix-stream-unfence [run ディレクトリ]
+#   cleared  死んだマーカーを消した
+#   held     生きている所有者がいる
+#   none     マーカーが無い
+#   終了コード 2 はマーカーを消せなかったとき
+RUN_DIR=${1:-/var/run}
+STOPFILE=$RUN_DIR/pix-stream.stopped
+OWNER=$RUN_DIR/pix-stream.owner
+LEGACY_GROUP=$RUN_DIR/pix-stream.legacy-group
+LOGFILE=$RUN_DIR/pix-stream.fence.log
+
+alive() {
+    case "$1" in ''|*[!0-9]*|0|1) return 1;; esac
+    kill -0 "$1" 2>/dev/null
+}
+
+note() {
+    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)" "$*" >>"$LOGFILE" 2>/dev/null
+}
+
+held=0
+fence_pid=$(cat "$STOPFILE" 2>/dev/null)
+alive "$fence_pid" && held=1
+owner_pid=$(cat "$OWNER/pid" 2>/dev/null)
+alive "$owner_pid" && held=1
+for entry in "$OWNER"/worker.*; do
+    [ -e "$entry" ] || continue
+    alive "${entry##*.}" && held=1
+done
+legacy_pid=$(cat "$LEGACY_GROUP" 2>/dev/null)
+alive "$legacy_pid" && held=1
+
+if [ "$held" = 1 ]; then
+    echo held
+    exit 0
+fi
+
+if [ -e "$STOPFILE" ] || [ -d "$OWNER" ]; then
+    note "clearing stale markers: fence=${fence_pid:--} owner=${owner_pid:--} legacy=${legacy_pid:--}"
+    rm -f "$STOPFILE" "$LEGACY_GROUP" || exit 2
+    rm -rf "$OWNER" || exit 2
+    echo cleared
+    exit 0
+fi
+
+echo none

@@ -3,14 +3,16 @@ set -eu
 # Buildroot fs/cpio supplies /init (mount devtmpfs then exec BusyBox init).
 # Nothing in this boot image requires a persistent /dev/root mount.
 
-# The per-unit DTS list decides which DTBs exist. Ship exactly those that were
-# built: unit 3 also has diagnostic DTBs while its USB layout is settled, while
-# units 1 and 2 must keep the same image they had before.
+# The per-unit DTS list decides which DTBs exist. Derive it from this build's
+# own config (BR2_LINUX_KERNEL_INTREE_DTS_NAME) instead of a hardcoded unit
+# list: unit 3 boots an sm1-only DTB that the hardcoded list silently dropped
+# from SHA256SUMS and the export (2026-11-22). Diagnostic DTBs (nousb / usb /
+# gxl / …) ship while unit 3's USB layout is being settled; units 1 and 2
+# keep the same image they had before.
 dtbs=""
 extra=""
-for dtb in meson-g12a-x96-max-p.dtb meson-g12a-x96-max-p-ephy-4g.dtb \
-           meson-g12a-x96-max-p-nousb.dtb meson-g12a-x96-max-p-usb.dtb \
-           meson-g12a-x96-max-p-gxl.dtb; do
+for name in $(sed -n 's/^BR2_LINUX_KERNEL_INTREE_DTS_NAME="\(.*\)"$/\1/p' "$BR2_CONFIG"); do
+    dtb="$(basename "$name").dtb"
     [ -f "$BINARIES_DIR/$dtb" ] || continue
     dtbs="$dtbs $dtb"
     case "$dtb" in
