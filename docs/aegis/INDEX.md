@@ -31,3 +31,6 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-11-19 | work | docs/aegis/work/2026-11-19-unit3-init/30-usb-phy-findings.md | 3代目のUSBレジスタ配置調査 |
 | 2026-11-19 | work | docs/aegis/work/2026-11-19-unit3-init/40-acceptance.md | 3代目の受け入れ基準 |
 | 2026-11-19 | work | docs/aegis/work/2026-11-19-unit3-init/50-resume-guide.md | 3代目Linux化の再開手順と到達点 |
+| 2026-11-22 | work | docs/aegis/work/2026-11-22-cm-coverage/10-intent.md | CM カット対象拡大（マーカーキャッシュ修復）intent |
+| 2026-11-22 | work | docs/aegis/work/2026-11-22-cm-coverage/20-checkpoint.md | CM カット対象拡大（マーカーキャッシュ修復）checkpoint |
+| 2026-11-22 | work | docs/aegis/work/2026-11-22-cm-coverage/90-evidence.md | CM カット対象拡大（マーカーキャッシュ修復）evidence |

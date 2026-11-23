@@ -4578,3 +4578,374 @@ ch15 で `program_count:5`、ch17 でも複数プログラムを含む mux な�
 2. その PID を `-map 0:<pid>` で指定、または `PIX_PIDS` に設定
 3. 2代目の `PIX_PIDS` 設定（`0 17 18 257 ...` のような値）を参考にする
    → `board/x96max/ramboot-unit2-overlay` などに実例があるはず
+
+## round 208: PID 特定完了。実映像の A/V エンコードが完走（本番パイプラインも）
+
+### PID 一覧（ch17 で実測、`ffprobe -show_programs`）
+
+| プログラム | 内容 | PID |
+|---|---|---|
+| 35864 / 35865（12セグ） | **mpeg2video 1440x1080** | **0x111 = 273** |
+| 〃 | audio aac | 0x112 = 274 |
+| 〃 | arib_caption / bin_data | 0x114 = 276 / 0x115 = 277 |
+| 36248（ワンセグ） | **h264 320x180** | 0x151 = 337 |
+
+PAT 解析（自作パーサ）では PMT PID は program 35864→**257 (0x0101)**、
+35865→258、36248→8136。**2代目の `PIX_PIDS` の "257" と "273" と同じ役割**。
+
+### ch15（SBS）も同一布局（PMT を実解析して確定）
+
+ch15 は映像が受信不良でも PSI は読める。`-p 0 -p 257` で 4 秒キャプチャし
+PMT 257 をパース:
+
+```
+PMT pid=257 program=35856（SBS） PCR PID=256
+  0x02 video(mpeg2) -> PID 273
+  0x0f audio(aac)   -> PID 274
+  0x06 private      -> PID 276 / 277
+```
+
+**ch15 / ch17 とも 257 / 273 / 274 で同一。** PIX_PIDS は 1 つで両方に使える。
+
+### round 206/207 の失敗原因（確定）
+
+1. ffmpeg の既定ストリーム選択が**ワンセグの H.264（0x151）を掴む**
+   → `PPS 0 referenced` エラー
+2. `-map 0:0` は別サービスの MPEG-2 を掴む
+3. `-map 0:p:{0,1,2,3}:v:0` は**プログラム番号の誤り**。正しい番号は
+   0..3 ではなく **35864 / 35865 / 36248**（0 は空プログラム）
+4. さらに A/V 同時 mux では音声の異常 DTS（約 12.9 時間先）と破損 PES が
+   あり、`-copyts -start_at_zero` 無しでは muxer が映像を holding して
+   **出力 0 バイトで停滞する**。2代目の encode() が `-copyts -start_at_zero`
+   を付けているのはこのため。
+
+### 本番同形での検証（すべて unit3 実機）
+
+入力: `pix-ts-legacy -c 17 -p 0 -p 257 -p 273 -p 274`（8 秒、filtered）
+→ 映像 273 / 音声 274 のみが ffmpeg に見える。音声は `aac (LC) 0x000F`
+として認識（2代目の稼働ログと同一形式）。
+
+| 構成 | 結果 |
+|---|---|
+| SW デコード + `format=nv12` + HW エンコード（映像のみ） | **228/228 フレーム完走** |
+| SW デコード + A/V copy（`-copyts -start_at_zero` あり） | **219 フレーム + 音声 371 パケット完走** |
+| **本番 encode() そのもの**（`mpeg2_v4l2m2m` + bwdif + `h264_v4l2m2m` + A/V copy） | **219 フレーム + 音声 371 パケット完走** |
+
+**README の「HW デコードと HW エンコードの同時使用はハング」は、
+bwdif（CPU コピー）を挟めば unit3 でも起きなかった。**
+
+残る警告（2代目と同様、日常範囲）:
+- キャプチャ開始が中途 GOP/PES のため先頭 1 フレームが `corrupt decoded frame`
+- `PES packet size mismatch` / `Packet corrupt` が稀に出る
+
+### 適用した設定
+
+`board/x96max/ramboot-unit3-overlay/etc/default/pix-stream-linux`:
+
+```
+PIX_PIDS="0 257 273 274"
+```
+
+- launcher（`pix-stream-linux` / `pix-ts-source`）は全システムで
+  `PIX_PIDS` を `-p` に渡すため地上波でも有効
+- PCR（PID 256）は ffmpeg が再スタンプするので不要
+- 旧コメントの「PIX_PIDS を設定しないこと／衛星 PID リストが適用される」は
+  現行 launcher の実態と合わないため削除（`PIX_SAT_SLOT` だけ unset 指針を維持）
+
+### 運用メモ（再開手順の更新）
+
+1. `boot-debug-shell.py --vpu-test` で起動（rdinit=/bin/sh なので dropbear なし）
+2. **`tools/serial-run.py`（新規）で dropbear を起動**:
+   `/usr/sbin/dropbear -E -p 22 > /tmp/dropbear.log 2>&1 &`
+   （`/dev/pts` の devpts マウントも要: `mount -t devpts devpts /dev/pts`）
+3. 以後は SSH で作業
+
+注意: エンコードが停滞したら `kill <pid>` では死なないことがある
+（V4L2 ioctl で D 状態）。`kill -9 $(pidof ffmpeg)` でも死なない場合は
+**再起動が必要**（今回は `busybox reboot -f` → 再起動に 4 分程度かかった）。
+
+### 現在の全体状況
+
+| 項目 | 状態 |
+|---|---|
+| Linux / ネットワーク / DT295 認識 | **達成** |
+| 実映像の受信（ch17/18/19/20） | **達成** |
+| **PID 特定 / PIX_PIDS 設定** | **達成**（round 208） |
+| **実映像の A/V エンコード（本番パイプライン）** | **達成**（ch17、219 フレーム） |
+| 性能 | 約 10-11 fps（次の未解決） |
+| ch15(SBS) 受信 | 不良（物理的な要因、別途） |
+| pix-stream 統合 / NAS 保存 / CM カット | 未達（次の一手） |
+
+## round 209: pix-stream 統合検証。NAS が unit3 を recording 状態で認定
+
+### 構成(手動で init スクリプト経由の本番経路を起動)
+
+debug ブート(rdinit=/bin/sh)に init スクリプト群を手動で重ねて起動:
+
+```
+lo を up(127.0.0.1/8 追加)          ← debug ブートでは lo が上がらない
+/etc/init.d/S41settime start          ← NAS から時刻取得(1970 年のままでは不可)
+mkdir -p /dev/shm/pix
+/etc/init.d/S97pix-stream start       ← pix-stream-simple(PIX_FEATURES=1 経路)
+```
+
+ランタイム config(実機の /etc/default/pix-stream-linux)は旧ビルドのまま
+PIX_CHANNEL=17 なので、PIX_PIDS のみ sed で追記して使用。
+
+### 結果
+
+1. `encode_with_features`(本番の CM sideband 付き経路)が起動し、
+   signalstats/astats が実映像を処理(YAVG/YDIF 出力あり)
+2. `stb_streamer` が 40774 で待受、`/v1/status` は `capturing:true`
+3. **NAS の manager が既存登録 `192.168.99.56-17`(enabled の残存)で
+   自動接続し、staging fMP4 が成長**。監査ログで
+   `"state": "recording", "pushed": 17, "dropped": 0`
+   (unit1 .109-17 / unit2 .123-BS09_0 と並ぶ 3 台目)
+4. ただし `program.txt` が空 → **PID フィルタから EIT(PID 18)/SDT(PID 17)
+   が抜けていたため**。2代目の PIX_PIDS に 17/18 が入るのはこのため。
+   追加して再起動したところ番組名を取得:
+   `name=ソレダメ！…`(service 35864、event 1701)
+
+### 適用
+
+- リポジトリ config を `PIX_PIDS="0 17 18 257 273 274"` に更新
+  (EIT/SDT なしでは NAS 側が番組フォルダを作れないと実測で判明)
+- 実機も同値に更新済み
+
+### 運用上の判明事項
+
+- **debug ブートでは PID 1 が /bin/sh のためゾンビを回収しない**。
+  サービスの stop/restart が `PID identity changed` で失敗し、
+  再起動後も古いプロセスがゾンビとして残る。
+  対処: `kill -9 $(pidof pix-stream-simple pix-ts-legacy stb_streamer ffmpeg)`
+  → `/var/run/pix-stream.{pid,owner,legacy-group,stopped}` を削除 → start
+- NAS manager は STB 不通だとレコーダーを 10 秒間隔で再起動し続ける。
+  停止したいときは `POST /api/nodes/<id>/stop`(今回実行済み、その後 start)
+
+### 残る検証(時間経過で自然に確定する)
+
+- **番組終了(16:44 JST 頃)での締め処理**: レコーダーが番組フォルダ +
+  MP4 を生成し、CM 解析ジョブが投入されるか(2代目と同じ経路)
+- 内容の品質: 11fps 問題のためフレーム間隔が落ちる可能性。これは性能課題
+  として別途対処する
+
+## round 210: ch15(SBS) は受信正常だった(round 205 訂正)。性能 11fps の根因解決
+
+### ch15 誤診の訂正
+
+round 205 の「ch15(SBS) のみ受信不良」は**誤診**。正しい PID フィルタ
+(`-p 0 -p 17 -p 18 -p 257 -p 273 -p 274`)で ch15 を 8 秒取得したところ:
+
+- C/N 38.4dB(ch17 と同等)
+- 映像 PID 273 が 233 フレーム復号(135fps でデコード)
+- デコードエラーは ch17 と**完全に同数(6 件、すべてキャプチャ先頭の
+  中途GOP起因)**。中盤 4.5 秒の切出しでも ch17 と同じ 6 件
+
+つまり「ch15 だけ壊れる」は round 206/207 と同じ**マルチプログラム mux の
+誤ストリーム選択**(5 番組 mux で ffmpeg が別サービスを掴む)の症状だった。
+**SBS のアンテナ対応は不要。**
+
+### 適用: ch15 への切替
+
+- 実機 config: `PIX_CHANNEL=15` + `PIX_PIDS="0 17 18 257 273 274"`
+- NAS: `POST /api/nodes/192.168.99.56-17/settings {"channel":"15"}` →
+  **ID が自動で `192.168.99.56-15` に作り直される**(manager の仕様)。
+  state=recording、staging fMP4 の中身は H.264 1440x1080 + AAC を確認
+- `/v1/status` の `channel` 表記は古い値を出すことがある(stb_streamer の
+  内部 state、cosmetic)。実態は pix-ts-legacy `-c 15` と programme メタの
+  `service=35856` で確認できる
+
+### 性能 11fps の根因(A/B 実証済み)
+
+**シリアルコンソールへの同期 printk だった。** VPU ではなかった。
+
+| 測定 | 値 |
+|---|---|
+| ucode 実行(start→ENC_ISR、1080p) | **10-17ms**(= 60-100fps 能力) |
+| done → 次フレーム start の空隙 | **~78ms** |
+| console loglevel 7 での testsrc2 1080p エンコード | **10.5 fps** |
+| console loglevel 3 での同一テスト | **~80 fps**(speed 2.66x) |
+| モジュールを既定レベルで再ロード後、実映像本番パイプライン | **fps=29、speed=0.924x** |
+| 録画再開後の実フレーム周期 | **11.5ms(≈87fps)** |
+
+機構: `enc_pr` は `level >= encode_print_level` で printk し、
+**boot-debug-shell.py が `modprobe amvenc_avc encode_print_level=0`**
+(LOG_ALL)でロードするため、フレーム毎に ~9 行
+(mc dma / begin / PIC is REF / dma addr / start / ENC_ISR / done /
+request vaddr ×2)が **115200bps ≈ 5.2ms/行の同期コンソール書き込み**で
+UART に流れていた。9-15 行 × 5.2ms ≈ 47-78ms/フレーム = 11fps と一致。
+「解像度・入力に依存しない」は行数が一定のため。
+
+**本番 rootfs は `/etc/modules-load.d/amvenc.conf`(パラメータ無し=既定
+LOG_ERROR)なので、最初から静寂で問題ない。** 11fps は debug ブートフロー
+固有の副作用だった。2代目が速いのも同じ理由。
+
+### 運用上の対処(debug ブートで使うとき)
+
+```sh
+# --vpu-test の後、パイプライン作業の前に(モジュールを既定レベルで再ロード)
+modprobe -r amvenc_avc && modprobe amvenc_avc
+```
+
+### 現在の全体状況
+
+| 項目 | 状態 |
+|---|---|
+| ch15(SBS) 受信 | **正常**(round 205 を訂正) |
+| ch15 録画(NAS -15) | **recording**(実時間 throughput) |
+| 性能 | **解決**(本番構成で実時間以上) |
+| 番組締め処理(フォルダ + MP4 + CM ジョブ) | 16:10 JST 頃の番組終了で自然検証 |
+
+## round 211: 本番起動の永続化。NAS 制御試験すべて合格
+
+### U-Boot env の焼き込み（電源オフからの自動起動）
+
+`board/x96max/ramboot-unit3-uboot.txt` を 2 カ所修正してから
+`tools/persist-uboot-env.py --boot` で焼き込み:
+
+1. **DTB 選択の修正**: 旧 pick は board=u212 に対し G12A 用
+   `meson-g12a-x96-max-p.dtb` を選んでいた。この機体は aml_dt=sm1_ac213_4g の
+   SM1 で、round 205 以降の全成功が `meson-g12a-x96-max-p-sm1.dtb`。
+   → sm1 DTB に固定
+2. **`usb start` リトライを linux_boot_ram に追加**: round 137 の必須知見
+   （usb start 無しでは glue 未初期化で USB 領域が abort）。2代目の実績レシピ
+   と同じ 3 回リトライ
+3. bootargs に `panic_on_oops=1 panic=8`、`bootcmd=run linux_boot_ram` +
+   `saveenv` を有効化
+
+### 本番起動の実測（`run linux_boot_ram` 経由、手動操作ゼロ）
+
+- udhcpc で `192.168.99.56` 取得（DHCP サーバが MAC で予約）
+- settime が NAS から時刻取得 → S96bcas → **pix-stream 自動起動** → login
+- `amvenc: vdec_1 = 666666667 Hz` のみでフレーム毎ログ無し（**静寂**）
+- DT295 列挙（06b8:103b）、`encode_print_level=3`（既定）
+
+### NAS からの制御試験（すべて合格）
+
+| 操作 | 結果 |
+|---|---|
+| `POST /api/nodes/<id>/stop` | `state: stopped` |
+| `POST /api/nodes/<id>/start` | `state: recording`、STB readers:1 復帰 |
+| settings channel 15→17 | ノード ID 自動改称 `-17`、**STB が再選局**（status channel:17） |
+| settings channel 17→15 | `-15` に戻る、STB も `channel:15` |
+
+STB 側の再選局は stb_streamer の stream 要求処理（チャンネル違いで
+キャプチャを張り直す）で実現されており、STB の config は既定値に過ぎない。
+NAS 側のチャンネル変更がそのまま有効。
+
+### 電源オフ完全再現について
+
+`bootcmd` は saveenv 済みで eMMC に永続するため、**電源オフ→投入でも
+同一経路（bootcmd → linux_boot_ram）で起動する**。ソフトリブートでの
+再現試験に加え、実際の電源オフでも 1 回確認すること。
+
+## round 212: 電源オフからの完全自動起動を実証。ソフトリブートはハングする
+
+### 定常運用の検証（ユーザー要求の 4 項目）
+
+1. **電源オフからの同一状態起動: 実証**
+   - bootcmd（eMMC に saveenv 済み）→ linux_boot_ram（usb start リトライ →
+     SM1 DTB → rdinit=/init）が入力ゼロで完走
+   - 電源投入から login まで約 45 秒。settime/DHCP/B-CAS/pix-stream すべて自動
+   - **DT295 列挙・録画再開も自動**（NAS manager が recording に自動復帰、
+     手動の POST start 不要）
+2. **NAS からの制御: すべて合格**（round 211 で実施）
+   - stop → stopped / start → recording / settings で 15→17→15 の往復
+     （STB が実際に再選局する。ノード ID も自動改称）
+3. 番組締め処理: 次節で観察
+4. 次の再起動後の自動立ち上げ: 1 と同一（電源サイクルで実証済み）
+
+### ⚠ ソフトリブートのハング（運用上の重要な注意）
+
+**エンコード動作中の `reboot` でハングする**（2 回再現。シリアル/ネットワーク
+完全沈黙、BL2 のバナーすら出ない=SoC がリセットされていない）。
+
+- 1 回目: debug シェルから `reboot -f`（VPU を D 状態プロセスが掴んだ後）
+- 2 回目: 本番 init から `reboot`（pix-stream が録画中）
+- 1 回目は約 7 分後に自発的に復帰したが、2 回目は 15 分以上復帰せず
+  **物理的な電源オフ/オンで回復**
+
+**運用指針**: 再起動が必要なときはソフトリブートを使わず**電源オフ/オン**を
+正規手順とする。NAS の guard（pix-stb-guard）の adb reboot は Linux RAM では
+使えないため、ハングした箱は guard でも復旧できない（将来の拡張課題:
+スマートプラグ等による遠隔電源断）。
+
+## round 213: 定常運用の全要素が実動作で確定。unit3 最初の番組が CM カットまで完走
+
+### 最初の番組（みなスポ★清水エスパルス、16:10-17:31、サッカー中継延長）
+
+EIT の予定終了 17:10 を過ぎてもサッカー中継が延長され、**実際の境界 17:31 で
+レコーダーが反応**（番組境界は EIT の実切替で検出、予定時刻ではない。正しい動作）。
+
+生成物（`GR_3219435856_ＳＢＳ１/170001_みなスポ…/`）:
+
+| ファイル | サイズ | 内容 |
+|---|---|---|
+| `p01.mp4` | 1,528,359,146 B | 元番組（53,878 フレーム = 1797.7 秒、検証済み） |
+| `p01.json` | 1,644 B | 番組メタ |
+| `p01_CMカット.cm.json` | 1,735,839 B | CM 解析（unit3 の feature sidecar から） |
+| `p01_CMカット.mp4` | symlink → `.media/4074e5b5….mp4` | **1,422,625,084 B**（122.1 秒カット、cuts=[980.98, 1103.10]） |
+
+- CM 検出は unit3 が**エンコード中に生成した feature sideband**（signalstats/
+  astats）が使われた。STB 側の CM 解析機能が実運用で効いている
+- 検証: `remux_packet_counts` + `packet_hashes+boundary_decode`、
+  hash mismatch 0、`verified: true`
+- 音声検証に 1 件警告（`decode_band_types` = キャプチャ先頭の中途 PES 由来。
+  2代目と同じ既知の日常範囲。`audio_decode_warning: true` で記録される）
+
+### ユーザー要求 4 項目の最終状態
+
+| 要件 | 状態 |
+|---|---|
+| 電源オフ等からの同一状態起動 | **実証**（bootcmd 自動起動 45 秒、入力ゼロ） |
+| NAS からの制御（ch 変更・録画開始停止） | **合格**（stop/start/settings 15↔17↔15） |
+| 番組終了の締め処理 | **完走**（フォルダ + MP4 + CM 解析 + CMカット.mp4） |
+| 次の再起動後の自動立ち上げ | **実証**（電源サイクルで同経路） |
+
+### 定常運用の運用上の注意（最終）
+
+- **再起動は電源オフ/オンで**（ソフトリブートはエンコード動作中にハング、
+  round 212）。ハング時の復旧は物理電源のみ（guard の adb は使えない）
+- 番組境界は EIT 実切替。中継延長でも番組は正しく分割される
+- staging の 0 バイト残骸（crash-loop 中のレコーダー由来）は蓄積しても
+  無害。気になれば NAS 側で手動掃除
+
+## round 214: unit3 を 2代目と同じ DT295 CFW 構成に移行
+
+### 変更点（リポジトリ）
+
+1. `board/x96max/ramboot-unit3.fragment`: **BR2_PACKAGE_CFW=y** を追加
+   （unit2 と同じ。frc1_load / pix-cfw-grab / frc1-dt295.frc /
+   ifd-cfw-m2tv.bundle が rootfs に入る）
+2. `board/x96max/ramboot-unit3-overlay/etc/default/pix-stream-linux`:
+   - `PIX_TUNER=dt295-cfw`（launcher が PIX_DECRYPT=1 を導出、S96bcas は
+     BCAS_MODE=local を強制）
+   - **PIX_PIDS を削除**（2代目と同じ理由: CFW の生 TS は復号前なので ECM を
+     落とせない。また pix-cfw-ts は PID フィルタを受け取らない。誤ストリーム
+     選択は launcher の -map 明示で防がれる）
+   - `PIX_CAPTURE_SECONDS=-`（2代目と同じく無期限。切り直しは番組分割の原因）
+   - 地上波の CFW 選局は `PIX_CHANNEL=15` のままでよい
+     （PIX_CFW_CHANNEL は衛星専用の書き方）
+3. ビルド → SD 配備（rootfs `bf22ebd5`、config と /usr/share/cfw 収録を
+   cpio 展開で検証済み）
+
+### 起動後の実測
+
+- S97 が **CFW 未検出を検知して frc1_load で自動インストール**（ファームは
+  揮発性なので毎回この経路。再起動後も自動で戻る）
+- pcscd → bcasd → cardrelay（local モード、DT295 内蔵リーダーを CFW が
+  USB で見せる）→ torne-b25 が card.sock で複合
+- `pix-cfw-ts` → torne-b25 → live ファイル → encode_with_features
+  （CM sideband は複合後のストリームに対して動く）
+- NAS 録画: recording、実時間 throughput、**dropped 0**、3 分監視で
+  ストール/再選局ゼロ
+- 内容検証（staging の先頭 3MB）: 動画 111 フレーム/3.7 秒（30fps）、
+  **音声デコードエラーゼロ**（vendor ファーム経路では先頭に AAC エラーが
+  出ていた。CFW + torne-b25 の複合の方がクリーン）
+
+### 運用上の注意（CFW 特有）
+
+- CFW は揮発性: 純正経路（pix-ts-legacy）を一度でも動かすと hook が戻る。
+  その場合は S97 の再起動（または USB 電源入れ直し）で CFW を入れ直す
+- S97 は起動時に `pix-cfw-grab probe` で FR01 シグネチャを確認し、無ければ
+  frc1_load するので、通常の再起動で自動的に戻る

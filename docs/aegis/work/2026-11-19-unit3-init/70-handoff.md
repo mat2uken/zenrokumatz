@@ -1,17 +1,34 @@
-# 引き継ぎ（round 173 時点）
+# 引き継ぎ（round 211 時点）
 
-## 電源投入後にやること（これだけ）
+## 電源投入後にやること（round 211 以降: 何もしない）
+
+**unit3 は U-Boot env に自動起動が焼き込まれた**（`bootcmd=run linux_boot_ram`、
+saveenv 済み）。電源投入 → 約 1 分で Linux RAM + pix-stream が立ち上がり、
+NAS が自動再接続する。シリアルも SSH も不要。
+
+- env の内容: `board/x96max/ramboot-unit3-uboot.txt`（SM1 用 DTB を選択、
+  `usb start` リトライ付き — round 137 の必須知見、panic 自動再起動付き）
+- 焼き込みツール: `tools/persist-uboot-env.py <env-file> --boot`
+- 失敗時の復旧: SD を抜いて起動すれば素の Android に戻る
+
+### まっさらから手動起動する場合（env が消えたときだけ）
 
 ```sh
 cd ~/Desktop/work/X96MaxLinuxTSEnc
 python3 tools/boot-debug-shell.py --vpu-test
 ```
 
-配信中モジュール: `amvenc_avc.ko` = **`d5825643`**（パッチ 0001〜0008、トレース
-18 箇所＋電源レジスタ読み返し 3 箇所入り）。
+配信中モジュール: `amvenc_avc.ko` = **`9939bedb`**（パッチ 0001〜0019）。
 `cp` → `modprobe meson_vdec` → `modprobe amvenc_avc encode_print_level=0`
 → 合成映像エンコード、まで自動。**`insmod` では依存が解決せず失敗する**
 （`Unknown symbol v4l2_m2m_*`）ので `modprobe` を使うこと。
+
+**CFW 構成（round 214 以降）**: unit3 は 2代目と同じ `PIX_TUNER=dt295-cfw`。
+S97 が起動時に frc1_load で CFW を自動インストールし、pcscd → bcasd →
+cardrelay → torne-b25 で複合する。PIX_PIDS は設定しない（CFW の生 TS では
+ECM を落とせない + pix-cfw-ts にフィルタ引数は無い）。地上波の選局は
+PIX_CHANNEL=15 のままでよい。CFW の hook は揮発性で、純正経路を動かすと
+戻るが、S97 の再起動で自動的に入れ直る。
 
 これが自動で行うこと:
 
@@ -30,8 +47,20 @@ python3 tools/boot-debug-shell.py --vpu-test
 
 ```sh
 cd /tmp && python3 -m http.server 8000 --bind 192.168.99.20 --directory /tmp
-# /tmp/amvenc_avc.ko = d5825643 （483,832 バイト、未 strip）
+# /tmp/amvenc_avc.ko = 9939bedb （490,048 バイト、未 strip）
 ```
+
+**起動後に SSH を使うには**（round 208 追加。rdinit=/bin/sh なので dropbear が
+動いていない）:
+
+```sh
+python3 tools/serial-run.py 'mount -t devpts devpts /dev/pts 2>/dev/null; /usr/sbin/dropbear -E -p 22 > /tmp/dropbear.log 2>&1 & sleep 1; pidof dropbear'
+# 以後 ssh root@192.168.99.56 で作業できる
+```
+
+`tools/serial-run.py` は動作中のシェルに再起動なしでコマンドを送るツール
+（round 208 追加）。`boot-debug-shell.py` は必ず U-Boot からやり直すため
+/tmp が消える点に注意。
 
 **この HTTP サーバはセッションのバックグラウンドジョブなので、
 セッションが終わると止まる。** 再開時は上記で起動し直すこと。
@@ -79,7 +108,7 @@ clock gate enabled → ao begin → ao pwr_cntl done → ao sleep0 done
 | 起動 | U-Boot で **`usb start` が必須**（無いと USB が動かない） |
 | NAS | `192.168.99.56-15` として登録される見込み。旧 `-17` は削除する |
 
-## 到達点（round 203 時点）
+## 到達点（round 208 時点）
 
 | 項目 | 状態 |
 |---|---|
@@ -88,10 +117,29 @@ clock gate enabled → ao begin → ao pwr_cntl done → ao sleep0 done
 | DT295 認識（06b8:103b） | **達成** |
 | **VPU H.264 エンコード（機能）** | **達成**（64x64 / 1080p 6Mbps で RC=0、h264 出力） |
 | **完了割り込み** | **達成**（`HCODEC_CCPU_INTR_MSK=1` で ISR が動く） |
-| TS の PSI 取得 | **達成**（`have_pat:1`、`program_count:5`、`missing_pmts:0`） |
-| **TS の映像データ** | **壊れている**（`mpeg2video: Invalid frame dimensions 0x0`） |
-| 性能 | 約 11 fps（実時間 30 fps に不足） |
-| pix-stream 統合 / NAS 保存 / CM カット | 未達 |
+| TS の PSI 取得 | **達成**（`have_pat:1`、`tables_ready:1`） |
+| **PID 特定 / PIX_PIDS 設定** | **達成**（round 208/209: `0 17 18 257 273 274`） |
+| **実映像の A/V エンコード（本番パイプライン）** | **達成**（round 208: ch17。round 210: **29fps / speed 0.924x**） |
+| **ch15(SBS) 受信** | **正常**（round 205 の「受信不良」は誤診＝mux の誤ストリーム選択。round 210 訂正） |
+| **pix-stream → NAS 録画** | **達成**（NAS が `192.168.99.56-15` を `recording` 認定、実時間 throughput、dropped 0） |
+| **rootfs 再ビルド + SD 配備** | **達成**（round 210: ch15 + PIX_PIDS 焼き込み済み `ccb11a7d`。**次の再起動から有効**） |
+| **U-Boot env 永続化（電源オフ自動起動）** | **達成**（round 211/212: bootcmd=linux_boot_ram、SM1 DTB、usb start リトライ。電源投入 45 秒で録画再開） |
+| **NAS からの制御** | **合格**（round 211: stop/start/ch 変更 15↔17↔15、STB が実際に再選局） |
+| **番組締め処理 + CM カット** | **完走**（round 213: みなスポ 30 分番組 → p01.mp4 1.53GB + CM 解析 + p01_CMカット.mp4 1.42GB、122.1 秒カット、検証済み） |
+| **CFW 構成への移行** | **達成**（round 214: 2代目と同じ dt295-cfw + torne-b25。rootfs `bf22ebd5`、SD 配備済み、recording 実時間・dropped 0・音声デコードエラーゼロ） |
+| 性能 | **解決**（round 210 参照。11fps は debug ブートのコンソール printk 副作用だった） |
+
+## PID 一覧（round 208 実測。ch15/ch17 とも同一布局）
+
+| PID | 内容 |
+|---|---|
+| 0 | PAT |
+| 257 | PMT（主サービス。ch15=program 35856 S） |
+| **273** | **MPEG-2 映像 1440x1080（0x111）** |
+| **274** | **AAC 音声（0x112）** |
+| 256 | PCR（ffmpeg が再スタンプするので PIX_PIDS に入れない） |
+| 276/277 | 字幕/データ（CM 解析には不要） |
+| 337 (0x151) | ワンセグ H.264 ← **ffmpeg 既定選択がこれを掴んでいたのが round 207 の原因** |
 
 ## 決定的だった修正（すべて実機で実証）
 
@@ -105,16 +153,16 @@ clock gate enabled → ao begin → ao pwr_cntl done → ao sleep0 done
 
 ## 未解決（優先順）
 
-1. **TS の映像データが壊れている**
-   - PSI は正常、`mpeg2video` として検出できるがシーケンスヘッダが 0x0
-   - スクランブルではない（TS ヘッダの scrambling control = 00 を実測）
-   - `pix-ts-legacy` のハッシュは NAS ビルドと同一（`6df432fe`）で古くない
-   - 次: 2代目（`192.168.99.123`、SSH 可）との比較、USB 転送エラーの確認
-2. **性能 11 fps**
-   - 割り込み・分周（div=0 を実測）・毎フレーム再初期化を除外
-   - 解像度にも入力にも依存しない
-   - 残る候補: ucode 種別（cabac→cavlc）、エンコード設定
-3. **pix-stream 統合**（デコード → CPU コピー → エンコードの分離構成）
+**定常運用の検証項目はすべて完了（round 213）。CFW 移行も完了（round 214）。**
+残るは運用上の注意のみ:
+
+1. **ソフトリブートは使わない**: エンコード動作中の `reboot` はハングする
+   （round 212、2 回再現）。再起動は**電源オフ/オン**が正規手順。ハング時の復旧は物理電源のみ（guard の adb reboot は Linux RAM では不可）。なお
+   **S97pix-stream を停止してからならソフトリブートは通った**（round 214）
+2. **CFW の揮発性**: 純正経路（pix-ts-legacy）を動かすと hook が戻るが、
+   S97 が起動時に frc1_load で自動再インストールする（round 214 実測）
+3. 長期運用で観察すべき点: SD カードの耐久（rootfs は RAM なので書き込みは
+   ほぼ無い）、NAS 側のディスク容量、torne-b25 のカードセッションの長期安定性
 
 ## 配信中のモジュール
 
@@ -133,3 +181,22 @@ modprobe amvenc_avc encode_print_level=0
 ```
 
 ただし **DOS/HCodec のレジスタを動作中に `devmem` で読むとハング**する。
+
+**性能に関する注意（round 210）**: `--vpu-test` は
+`modprobe amvenc_avc encode_print_level=0`（全ログ）でロードする。この状態で
+パイプラインを動かすと、フレーム毎の ~9 行のログが 115200bps の同期コンソール
+に流れて **10-11fps に落ちる**（本番 rootfs の modules-load.d は既定
+LOG_ERROR なので問題ない）。パイプラインの速度測定や実運用の前に:
+
+```sh
+modprobe -r amvenc_avc && modprobe amvenc_avc   # 既定レベルで再ロード → 80fps
+```
+
+## NAS 登録の現状（round 210）
+
+| ノード | 状態 |
+|---|---|
+| `192.168.99.56-15`（unit3） | **recording**（旧 `-17` は settings API の channel 変更で自動改称） |
+| `192.168.99.123-BS09_0`（unit2） | recording |
+| `192.168.99.109-17`（unit1） | recording |
+| `192.168.99.209-15`（X96Max-2） | disabled |

@@ -1,13 +1,54 @@
-# 1代目・2代目のRAM起動・更新手順
+# 1代目・2代目・3代目のRAM起動・更新手順
 
 両機とも、起動時だけ媒体からLinuxとinitramfsを読み、以後はRAMだけで動かす。initramfsは、OS全体をメモリ上に展開するアーカイブである。稼働中は起動媒体をマウントせず、swapも使わない。録画先は従来どおりNASとする。**再起動時には起動媒体が必要である。**
 
-| 対象 | IP | 起動媒体 | メモリ・PHY | ビルド時の選択 |
-|---|---|---|---|---|
-| 1代目 | 192.168.99.109 | SD、U-Boot mmc0:1 | 2GiB・内部PHY | `X96MAX_UNIT=1` |
-| 2代目 | 192.168.99.123 | USB、U-Boot usb0:1 | 4GiB・ePHY | `X96MAX_UNIT=2` |
+| 対象 | IP | 起動媒体 | メモリ・PHY | ビルド時の選択 | DTB |
+|---|---|---|---|---|---|
+| 1代目 | 192.168.99.109 | SD、U-Boot mmc0:1 | 2GiB・内部PHY | `X96MAX_UNIT=1` | `meson-g12a-x96-max-p.dtb` |
+| 2代目 | 192.168.99.123 | USB、U-Boot usb0:1 | 4GiB・ePHY | `X96MAX_UNIT=2` | `meson-g12a-x96-max-p-ephy-4g.dtb` |
+| 3代目 | 192.168.99.56 | SD、U-Boot mmc0:1 | 4GiB・外部PHY（SM1） | `X96MAX_UNIT=3` | `meson-g12a-x96-max-p-sm1.dtb` |
 
-1代目はPX-S1UD・テレビ静岡ch17・CM特徴量を維持する。2代目はDT295・BS11で、内蔵カードを使う。DTBは [1代目用](<../output/ramboot-unit1/meson-g12a-x96-max-p.dtb>) と [2代目用](<../output/ramboot/meson-g12a-x96-max-p-ephy-4g.dtb>) を取り違えない。
+3代目は SM1（aml_dt `sm1_ac213_4g`）で、U-Boot が `meson-g12a-x96-max-p-sm1.dtb` を
+ロードする（[U-Boot定義](<../output/ramboot-unit3/ramboot-unit3-uboot.txt>)）。G12A 系の
+DTB では USB/vdec が壊れるため取り違えない。
+
+1代目はPX-S1UD・テレビ静岡ch17・CM特徴量を維持する。2代目はDT295・BS11で、内蔵カードを使う。
+3代目はDT295・CFW・SBS ch15である。
+
+## 媒体の照合
+
+デバイス名は再列挙で変わるため、名前だけで判断しない。起動用 FAT 区画は
+`blkid` のラベル `X96BOOT`（1代目）または `X96RAMBOOT`（2・3代目）で探す。
+
+- 1代目SD：CID `02544d53453132388907e3202f01a300`、241745920 sectors。
+- 2代目USB：62533286 sectors。
+- 3代目SD：CID `035344534c33324780b468426a011a00`（SanDisk SL32G 31.9GB）。
+
+identity は機体ごとに分ける（[build-on-nas.md](build-on-nas.md)）。
+`work/ramboot-identity-unit1`、`work/ramboot-identity`（2代目）、
+`work/ramboot-identity-unit3`。3代目は 11/19 の構築時に 2代目の identity が
+流用されたため SSH ホスト鍵が混線した。2026-11-22 に固有 identity で焼き直した
+（docs/verification-20261122.md §8）。identity を替えて焼き直すと SSH ホスト鍵が
+変わる。その場合、Mac と NAS の known_hosts の更新が一度だけ必要になる。
+
+## 更新手順（tools/flash-ramboot-over-ssh.sh）
+
+docs/ram-rootfs.md の手順を NAS 側で実行するスクリプト
+[tools/flash-ramboot-over-ssh.sh](<../tools/flash-ramboot-over-ssh.sh>) がある。
+スクリプトが行うのは次の範囲までである。
+
+- RAM rootfs の確認と媒体照合
+- 転送と SHA256 検証、FAT マウント、旧ファイル退避、書き込み
+- FAT 上での SHA256 照合、sync・アンマウント
+
+**再起動は行わない**。ハッシュが一致するファイルは書き換えない
+（[verification-20261122.md](verification-20261122.md) §1 と同じ方針）。
+スクリプトを使わず手で行う場合は以下のとおり。
+
+1. ホストから、対象機の3本をRAM上の一時領域へ転送する。
+2. 照合した起動用FAT区画だけをマウントする。元の起動ファイルを退避してから3本を更新する。容量を確認し、元の退避を新しいファイルで上書きしない。媒体全体を初期化せず、既存ext4も消さない。
+3. RAM側とFAT側の3本のSHA256がすべて一致することを確かめる。`sync` 後にアンマウントする。不一致やI/Oエラーがあれば再起動せず、RAMで動く状態を保って原因を調べる。
+4. 対象機だけを再起動し、次節の確認を行う。**再起動は必ずユーザー確認を取る。**
 
 ## 再ビルドする
 
@@ -46,15 +87,12 @@ identityを安全にバックアップする。Gitへ追加したり、ほかの
 
 SSHで対象機に接続し、rootがRAM上の `rootfs` であることを確認する。起動用区画は未マウントでなければならない。接続先、媒体の個体番号、DTBのいずれかが不一致なら止める。rootがext4の場合も、この通常更新手順は使わない。初回移行としてUART・退避・一時起動を別途用意する。
 
-媒体の照合には次を使う。デバイス名は再列挙で変わるため、名前だけで判断しない。
-
-- 1代目SD：CID `02544d53453132388907e3202f01a300`、241745920 sectors。
-- 2代目SanDisk USB：serial `AA010206130733341409`、62533286 sectors。
+媒体の照合は前節の表を使う。デバイス名は再列挙で変わるため、名前だけで判断しない。
 
 1. ホストから、対象機の3本をRAM上の一時領域へ転送する。
 2. 照合した起動用FAT区画だけをマウントする。元の起動ファイルを退避してから3本を更新する。容量を確認し、元の退避を新しいファイルで上書きしない。媒体全体を初期化せず、既存ext4も消さない。
 3. RAM側とFAT側の3本のSHA256がすべて一致することを確かめる。`sync` 後にアンマウントする。不一致やI/Oエラーがあれば再起動せず、RAMで動く状態を保って原因を調べる。
-4. UARTを接続して対象機だけを再起動し、次節の確認を行う。
+4. 対象機だけを再起動し、次節の確認を行う。**再起動は必ずユーザー確認を取る。**
 
 配信設定は [1代目defaults](<../board/x96max/ramboot-unit1-overlay/etc/default/pix-stream-linux>) または [2代目defaults](<../board/x96max/ramboot-overlay/etc/default/pix-stream-linux>) へ反映して再ビルドする。RAM上で変更した設定、ログ、追加パッケージ、ロゴ更新は再起動で消える。PX-S1UDは既存B-CAS経路を使い、DT295の内蔵カード設定では外部B-CASサービスを待たない。
 
