@@ -1,3 +1,5 @@
+> **Status: 旧（SUPERSEDED）** — 本文 §1「この切り直しは … STB 側の周期は維持する」の1800秒分割を維持する記述は、後続の [docs/unit2-stage1-deployment.md](unit2-stage1-deployment.md) と [docs/dt295-external-descramble-design.md](dt295-external-descramble-design.md) で廃止済みとされている（2代目は `PIX_CAPTURE_SECONDS=-`、`-t -` で切り直し0回を実証）。SSH 経由の STB 復旧やソース管理の経緯は記録として残るが、設定値は現行手順を参照。以下は当時の本文を保持する。
+
 # 録画の細切れ分割とテレビ静岡の停止（2026-11-19/11-20）
 
 同一番組が複数のフォルダに分かれる問題と、11/20 にテレビ静岡（STB 192.168.99.109）の

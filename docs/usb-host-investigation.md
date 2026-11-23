@@ -1,3 +1,5 @@
+> **Status: 旧（SUPERSEDED）** — 2026-11-10 時点の調査引き継ぎ。USB PHY／glue の解釈は、[docs/aegis/work/2026-11-19-unit3-init/30-usb-phy-findings.md](aegis/work/2026-11-19-unit3-init/30-usb-phy-findings.md) と [docs/aegis/work/2026-11-19-unit3-init/50-usb-phy-findings.md](aegis/work/2026-11-19-unit3-init/50-usb-phy-findings.md) で更新されている（後者は round 101〜214 の追記）。現行の起動・接続手順は [docs/ram-rootfs.md](ram-rootfs.md) を参照。以下は当時の記録として保持する。
+
 # X96Max_P の USB ホストが mainline Linux で動かない件：調査引き継ぎ
 
 2026年11月10日のセッション終了時点の記録。PX-S1UD と USB カードリーダーが本体の USB ポートで認識されない問題について、ここまでに分かったこと、試して駄目だったこと、次に疑うべき点をまとめる。

@@ -31,6 +31,12 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-11-19 | work | docs/aegis/work/2026-11-19-unit3-init/30-usb-phy-findings.md | 3代目のUSBレジスタ配置調査 |
 | 2026-11-19 | work | docs/aegis/work/2026-11-19-unit3-init/40-acceptance.md | 3代目の受け入れ基準 |
 | 2026-11-19 | work | docs/aegis/work/2026-11-19-unit3-init/50-resume-guide.md | 3代目Linux化の再開手順と到達点 |
+| 2026-11-19 | work | docs/aegis/work/2026-11-19-unit3-init/50-usb-phy-findings.md | 3代目のUSB PHY初期化調査（round 101〜214の追記） |
+| 2026-11-19 | work | docs/aegis/work/2026-11-19-unit3-init/60-nas-build.md | 3代目のNASでのビルド（Macのメモリ不足回避） |
+| 2026-11-19 | work | docs/aegis/work/2026-11-19-unit3-init/70-handoff.md | 3代目X96Max_P立ち上げ 引き継ぎ（round 211時点） |
 | 2026-11-22 | work | docs/aegis/work/2026-11-22-cm-coverage/10-intent.md | CM カット対象拡大（マーカーキャッシュ修復）intent |
 | 2026-11-22 | work | docs/aegis/work/2026-11-22-cm-coverage/20-checkpoint.md | CM カット対象拡大（マーカーキャッシュ修復）checkpoint |
 | 2026-11-22 | work | docs/aegis/work/2026-11-22-cm-coverage/90-evidence.md | CM カット対象拡大（マーカーキャッシュ修復）evidence |
+| 2026-11-22 | intent | docs/aegis/work/2026-11-22-epg-decommission/10-intent.md | EPGホスト廃止（mirakc/.40依存の完全除去）intent |
+| 2026-11-22 | checkpoint | docs/aegis/work/2026-11-22-epg-decommission/20-checkpoint.md | EPGホスト廃止 完了候補checkpoint |
+| 2026-11-22 | evidence | docs/aegis/work/2026-11-22-epg-decommission/90-evidence.md | EPGホスト廃止 収録基準との対応evidence |
