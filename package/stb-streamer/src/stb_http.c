@@ -431,6 +431,59 @@ static void handle_program(ClientContext *ctx) {
         write_all(fd, body, len);
 }
 
+/*
+ * GET /v1/epg - the schedule eit_watch accumulates, verbatim. The NAS side
+ * polls this to build the catalog and never touches the stream pipeline.
+ * The file grows with the guide (~0.2 MB), so its size is stat'ed instead of
+ * using a fixed buffer like /v1/program.
+ */
+static void handle_epg(ClientContext *ctx) {
+    int fd = ctx->client_fd;
+    const char *path = ctx->srv->cfg.epg_path;
+    struct stat st;
+
+    if (!path || stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
+        const char *nf = "HTTP/1.1 404 Not Found\r\n"
+                         "Content-Type: application/json\r\n"
+                         "Content-Length: 0\r\n"
+                         "Connection: close\r\n\r\n";
+        write_all(fd, nf, strlen(nf));
+        return;
+    }
+
+    size_t cap = (size_t)st.st_size;
+    if (cap > 1024 * 1024) cap = 1024 * 1024;
+    char *body = malloc(cap);
+    size_t len = 0;
+    if (body) {
+        FILE *f = fopen(path, "r");
+        if (f) {
+            len = fread(body, 1, cap, f);
+            fclose(f);
+        }
+    }
+    if (!body || len == 0) {
+        free(body);
+        const char *nf = "HTTP/1.1 404 Not Found\r\n"
+                         "Content-Type: application/json\r\n"
+                         "Content-Length: 0\r\n"
+                         "Connection: close\r\n\r\n";
+        write_all(fd, nf, strlen(nf));
+        return;
+    }
+
+    char hdr[256];
+    int hlen = snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n", len);
+    write_all(fd, hdr, (size_t)hlen);
+    write_all(fd, body, len);
+    free(body);
+}
+
 #define LOGO_INDEX_MAX (256u * 1024u)
 #define LOGO_FILE_MAX (512u * 1024u)
 
@@ -553,6 +606,8 @@ static void *client_thread(void *arg) {
             handle_status(ctx);
         } else if (strcmp(method, "GET") == 0 && strcmp(uri, "/v1/program") == 0) {
             handle_program(ctx);
+        } else if (strcmp(method, "GET") == 0 && strcmp(uri, "/v1/epg") == 0) {
+            handle_epg(ctx);
         } else if (strcmp(method, "GET") == 0 && strcmp(uri, "/v1/logos") == 0) {
             handle_logos_index(ctx);
         } else if (strcmp(method, "GET") == 0 && strncmp(uri, "/v1/logos/", 10) == 0) {

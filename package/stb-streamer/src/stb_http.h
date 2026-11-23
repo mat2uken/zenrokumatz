@@ -26,6 +26,11 @@ typedef struct {
      */
     const char *program_path;
     /*
+     * eit_watch schedule file. GET /v1/epg serves it verbatim so the NAS side
+     * can collect the whole guide without touching the stream pipeline.
+     */
+    const char *epg_path;
+    /*
      * Station logos written by pix-dt295-logo: GET /v1/logos serves its
      * index.json, GET /v1/logos/<name>.png one file. NULL disables both.
      */

@@ -467,6 +467,7 @@ int main(int argc, char **argv)
     const char *channel = "";
     const char *display = "X96Max-P";
     const char *program_file = "/dev/shm/pix/program.txt";
+    const char *epg_file = "/dev/shm/pix/epg.json";
     const char *logo_dir = "/var/lib/pix/logos";
     const char *feature_file = "";
     const char *feature_audio_file = "";
@@ -486,6 +487,8 @@ int main(int argc, char **argv)
             display = argv[++i];
         } else if (strcmp(argv[i], "--program-file") == 0 && i + 1 < argc) {
             program_file = argv[++i];
+        } else if (strcmp(argv[i], "--epg-file") == 0 && i + 1 < argc) {
+            epg_file = argv[++i];
         } else if (strcmp(argv[i], "--logo-dir") == 0 && i + 1 < argc) {
             logo_dir = argv[++i];
         } else if (strcmp(argv[i], "--feature-file") == 0 && i + 1 < argc) {
@@ -499,6 +502,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "usage: %s [--port N] [--allowed-ip LIST] "
                             "[--spool-mb N] [--channel NAME] [--display NAME] "
+                            "[--program-file PATH] [--epg-file PATH] "
                             "[--feature-file PATH] [--feature-audio-file PATH] "
                             "[--feature-black-file PATH] [--feature-max-mb N] "
                             "[--logo-dir DIR]\n",
@@ -527,6 +531,7 @@ int main(int argc, char **argv)
         .stop_flag = &g_stop,
         .idle_timeout_sec = 0,
         .program_path = program_file,
+        .epg_path = epg_file,
         .logo_dir = logo_dir,
     };
     StbHttpServer *srv = stb_http_start(&cfg);

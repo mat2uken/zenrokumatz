@@ -1,6 +1,5 @@
 /*
- * eit_watch.c - TS を素通ししながら EIT の present/following を読み、
- *               現在の番組をファイルに書き出す
+ * eit_watch.c - TS を素通ししながら EIT を読み、現在番組と番組表を書き出す
  *
  * dtv_android の LiveTsStreamer.java は TS から EIT を解析して
  * service_id / event_id / 開始時刻 / 長さを取り出し、fMP4 のストリームに
@@ -11,6 +10,11 @@
  *
  * 標準入力のバイト列はそのまま標準出力へ流す。取りこぼすと映像が壊れるので、
  * 解析に失敗しても必ず全部書き出す。
+ *
+ * 現在番組は --state（既定 /dev/shm/pix/program.txt）に書く。ついでに
+ * present/following と schedule 表（0x50–0x5f）から番組表を蓄積し、
+ * --epg（既定 /dev/shm/pix/epg.json）に JSON で書き出す。stb_http が
+ * /v1/epg で公開し、NAS が取得してカタログに供給する（mirakc は使わない）。
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -145,6 +149,177 @@ static const char *name_cache_get(int event_id)
         if (g_names[i].event_id == event_id && g_names[i].name[0])
             return g_names[i].name;
     return "";
+}
+
+/* ---- 番組表（スケジュール）キャッシュ ---- */
+
+/*
+ * EIT schedule 表を event_id 単位で覚える。現在番組（program.txt）とは別に
+ * 番組表全体を epg.json に書き出し、stb_http が /v1/epg で公開する。NAS の
+ * ブリッジが取得してカタログとフォールバック命名に供給する。
+ * ストレージは tmpfs のみで、中間ディスク書き込みはしない。
+ */
+#define EPG_MAX_EVENTS 2048
+#define EPG_MIN_DURATION_MS 180000        /* 番宣など短い項目は番組として扱わない */
+#define EPG_PAST_KEEP_MS (24LL * 3600 * 1000)   /* 過去は 24 時間分残す */
+#define EPG_FLUSH_SEC 30
+
+typedef struct {
+    int event_id;
+    int64_t start_ms;
+    int64_t duration_ms;
+    char name[PROGRAM_NAME_MAX];
+    int valid;
+} EpgEvent;
+
+static EpgEvent g_epg[EPG_MAX_EVENTS];
+static int g_epg_dirty;
+static int64_t g_epg_last_flush;
+static const char *g_epg_path;
+
+static void epg_put(int event_id, int64_t start_ms, int64_t duration_ms, const char *name)
+{
+    if (event_id <= 0 || start_ms <= 0 || duration_ms < EPG_MIN_DURATION_MS)
+        return;
+    EpgEvent *slot = NULL;
+    for (int i = 0; i < EPG_MAX_EVENTS; i++) {
+        if (!g_epg[i].valid) {
+            if (!slot)
+                slot = &g_epg[i];
+            continue;
+        }
+        if (g_epg[i].event_id == event_id) {
+            slot = &g_epg[i];
+            break;
+        }
+    }
+    if (!slot) {
+        /* 満杯: startAt が最も古いものを追い出す。 */
+        slot = &g_epg[0];
+        for (int i = 1; i < EPG_MAX_EVENTS; i++)
+            if (g_epg[i].start_ms < slot->start_ms)
+                slot = &g_epg[i];
+    }
+
+    int changed = 0;
+    if (!slot->valid || slot->event_id != event_id) {
+        memset(slot, 0, sizeof(*slot));
+        slot->event_id = event_id;
+        slot->start_ms = start_ms;
+        slot->duration_ms = duration_ms;
+        slot->valid = 1;
+        changed = 1;
+    } else {
+        if (slot->start_ms != start_ms) {
+            slot->start_ms = start_ms;
+            changed = 1;
+        }
+        if (slot->duration_ms != duration_ms) {
+            slot->duration_ms = duration_ms;
+            changed = 1;
+        }
+    }
+    if (name && name[0] && strcmp(name, slot->name) != 0) {
+        snprintf(slot->name, sizeof(slot->name), "%s", name);
+        changed = 1;
+    }
+    if (changed)
+        g_epg_dirty = 1;
+}
+
+/* JSON 文字列へ出すための最低限のエスケープ。UTF-8 の複数バイトはそのまま。 */
+static size_t json_escape(const char *src, char *dst, size_t cap)
+{
+    size_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)src; *p && n + 8 < cap; p++) {
+        unsigned char c = *p;
+        switch (c) {
+        case '"':  dst[n++] = '\\'; dst[n++] = '"'; break;
+        case '\\': dst[n++] = '\\'; dst[n++] = '\\'; break;
+        case '\b': dst[n++] = '\\'; dst[n++] = 'b'; break;
+        case '\f': dst[n++] = '\\'; dst[n++] = 'f'; break;
+        case '\n': dst[n++] = '\\'; dst[n++] = 'n'; break;
+        case '\r': dst[n++] = '\\'; dst[n++] = 'r'; break;
+        case '\t': dst[n++] = '\\'; dst[n++] = 't'; break;
+        default:
+            if (c < 0x20)
+                n += (size_t)snprintf(dst + n, cap - n, "\\u%04x", c);
+            else
+                dst[n++] = (char)c;
+            break;
+        }
+    }
+    dst[n] = '\0';
+    return n;
+}
+
+/* 開始時刻順に並べる。無効な項目は末尾へ送る（qsort は安定でないが順不同の並びは問題ない）。 */
+static int epg_order(const void *a, const void *b)
+{
+    const EpgEvent *x = a, *y = b;
+    if (x->valid != y->valid)
+        return y->valid - x->valid;
+    if (!x->valid)
+        return 0;
+    if (x->start_ms != y->start_ms)
+        return x->start_ms < y->start_ms ? -1 : 1;
+    return x->event_id - y->event_id;
+}
+
+/*
+ * dirty な項目を 30 秒以下の間隔で epg.json へ書き出す。書く前に過去 24 時間
+ * より昔に終わった番組を捨て、残りを開始時刻順にして間引く。呼び出し元は
+ * データの流れを止めない（program.txt と同じ tmp ファイル + rename である）。
+ * force が非 0 なら 30 秒の間隔を無視する（終了時）。
+ */
+static void epg_flush(int force)
+{
+    if (!g_epg_dirty || !g_epg_path)
+        return;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    int64_t now = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    if (!force && now - g_epg_last_flush < EPG_FLUSH_SEC * 1000)
+        return;
+    g_epg_last_flush = now;
+    g_epg_dirty = 0;
+
+    qsort(g_epg, EPG_MAX_EVENTS, sizeof(g_epg[0]), epg_order);
+    int64_t keep_from = now - EPG_PAST_KEEP_MS;
+    size_t count = 0;
+    for (int i = 0; i < EPG_MAX_EVENTS; i++) {
+        EpgEvent *e = &g_epg[i];
+        if (!e->valid)
+            break;
+        if (e->start_ms + e->duration_ms < keep_from) {
+            memset(e, 0, sizeof(*e));
+            continue;
+        }
+        if (count != (size_t)i)
+            g_epg[count] = *e;
+        count++;
+    }
+    for (size_t i = count; i < EPG_MAX_EVENTS; i++)
+        memset(&g_epg[i], 0, sizeof(g_epg[i]));
+
+    char tmp[512];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", g_epg_path);
+    FILE *f = fopen(tmp, "w");
+    if (!f)
+        return;
+    fprintf(f, "{\"serviceId\":%d,\"generatedAt\":%lld,\"events\":[",
+            g_service_id > 0 ? g_service_id : 0, (long long)now);
+    for (size_t i = 0; i < count; i++) {
+        char esc[PROGRAM_NAME_MAX * 6 + 1];
+        json_escape(g_epg[i].name, esc, sizeof(esc));
+        fprintf(f, "%s{\"eventId\":%d,\"startAt\":%lld,\"duration\":%lld,\"name\":\"%s\"}",
+                i ? "," : "", g_epg[i].event_id,
+                (long long)g_epg[i].start_ms, (long long)g_epg[i].duration_ms, esc);
+    }
+    fprintf(f, "]}\n");
+    if (fclose(f) != 0)
+        return;
+    rename(tmp, g_epg_path);
 }
 
 static void event_name(const uint8_t *sec, size_t off, size_t desc_len,
@@ -305,6 +480,8 @@ static int handle_eit(const uint8_t *sec, size_t len, int64_t wall_ms)
                 event_name(sec, i + 12, desc_len, seen, sizeof(seen));
             if (seen[0])
                 name_cache_put(event_id, seen);
+            /* 番組表の項目も覚える。3 分未満の項目は番組として扱わない。 */
+            epg_put(event_id, ev_start, ev_dur, seen);
         }
 
         /*
@@ -478,15 +655,18 @@ static void logos_flush(void)
 int main(int argc, char **argv)
 {
     const char *state_path = "/dev/shm/pix/program.txt";
+    g_epg_path = "/dev/shm/pix/epg.json";
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--state") && i + 1 < argc)
             state_path = argv[++i];
+        else if (!strcmp(argv[i], "--epg") && i + 1 < argc)
+            g_epg_path = argv[++i];
         else if (!strcmp(argv[i], "--logo-dir") && i + 1 < argc)
             g_logo_dir = argv[++i];
         else if (!strcmp(argv[i], "--logo-debug"))
             g_logo_debug = 1;
         else {
-            fprintf(stderr, "usage: %s [--state PATH] [--logo-dir DIR] [--logo-debug]\n", argv[0]);
+            fprintf(stderr, "usage: %s [--state PATH] [--epg PATH] [--logo-dir DIR] [--logo-debug]\n", argv[0]);
             return 2;
         }
     }
@@ -509,8 +689,8 @@ int main(int argc, char **argv)
     ts_demux_add(&program_demux, EIT_PID);
 
     load_state(state_path);
-    fprintf(stderr, "eit_watch: ready event-offset=14 state=%s (previous=%s)\n",
-            state_path, g_last.valid ? g_last.name : "-");
+    fprintf(stderr, "eit_watch: ready event-offset=14 state=%s epg=%s (previous=%s)\n",
+            state_path, g_epg_path, g_last.valid ? g_last.name : "-");
 
     static uint8_t in[TS_PACKET * 128];
     size_t have = 0;
@@ -546,6 +726,8 @@ int main(int argc, char **argv)
 
         ts_demux_feed(&program_demux, in, done, program_section, (void *)state_path);
 
+        epg_flush(0);
+
         if (g_cdt) {
             cdt_collector_feed(g_cdt, in, done);
             static time_t last_flush;
@@ -568,6 +750,7 @@ int main(int argc, char **argv)
             have = 0;                       /* 188 で割れないまま満杯: 捨てる */
     }
     logos_flush();
+    epg_flush(1);
     if (g_cdt) {
         cdt_collector_free(g_cdt);
         free(g_cdt);
