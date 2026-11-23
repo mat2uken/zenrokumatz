@@ -38,7 +38,8 @@
       "experiments/cm-generic/",
       "nas_src/README.md"
     ],
-    "usage": "read-only reference for capture layout, build flags and the CM canonical source; the live tree remains at ../dtv_android"
+    "usage": "read-only reference for capture layout, build flags and the CM canonical source; the live tree remains at ../dtv_android",
+    "note": "scripts/deploy-cm-features.sh in this snapshot is the pre-switch version; the live script in ../dtv_android now builds C sources from nas/src"
   },
   "torne": {
     "repository": "/Users/kenichim/Desktop/work/pix-smb400/repo",
