@@ -112,7 +112,7 @@ U-Bootのプロンプトに入るには、電源投入前に`tools/uboot_boot_li
 
 | 材料 | 場所 |
 |---|---|
-| 変更前の環境変数（86項目） | `artifacts/uboot-env-x96max-p-20261114.txt` |
+| 変更前の環境変数（86項目） | `work/archive/docs/artifacts/uboot-env-x96max-p-20261114.txt`（ローカルアーカイブ） |
 | Linux起動の手動手順 | `board/x96max/uboot-manual.txt` |
 | Android起動を維持する変数 | `bootcmd_android`（上記） |
 | 起動先の切り替え | `tools/uboot_set_boot.py` |

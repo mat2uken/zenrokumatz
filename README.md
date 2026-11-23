@@ -4,7 +4,7 @@
 
 ## 現状の結論は [docs/README.md](docs/README.md) を先に読む
 
-`docs/` の現行文書が結論の正である。現行／旧（SUPERSEDED）の判断基準、機体別の状態、検証記録への最短導線は [docs/README.md](docs/README.md) にまとめられている。特に [3代目の現状](docs/unit3-status.md)、[2代目の完成状態](docs/unit2-complete.md)、[3台の動作確認](docs/verification-20261122.md) を参照。
+`docs/` の現行文書が結論の正である。現行／旧（SUPERSEDED）の判断基準、機体別の状態、検証記録への最短導線は [docs/README.md](docs/README.md) にまとめられている。特に [3代目の現状](docs/unit3-status.md)、[2代目の完成状態](docs/unit2-complete.md)を参照。検証ログはローカルの `work/archive/docs/` にある。
 
 ## 構成の概要
 
@@ -13,7 +13,7 @@
 - **チューナーと復号**: 1代目はPLEX PX-S1UD（`3275:0080`）とUSBカードリーダー、2・3代目はPIX-DT295のCFW（内蔵B-CAS）。ARIB MULTI2の復号は `torne-b25`。
 - **配信**: `eit_watch` → `ffmpeg` ×2 → `stb_streamer` がfMP4を生成し、NAS `192.168.99.80` の録画管理がpullする。番組境界と番組名は放送波のEITから取得する。
 - **EPG**: mirakc（`192.168.99.40`）依存を廃止し、3台の `eit_watch` が集めた放送波EITをNASの `pix-epg-bridge` 経由で供給する（[廃止の設計](docs/epg-decommission-design.md)）。
-- **CMカット**: NAS側でロゴマーカーと構造ルールで判定し、パケット照合 `verified` のものだけ公開する（[対象拡大の分析](docs/cm-coverage-expansion-20261122.md)、[安全弁の実装](docs/cm-scenario-guards-20261123.md)）。
+- **CMカット**: NAS側でロゴマーカーと構造ルールで判定し、パケット照合 `verified` のものだけ公開する（詳細な分析はローカルアーカイブを参照）。
 
 ## 3台の差分
 
@@ -163,11 +163,11 @@ ffmpeg -re -c:v mpeg2_v4l2m2m -i input.ts -vf "setpts=N/FR/TB,copy,format=nv12" 
 ## 未解決・未確認の事項
 
 - **3代目のソフトリブート**: エンコード動作中の `reboot` でハングする（再現2回、15分以上復帰せず物理電源で回復）。再起動は電源オフ／オンが正規手順。`S97pix-stream` を停止してからなら、ソフトリブートが通った例を1件確認した。ただし、運用手順として定着しているかは未確認（[unit3-status.md](docs/unit3-status.md)）。
-- **ロゴ検出**: 装置の局ロゴ置き場が空になり、CFW経由でのBS15選局は成功したものの929のカルーセルからロゴモジュールが送出されず、ロゴ検出は未解決である。NAS側に毎日04:10の再試行を設定済み（[試行記録](docs/dt295-logo-cfw-20261123.md)）。なおCMカット用のロゴマーカー自体は3局で動作中である。
+- **ロゴ検出**: 装置の局ロゴ置き場が空になり、CFW経由でのBS15選局は成功したものの929のカルーセルからロゴモジュールが送出されず、ロゴ検出は未解決である。NAS側に毎日04:10の再試行を設定済み。なおCMカット用のロゴマーカー自体は3局で動作中である。
 - **長期安定性**: SDカードの耐久、NAS側ディスク容量、`torne-b25` のカードセッションの長期安定性は観察項目として挙がっているのみで、結果は未確認（[unit3-status.md](docs/unit3-status.md)）。
-- **CM判定の精度**: 時刻・無音から推定するscenario経路は、本編を含む誤りが残るため公開を見送っている。安全弁は合成データと実素材7本で確認済みだが、公開率の推移は未評価（[cm-scenario-guards-20261123.md](docs/cm-scenario-guards-20261123.md)）。
+- **CM判定の精度**: 時刻・無音から推定するscenario経路は、本編を含む誤りが残るため公開を見送っている。安全弁は合成データと実素材7本で確認済みだが、公開率の推移は未評価。
 - **3代目イメージへの反映**: 11/22のEPG廃止に伴う再ビルド・焼き直しと11/23の監視修正が3代目の現行イメージにどう反映されたかは、[unit3-status.md](docs/unit3-status.md) の出典範囲外で未確認。
-- **番組分割の公開レース**: 2つのstagingがほぼ同時にpublishされる。先方のフォルダがまだ無い。このため、同一番組が別フォルダに分かれることがある（[verification-20261122.md](docs/verification-20261122.md)）。
+- **番組分割の公開レース**: 2つのstagingがほぼ同時にpublishされる。先方のフォルダがまだ無い。このため、同一番組が別フォルダに分かれることがある。
 
 ## 検証状況（補足）
 
@@ -177,7 +177,7 @@ ffmpeg -re -c:v mpeg2_v4l2m2m -i input.ts -vf "setpts=N/FR/TB,copy,format=nv12" 
 python3 -m unittest discover -s tests -p 'test_write_sd.py' -v
 ```
 
-3台の動作確認と修正の記録は [verification-20261122.md](docs/verification-20261122.md) に、現状の索引は [docs/README.md](docs/README.md) にある。初期調査のログは [work/](work/) に残している。
+現状の索引は [docs/README.md](docs/README.md) にある。検証ログ・経緯メモ・旧ドキュメントは Git 管理外の `work/archive/docs/` に置いている。
 
 ## 旧（2026-11-10時点）の記録
 

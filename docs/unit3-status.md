@@ -2,9 +2,9 @@
 
 2026-11-19 の構築セッションの **round 214 時点**の要約。出典は2ファイル。
 
-[70-handoff.md](aegis/work/2026-11-19-unit3-init/70-handoff.md) は round 211 時点の引き継ぎ。到達点は round 208〜214 の追記を含む。
+`work/archive/docs/aegis/work/2026-11-19-unit3-init/70-handoff.md` は round 211 時点の引き継ぎ。到達点は round 208〜214 の追記を含む。
 
-[50-usb-phy-findings.md](aegis/work/2026-11-19-unit3-init/50-usb-phy-findings.md) の末尾は round 211〜214。
+`work/archive/docs/aegis/work/2026-11-19-unit3-init/50-usb-phy-findings.md` の末尾は round 211〜214。
 
 両者は Aegis の過程記録であり助言である。現行の運用手順は [ram-rootfs.md](ram-rootfs.md) を参照。ここに書かれていないことは「未確認」とする。
 
@@ -83,13 +83,13 @@ U-Boot の `usb start`。SM1 DTB。`hantro` 無効化。`ISO0` の BIT(1) クリ
 - 本要約の出典は round 211〜214 の記録。
 - 11/22 の EPG ホスト廃止に伴う STB 3台の再ビルド・焼き直し・再起動が 3代目の現行イメージにどう反映されたかは未確認。
 - 11/23 の監視修正が 3代目の現行イメージにどう反映されたかも未確認。
-- いずれもこの2ファイルの範囲外。[verification-20261122.md](verification-20261122.md) §8、[stb-stall-20261123.md](stb-stall-20261123.md) を参照。
+- いずれもこの2ファイルの範囲外。ローカルアーカイブの検証記録 §8 と stb-stall-20261123.md を参照。
 - ソフトリブートが通る条件は round 214 の「S97 停止後は通った」一例のみ。運用手順として定着しているかは未確認。
 
 ## 参照（長いログ）
 
-- 要約の出典（1）: `docs/aegis/work/2026-11-19-unit3-init/70-handoff.md`
-- 要約の出典（2）: `docs/aegis/work/2026-11-19-unit3-init/50-usb-phy-findings.md`
-- USB PHY 解釈の更新元: `docs/aegis/work/2026-11-19-unit3-init/30-usb-phy-findings.md`
+- 要約の出典（1）: `work/archive/docs/aegis/work/2026-11-19-unit3-init/70-handoff.md`
+- 要約の出典（2）: `work/archive/docs/aegis/work/2026-11-19-unit3-init/50-usb-phy-findings.md`
+- USB PHY 解釈の更新元: `work/archive/docs/aegis/work/2026-11-19-unit3-init/30-usb-phy-findings.md`
 - 実機ログ（`work/` は Git 管理外）: `work/archive/unit3/unit3-boot-gxl2.log`（round 37 の xhci 到達ログ）
 - 実機ログ: `work/archive/restart/restart-recipe-persist-result.log`（2代目の `usb start` → 録画のレシピ）

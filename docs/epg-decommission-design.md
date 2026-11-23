@@ -2,7 +2,7 @@
 
 2026-11-22。全録システムの番組表（EPG）供給を mirakc（192.168.99.40 = PIX-SMB400）から
 Linux STB 3 台の eit_watch が集めた EIT へ移す。この文書は設計を確定し、実装・配備・
-検証の根拠を残す。元依頼は [prompts/epg-decommission-20261122.md](<../prompts/epg-decommission-20261122.md>)。
+検証の根拠を残す。元依頼の記録はローカルアーカイブ（`work/archive/docs/prompts/`）にある。
 
 ## 背景と目的
 
@@ -19,7 +19,7 @@ Linux STB 3 台の eit_watch が集めた EIT へ移す。この文書は設計�
 取得結果を `archive.sqlite` に保存する。この依存は pix-archive.service の
 `--mirakc` である。.40 は 2026-11-21 10:45 頃から ping 不通である。
 カタログの最新 startAt は 11/17 14:50 のまま止まっている。監査は
-`epg_stale`（96 時間超）を毎回報告している（docs/verification-20261122.md §6）。
+`epg_stale`（96 時間超）を毎回報告している（ローカルアーカイブの検証記録）。
 
 EPG の消費者は 3 系統である。
 
@@ -55,7 +55,7 @@ pix-archive 接続。監視の接続先。スコープ外は次のとおりで�
 | ストレージ方針 | STB は RAM 上処理・tmpfs 完結・中間ディスク書き込みなし |
 | 正規ソース | NAS 側の C と py は repo の `nas/src/` が唯一の正である |
 | テスト | `tests/`（274 件、2026-11-22 全 OK）に回帰を追加して守る |
-| 既存修正 | 11/21〜22 の修正（docs/verification-20261122.md）を退避させない |
+| 既存修正 | 11/21〜22 の修正（ローカルアーカイブの検証記録）を退避させない |
 
 ## 方式の選択
 
@@ -295,7 +295,7 @@ adb カウンタ）を持つ。正規ソースは nas/src/pix-stb-guard.py で�
 
 - STB イメージ再ビルドの identity 転送。11/22 の unit2 再ビルドの実手順
   （NAS 側への identity 配置方法）は docs/build-on-nas.md の rsync 手順に書かれて
-  いない。配備時に docs/verification-20261122.md の記録と実環境から確認する。
+  いない。配備時に ローカルアーカイブの検証記録と実環境から確認する。
 - EPG の schedule の深さは放送局の運用に依存する（目安として数日）。届いた分だけ
   供給する。収録基準 1 の「今後数日分」の判定は配備後の実データで確認する。
 - recorder フォールバックの実機シミュレーションは行わない。録画フォルダへ

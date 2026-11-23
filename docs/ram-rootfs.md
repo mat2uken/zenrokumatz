@@ -28,7 +28,7 @@ identity は機体ごとに分ける（[build-on-nas.md](build-on-nas.md)）。
 `work/ramboot-identity-unit1`、`work/ramboot-identity`（2代目）、
 `work/ramboot-identity-unit3`。3代目は 11/19 の構築時に 2代目の identity が
 流用されたため SSH ホスト鍵が混線した。2026-11-22 に固有 identity で焼き直した
-（docs/verification-20261122.md §8）。identity を替えて焼き直すと SSH ホスト鍵が
+（ローカルアーカイブの検証記録）。identity を替えて焼き直すと SSH ホスト鍵が
 変わる。その場合、Mac と NAS の known_hosts の更新が一度だけ必要になる。
 
 ## 更新手順（tools/flash-ramboot-over-ssh.sh）
@@ -42,7 +42,7 @@ docs/ram-rootfs.md の手順を NAS 側で実行するスクリプト
 - FAT 上での SHA256 照合、sync・アンマウント
 
 **再起動は行わない**。ハッシュが一致するファイルは書き換えない
-（[verification-20261122.md](verification-20261122.md) §1 と同じ方針）。
+（ローカルアーカイブの検証記録 §1 と同じ方針）。
 スクリプトを使わず手で行う場合は以下のとおり。
 
 1. ホストから、対象機の3本をRAM上の一時領域へ転送する。

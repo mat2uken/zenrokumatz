@@ -78,7 +78,7 @@
     "isdbt_rio.inp": {
       "path": "board/x96max/overlay/lib/firmware/isdbt_rio.inp",
       "sha256": "054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818",
-      "source": "download location not recorded; the SHA-256 matches the reference value quoted in docs/usb-host-investigation.md"
+      "source": "download location not recorded; the SHA-256 matches the reference value quoted in the archived memo at work/archive/docs/usb-host-investigation.md"
     }
   },
   "codecs": {

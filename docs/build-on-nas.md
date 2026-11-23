@@ -63,24 +63,24 @@ rsync -az ku@192.168.99.80:~/x96max/output/ramboot-unit1/ output/ramboot-unit1/
   ```
 
   2026-11-22 にこれを怠って、EPG 追加の入った rootfs に旧 eit_watch が入った
-  （docs/verification-20261122.md §8）。焼く前に export の rootfs から
+  （ローカルアーカイブの検証記録）。焼く前に export の rootfs から
   `usr/bin/eit_watch` を取り出して strings で確認すると確実である。
 - **identity は機体ごとに分ける。** unit3 は 11/19 の構築時に unit2 の identity
   が流用された。そのため SSH ホスト鍵が混線した
-  （docs/verification-20261122.md §8）。
+  （ローカルアーカイブの検証記録）。
   `scripts/build-linux.sh` の対応表（unit3 → `ramboot-identity-unit3`）に従う。
 - 2つの環境で作った `rootfs.cpio.uboot` は、タイムスタンプや一時ファイルの
   都合で**バイト単位では一致しない**ことがある。同じ機能かを確かめるには
   中身を展開して `usr/bin/bcasd` などの大きさと配置を見る。
 - `FR30_TOOLCHAIN` を使う場合（CFW のファームを再ビルドするとき）は、
   `/build/fr30-elf` を NAS のボリュームにも作る必要がある。
-  手順は [unit2-stage3-cfw.md](unit2-stage3-cfw.md) と同じ。
+  手順はローカルアーカイブの unit2-stage3-cfw.md と同じ。
 
 ## 実績
 
 - NAS: 2026-11-22 に unit1/unit2/unit3 の rootfs 更新ビルドを通して完了。
   カーネルは volume のキャッシュで流用し、rootfs と post-image だけが更新される
-  （1 unit あたり数分）。unit2 は docs/verification-20261122.md §1 の再起動検証で
+  （1 unit あたり数分）。unit2 は ローカルアーカイブの再起動検証 の再起動検証で
   実機に焼いて確認済み。
 - Mac（Colima 10 GiB / JOBS=3）: exit 0 で完走。ただしカーネルを消して
   やり直すと OOM になりやすい。
