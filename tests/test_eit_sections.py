@@ -4,12 +4,14 @@
 The C fixture includes the production EIT main/dispatch and controls only its
 clock. Build outputs, state and logos live in a unique temporary directory.
 """
+import json
 import os
 from pathlib import Path
 import shlex
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +53,45 @@ def eit(sid=35864, following=False, padding=0):
         padding -= n
     data += struct.pack(">H", event) + when + struct.pack(">H", len(desc)) + desc
     return finish(data)
+
+
+def start_bytes(start_ms):
+    """EIT start time: MJD(16bit) + BCD hh mm ss, in JST."""
+    local = start_ms + 9 * 3600 * 1000
+    days, rem = divmod(local, 86400000)
+    hh, rem = divmod(rem, 3600000)
+    mm, rem = divmod(rem, 60000)
+    return struct.pack(">H", days + 40587) + bytes(
+        int("%02d" % v, 16) for v in (hh, mm, rem // 1000))
+
+
+def duration_bytes(duration_ms):
+    """EIT duration: 3-byte BCD hh mm ss."""
+    seconds = duration_ms // 1000
+    hh, rem = divmod(seconds, 3600)
+    mm, ss = divmod(rem, 60)
+    return bytes(int("%02d" % v, 16) for v in (hh, mm, ss))
+
+
+def name_desc(text):
+    """short_event_descriptor with the LS1 single-byte shift, like eit() above."""
+    body = b"\x0e" + text.encode("ascii")
+    content = b"jpn" + bytes([len(body)]) + body
+    return bytes([0x4D, len(content)]) + content
+
+
+def schedule_eit(sid=35864, table=0x50, sec_num=0, last_sec=1, events=()):
+    """EIT schedule section: [(event_id, start_ms, duration_ms, name|None), ...]"""
+    data = bytearray([table, 0, 0])  # table_id + section_length placeholder
+    data += struct.pack(">H", sid)
+    data += bytes([0xC1, sec_num, last_sec])
+    data += bytes.fromhex("7dc37dc3")  # same tsid/onid as the present/following fixtures
+    data += bytes([last_sec, table])
+    for event_id, start_ms, duration_ms, text in events:
+        desc = name_desc(text) if text else b""
+        data += struct.pack(">H", event_id) + start_bytes(start_ms) + duration_bytes(duration_ms)
+        data += struct.pack(">H", len(desc)) + desc
+    return finish(bytes(data))
 
 
 def packet(pid, data, pusi=False, cc=0):
@@ -105,15 +146,25 @@ class EitSectionTests(unittest.TestCase):
         self.addCleanup(self.run_tmp.cleanup)
         self.case = Path(self.run_tmp.name)
         self.state = self.case / "program.txt"
+        self.epg = self.case / "epg.json"
 
     def stream(self, data, logos=False, native=False):
         cmd = [str(self.native if native else self.fixture), "--state", str(self.state)]
         if logos:
             cmd += ["--logo-dir", str(self.case / "logos")]
+        if native:
+            # The schedule cache only writes through the production main's own
+            # --epg argument; fixtures disable it in the C fixture above.
+            cmd += ["--epg", str(self.epg)]
         result = subprocess.run(cmd, input=data, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertEqual(result.stdout, data, "TS pass-through changed bytes")
         return result
+
+    def epg_events(self):
+        """Parses the schedule file the production main wrote."""
+        self.assertTrue(self.epg.exists(), "epg.json was not written")
+        return json.loads(self.epg.read_text())
 
     def test_callback_synthetic_cases(self):
         result = subprocess.run([str(self.fixture), "--fixtures", str(self.state)],
@@ -170,6 +221,55 @@ class EitSectionTests(unittest.TestCase):
     def test_native_production_main_pass_through(self):
         self.stream(section(0, pat(35864)) + section(0x12, eit())
                     + packet(0x1FFF, b"\xff" * 184) * 300, native=True)
+
+    # ---- schedule cache (/v1/epg に供給する epg.json) ----
+
+    def test_schedule_events_cached_and_short_items_filtered(self):
+        now_ms = int(time.time() * 1000) // 1000 * 1000  # EIT 開始時刻は秒分解能
+        long_event = (5001, now_ms + 6 * 3600 * 1000, 3600000, "FUTURE")
+        short_event = (5002, now_ms + 7 * 3600 * 1000, 120000, "PROMO")
+        data = section(0, pat(35864))
+        data += section(0x12, schedule_eit(events=[long_event, short_event]))
+        self.assertFalse(self.epg.exists())
+        self.stream(data, native=True)
+        body = self.epg_events()
+        self.assertEqual(body["serviceId"], 35864)
+        self.assertLess(abs(body["generatedAt"] - now_ms), 60000)
+        self.assertEqual(len(body["events"]), 1, "3分未満の番宣を番組として扱わない")
+        event = body["events"][0]
+        self.assertEqual(event, dict(eventId=5001, startAt=now_ms + 6 * 3600 * 1000,
+                                     duration=3600000, name="ＦＵＴＵＲＥ"))
+
+    def test_past_events_pruned_and_output_sorted(self):
+        now_ms = int(time.time() * 1000) // 1000 * 1000  # EIT 開始時刻は秒分解能
+        stale = (5100, now_ms - 30 * 3600 * 1000, 1800000, "OLD")
+        future = (5101, now_ms + 6 * 3600 * 1000, 1800000, "NEW")
+        data = section(0, pat(35864))
+        data += section(0x12, schedule_eit(events=[future, stale]))
+        self.stream(data, native=True)
+        body = self.epg_events()
+        self.assertEqual([e["eventId"] for e in body["events"]], [5101],
+                         "24時間より昔に終わった番組を捨てる")
+
+    def test_schedule_name_arrives_after_first_section(self):
+        now_ms = int(time.time() * 1000) // 1000 * 1000  # EIT 開始時刻は秒分解能
+        data = section(0, pat(35864))
+        data += section(0x12, schedule_eit(events=[(5200, now_ms + 6 * 3600 * 1000, 1800000, None)]))
+        data += section(0x12, schedule_eit(table=0x51, sec_num=1,
+                                           events=[(5200, now_ms + 6 * 3600 * 1000, 1800000, "NAMED")]))
+        self.stream(data, native=True)
+        event = self.epg_events()["events"][0]
+        self.assertEqual(event["name"], "ＮＡＭＥＤ")
+
+    def test_schedule_wrong_service_and_crc_rejected(self):
+        now_ms = int(time.time() * 1000) // 1000 * 1000  # EIT 開始時刻は秒分解能
+        data = section(0, pat(35864))
+        data += section(0x12, schedule_eit(sid=35865, events=[(5300, now_ms + 6 * 3600 * 1000, 1800000, "X")]))
+        bad = bytearray(schedule_eit(events=[(5301, now_ms + 6 * 3600 * 1000, 1800000, "Y")]))
+        bad[-1] ^= 1
+        data += section(0x12, bytes(bad))
+        self.stream(data, native=True)
+        self.assertFalse(self.epg.exists(), "他局とCRC不正のセクションは採らない")
 
     def test_shared_logo_collector_regressions(self):
         sample, dummy = self.case / "logo.ts", self.case / "dummy.ts"

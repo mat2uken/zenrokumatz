@@ -248,9 +248,14 @@ class Unit2DefaultsTests(unittest.TestCase):
         self.assertEqual(self.values["PIX_SAT_SLOT"], "0")
 
     def test_tuner_mapping_is_unchanged(self):
-        self.assertEqual(self.values["PIX_TUNER"], "dt295")
+        # Unit 2 runs the CFW path (round: 2026-11-20): the tuner hands over
+        # the raw stream and torne-b25 descrambles with the external B-CAS.
+        # The satellite channel moved with the 2026-11 BS repack; the CFW
+        # channel is "transponder/TSID", not the stock channel number.
+        self.assertEqual(self.values["PIX_TUNER"], "dt295-cfw")
         self.assertEqual(self.values["PIX_SYSTEM"], "bs")
         self.assertEqual(self.values["PIX_CHANNEL"], "9")
+        self.assertEqual(self.values["PIX_CFW_CHANNEL"], "BS9/0x4090")
 
     def test_defaults_file_is_shell_readable(self):
         result = subprocess.run(

@@ -110,6 +110,14 @@ class ContainerBuild(unittest.TestCase):
             executable(base / "bin" / command, '#!/bin/sh\necho "unexpected external operation" >&2\nexit 99\n')
         for name in (*RAM_FILES, "rootfs.ext4", "sdcard.img"):
             (images / name).write_text(f"fixture {name}\n")
+        # The container script ships the DTBs the build's own SHA256SUMS
+        # lists, so the fixture manifest must model ramboot-post-image.sh:
+        # every DTB this unit's kernel build produced, never the leftovers
+        # of other units.
+        present = [name for name in DTBS if diagnostic_dtb or name not in UNIT3_EXTRA_DTBS]
+        with (images / "SHA256SUMS").open("w") as handle:
+            for name in ("Image", *present, "rootfs.cpio.gz", "rootfs.cpio.uboot", "ramboot.img"):
+                handle.write(f"{'0' * 64}  {name}\n")
         # Units 1 and 2 do not build the dwc3-disabled diagnostic DTB.
         if not diagnostic_dtb:
             for name in UNIT3_EXTRA_DTBS:
@@ -215,14 +223,17 @@ class ProfileContracts(unittest.TestCase):
         self.assertNotIn("/identity", fragment)
         text = (ROOT / "board/x96max/ramboot-unit3-overlay/etc/default/pix-stream-linux").read_text()
         values = dict(line.split("=", 1) for line in text.splitlines() if line.startswith("PIX_"))
-        self.assertEqual(values["PIX_TUNER"], "dt295")
+        # Unit 3 joined the CFW path (round 214, 2026-11-20): like unit 2, the
+        # tuner hands over the raw stream and torne-b25 reads the card relay.
+        self.assertEqual(values["PIX_TUNER"], "dt295-cfw")
         self.assertEqual(values["PIX_SYSTEM"], "terrestrial")
         # SBS (静岡放送) is physical 15 on 日本平; 17 would be テレビ静岡, which
         # unit 1 already records. Physical channels 13..62 are what pix-ts
         # accepts, so the remote key (6) is not a substitute.
         self.assertEqual(values["PIX_CHANNEL"], "15")
         self.assertEqual(values["PIX_DISPLAY"], "X96Max-P3")
-        # DT295 decrypts on its internal card: no external reader, no torne-b25.
+        # The launcher derives PIX_DECRYPT=1 from dt295-cfw; the defaults file
+        # itself only documents that nothing else is configured around it.
         self.assertEqual(values["PIX_DECRYPT"], "0")
         # Satellite-only options must be absent entirely: the launchers default
         # them to "--slot 0" plus a BS/CS PID list, and pix-ts rejects that for
@@ -254,14 +265,17 @@ class ProfileContracts(unittest.TestCase):
     def test_genimage_template_is_unit_neutral_and_post_image_adds_extras(self):
         image = (ROOT / "board/x96max/ramboot-genimage.cfg").read_text()
         post = (ROOT / "board/x96max/ramboot-post-image.sh").read_text()
-        # The shared template carries only the DTBs every unit builds; a unit's
-        # extra DTBs are appended by the post-image script when they exist, so
-        # units 1 and 2 keep the image they had.
+        # The shared template carries only the DTBs every unit builds. The
+        # post-image script derives the rest from this build's own config
+        # (BR2_LINUX_KERNEL_INTREE_DTS_NAME), so a unit cannot have its
+        # boot-critical DTB (unit 3 loads meson-g12a-x96-max-p-sm1.dtb)
+        # silently dropped from SHA256SUMS and the export.
         for dtb in DTBS[:2]:
             self.assertIn(f'"{dtb}"', image)
-        for dtb in UNIT3_EXTRA_DTBS:
+        for dtb in (*UNIT3_EXTRA_DTBS, "meson-g12a-x96-max-p-sm1.dtb"):
             self.assertNotIn(f'"{dtb}"', image)
-            self.assertIn(dtb, post)
+            self.assertNotIn(dtb, post)
+        self.assertIn("BR2_LINUX_KERNEL_INTREE_DTS_NAME", post)
         self.assertNotIn("rootfs.ext4", image)
 
 

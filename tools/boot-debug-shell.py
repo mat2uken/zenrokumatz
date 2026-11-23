@@ -37,12 +37,13 @@ busybox ip link set eth0 up
 busybox ip addr add 192.168.99.56/24 dev eth0
 busybox devmem 0xff63c1e0 32
 busybox wget -q -O /tmp/a.ko http://{mac}:8000/amvenc_avc.ko; echo wget=$?
-ls -l /tmp/a.ko
-insmod /tmp/a.ko encode_print_level=0; echo insmod=$?
+cp /tmp/a.ko /lib/modules/6.18.62/updates/amvenc_avc.ko; echo cp=$?
+modprobe meson_vdec; echo vdec=$?
+modprobe amvenc_avc encode_print_level=0; echo venc=$?
 busybox devmem 0xff63c1e0 32
-dmesg | tail -8
-ffmpeg -hide_banner -v info -f lavfi -i testsrc2=size=64x64:rate=5:duration=0.4 -vf format=nv12 -c:v h264_v4l2m2m -b:v 500k -f mpegts /tmp/t.ts; echo ffmpeg=$?
-ls -l /tmp/t.ts
+dmesg | grep -iE "amvenc|meson_vdec" | tail -10
+ffmpeg -hide_banner -v info -f lavfi -i testsrc2=size=64x64:rate=5:duration=0.4 -pix_fmt nv12 -c:v h264_v4l2m2m -b:v 500k -f mpegts /tmp/o2.ts; echo RC=$?
+ls -l /tmp/o2.ts
 """
 
 

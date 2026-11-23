@@ -61,6 +61,10 @@ static void reset_program(void) {
     g_service_id = -1; g_pmt_pid = -1;
     memset(&g_last, 0, sizeof(g_last));
     memset(g_names, 0, sizeof(g_names)); g_name_next = 0;
+    /* The schedule cache would write the real /dev/shm/pix/epg.json. */
+    memset(g_epg, 0, sizeof(g_epg));
+    g_epg_dirty = 0;
+    g_epg_path = NULL;
 }
 static void init(ts_demux *d) {
     reset_program(); ts_demux_init(d);
@@ -178,6 +182,7 @@ static void test_rejection_and_reset(const char *state) {
     section(&d, EIT_PID, s, n, state); CHECK(g_last.valid);
 }
 int main(int argc, char **argv) {
+    g_epg_path = NULL; /* never touch /dev/shm/pix/epg.json from fixtures */
     if (argc != 3 || strcmp(argv[1], "--fixtures"))
         return eit_watch_stream_main(argc, argv);
     test_pointer_tail(argv[2]);

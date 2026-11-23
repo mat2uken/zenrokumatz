@@ -37,8 +37,13 @@ if [[ $# == 0 ]]; then
     if [[ "$profile" == ramboot ]]; then
         cp /build/output/images/{Image,meson-g12a-x96-max-p.dtb,meson-g12a-x96-max-p-ephy-4g.dtb,rootfs.cpio.gz,rootfs.cpio.uboot,ramboot.img,SHA256SUMS} /export/
         # Units may build extra DTBs (unit 3 does while its USB layout is being
-        # settled); ship whichever ones this unit actually produced.
-        for dtb in meson-g12a-x96-max-p-nousb.dtb meson-g12a-x96-max-p-usb.dtb; do
+        # settled); ship whichever ones this unit actually produced.  The
+        # shared build volume keeps DTB leftovers from other units' builds,
+        # so derive the set from this build's own SHA256SUMS instead of a
+        # fixed or globbed list: the export must never drift from the
+        # manifest a flash verification depends on.
+        for dtb in $(awk '$2 ~ /meson-g12a-x96-max-p.*\.dtb$/ {print $2}' \
+                         /build/output/images/SHA256SUMS); do
             [[ -f "/build/output/images/$dtb" ]] && cp "/build/output/images/$dtb" /export/
         done
         if [[ "$unit" == 1 ]]; then

@@ -85,6 +85,11 @@ static int g_service_id = -1;
 static Program g_last;
 static const char *name_cache_get(int event) { (void)event; return ""; }
 static void name_cache_put(int event, const char *name) { (void)event; (void)name; }
+/* The schedule cache is replaced here; this harness owns the marker decision. */
+static void epg_put(int event, long long start_ms, long long duration_ms,
+                    const char *name) {
+    (void)event; (void)start_ms; (void)duration_ms; (void)name;
+}
 static void event_name(const unsigned char *s, size_t o, size_t len,
                        char *out, size_t cap) {
     (void)s; (void)o; (void)len; out[0] = 0; (void)cap;
