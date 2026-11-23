@@ -43,6 +43,8 @@ if ! docker $docker_target info >/dev/null 2>&1; then
 fi
 mkdir -p "$export_dir" "$root/work/build"
 identity_mount=()
+# The system /bin/bash on macOS is 3.2. Under set -u, expanding an empty array
+# aborts there, so the docker run below uses the ${arr[@]+"${arr[@]}"} form.
 if [[ "$profile" == ramboot ]]; then
     mkdir -p "$identity_dir"
     # The boot archive embeds this unit's private identity; never share it.
@@ -54,5 +56,5 @@ docker $docker_target run --rm --user root -v x96max-build:/build \
     x96max-builder:bookworm sh -c 'mkdir -p /build/cache; chown builder:builder /build /build/cache'
 docker $docker_target run --rm --name x96max-build \
     -v x96max-build:/build -v "$root:/project:ro" -v "$export_dir:/export" \
-    "${identity_mount[@]}" -e X96MAX_PROFILE="$profile" -e X96MAX_UNIT="$unit" -e JOBS="${JOBS:-6}" x96max-builder:bookworm \
+    ${identity_mount[@]+"${identity_mount[@]}"} -e X96MAX_PROFILE="$profile" -e X96MAX_UNIT="$unit" -e JOBS="${JOBS:-6}" x96max-builder:bookworm \
     bash /project/scripts/build-in-container.sh "$@"
