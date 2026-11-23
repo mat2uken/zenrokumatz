@@ -305,4 +305,3 @@ class AlignAudioTest(unittest.TestCase):
         parsed = self._parsed(0.0, [0.0, 0.5])
         cm_features.align_audio(parsed)
         self.assertNotIn('audio_dropped', parsed['meta'])
-

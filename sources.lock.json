@@ -39,7 +39,7 @@
       "nas_src/README.md"
     ],
     "usage": "read-only reference for capture layout, build flags and the CM canonical source; the live tree remains at ../dtv_android",
-    "note": "scripts/deploy-cm-features.sh in this snapshot is the pre-switch version; the live script in ../dtv_android now builds C sources from nas/src"
+    "note": "local adjustments to the upstream snapshot: scripts/deploy-cm-features.sh now matches the switched live version, and two vendored files had a trailing blank line removed; the upstream commit is recorded above"
   },
   "torne": {
     "repository": "/Users/kenichim/Desktop/work/pix-smb400/repo",

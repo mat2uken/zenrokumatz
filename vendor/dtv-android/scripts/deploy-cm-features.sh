@@ -7,13 +7,24 @@
 #   scripts/deploy-cm-features.sh            # show what would change
 #   scripts/deploy-cm-features.sh --apply    # build and install
 #
-# Prerequisites: ssh key access to ku@192.168.99.80 and a checkout of this
-# repository. Restarting the recorder interrupts the recording for a few
-# seconds, so run it when that is acceptable.
+# Prerequisites: ssh key access to ku@192.168.99.80, a checkout of this
+# repository, and the sibling X96MaxLinuxTSEnc checkout. The C sources come
+# from X96MaxLinuxTSEnc/nas/src, which is the canonical copy; the old nas_src
+# tree in this repository is a stale snapshot and must not be built.
+# Restarting the recorder interrupts the recording for a few seconds, so run
+# it when that is acceptable.
 set -euo pipefail
 
 nas=${NAS_HOST:-ku@192.168.99.80}
 root=$(cd "$(dirname "$0")/.." && pwd)
+if [[ -n ${CANONICAL_NAS_SRC:-} ]]; then
+    canonical_src=$CANONICAL_NAS_SRC
+elif [[ -d "$root/../X96MaxLinuxTSEnc/nas/src" ]]; then
+    canonical_src=$root/../X96MaxLinuxTSEnc/nas/src
+else
+    # Also works from the lightweight snapshot under X96MaxLinuxTSEnc/vendor/.
+    canonical_src=$root/../../nas/src
+fi
 mode=plan
 if [[ ${1:-} == "--apply" ]]; then
     mode=apply
@@ -25,7 +36,7 @@ worker_root=/home/ku/pix-cm
 release_id=${RELEASE_ID:-$(date +%Y%m%d)-feature-01}
 
 echo "mode: $mode"
-echo "sources: $root/nas_src"
+echo "sources: $canonical_src"
 echo "build:   $nas:$build_dir"
 echo "binary:  $install_bin"
 echo "release: $worker_root/releases/$release_id"
@@ -37,12 +48,12 @@ fi
 
 echo "--- copying sources"
 ssh "$nas" "rm -rf $build_dir && mkdir -p $build_dir"
-scp -q "$root"/nas_src/pix_stream_recorder.c "$root"/nas_src/cm_queue.c \
-    "$root"/nas_src/cm_queue.h "$root"/nas_src/feature_sidecar.c \
-    "$root"/nas_src/feature_sidecar.h "$root"/nas_src/cJSON.h "$nas:$build_dir/"
+scp -q "$canonical_src/pix_stream_recorder.c" "$canonical_src/cm_queue.c" \
+    "$canonical_src/cm_queue.h" "$canonical_src/feature_sidecar.c" \
+    "$canonical_src/feature_sidecar.h" "$nas:$build_dir/"
 
 echo "--- building"
-ssh "$nas" "cd $build_dir && gcc -O2 -Wall -I. -o pix_stream_recorder \
+ssh "$nas" "cd $build_dir && gcc -O2 -Wall -I. -I/usr/include/cjson -o pix_stream_recorder \
     pix_stream_recorder.c cm_queue.c feature_sidecar.c -l:libcjson.so.1 -lpthread"
 
 echo "--- installing the receiver next to the running binary"
