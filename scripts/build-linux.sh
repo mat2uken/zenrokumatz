@@ -53,7 +53,7 @@ if [[ "$profile" == ramboot ]]; then
 fi
 docker $docker_target build -t x96max-builder:bookworm -f "$root/scripts/Dockerfile" "$root/scripts"
 docker $docker_target run --rm --user root -v x96max-build:/build \
-    x96max-builder:bookworm sh -c 'mkdir -p /build/cache; chown builder:builder /build /build/cache'
+    x96max-builder:bookworm sh -c 'mkdir -p /build/cache; chown -R builder:builder /build'
 docker $docker_target run --rm --name x96max-build \
     -v x96max-build:/build -v "$root:/project:ro" -v "$export_dir:/export" \
     ${identity_mount[@]+"${identity_mount[@]}"} -e X96MAX_PROFILE="$profile" -e X96MAX_UNIT="$unit" -e JOBS="${JOBS:-6}" x96max-builder:bookworm \
