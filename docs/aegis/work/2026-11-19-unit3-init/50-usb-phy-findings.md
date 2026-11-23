@@ -812,7 +812,7 @@ Call trace:
    PHY の状態、U-Boot の初期化具合）に依存していた。
 2. **機体のハード状態が変わった**。DT295 の挿抜、USB の再列挙、電源の
    入れ直し回数などで PHY の状態が変わる可能性。
-3. **round 37 のログを取り違えている**。ただし `work/unit3-boot-gxl2.log` に
+3. **round 37 のログを取り違えている**。ただし `work/archive/unit3/unit3-boot-gxl2.log` に
    `xhci-hcd: io mem 0xff500000` が記録されており、実際に動いていたのは確か。
 
 **いずれにせよ、`0xffe09004` への書き込みが通るかどうかが不安定**で、
@@ -1147,12 +1147,12 @@ mainline のバグ（`num_clks` の取り違え）が原因。3代目だけで�
 
 ### ログの照合
 
-round 73 で DT295 が認識されたときのログ（`work/unit3-boot-gxl2.log`）には
+round 73 で DT295 が認識されたときのログ（`work/archive/unit3/unit3-boot-gxl2.log`）には
 `usb start` は含まれていない。**しかし round 73 の手順を思い返すと、U-Boot で
 `usb start` を実行して DT295 の認識を確認してから `booti` した**（round 73 の
 会話で `usb start` → `usb info` を実行し、PIXELA PIX-DT295 を確認している）。
 
-そのログは別ファイル（`work/unit3-uboot5.log` 等）に残っている可能性がある。
+そのログは別ファイル（`work/archive/unit3/unit3-uboot5.log` 等）に残っている可能性がある。
 
 ### 仮説
 
@@ -1304,7 +1304,7 @@ python3 tools/install-boot.py --dtb meson-g12a-x96-max-p-ephy-4g.dtb \
 
 ## 追記（round 140）: 2代目の実績ログに `usb start` → USB メモリ起動 → DT295 録画の完全な手順があった
 
-### 発見した記録（`work/restart-recipe-persist-result.log`）
+### 発見した記録（`work/archive/restart/restart-recipe-persist-result.log`）
 
 ```
 linux_boot_ram='run ram_boot_setup; for ram_try in 1 2 3; do if usb start; then sleep 3; run ram_boot_load; fi; ...'

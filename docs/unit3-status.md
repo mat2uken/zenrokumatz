@@ -91,5 +91,5 @@ U-Boot の `usb start`。SM1 DTB。`hantro` 無効化。`ISO0` の BIT(1) クリ
 - 要約の出典（1）: `docs/aegis/work/2026-11-19-unit3-init/70-handoff.md`
 - 要約の出典（2）: `docs/aegis/work/2026-11-19-unit3-init/50-usb-phy-findings.md`
 - USB PHY 解釈の更新元: `docs/aegis/work/2026-11-19-unit3-init/30-usb-phy-findings.md`
-- 実機ログ（`work/` は Git 管理外）: `work/unit3-boot-gxl2.log`（round 37 の xhci 到達ログ）
-- 実機ログ: `work/restart-recipe-persist-result.log`（2代目の `usb start` → 録画のレシピ）
+- 実機ログ（`work/` は Git 管理外）: `work/archive/unit3/unit3-boot-gxl2.log`（round 37 の xhci 到達ログ）
+- 実機ログ: `work/archive/restart/restart-recipe-persist-result.log`（2代目の `usb start` → 録画のレシピ）

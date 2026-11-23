@@ -26,19 +26,19 @@ work/tftpboot/rootfs.cpio.uboot  8a83e10c68306dbfcf73ee0596272893f8fa90e6e0b1782
 ## 再起動と起動の証拠
 
 ```text
-work/restart-baseline-console.log  b16d8bcc9803753bd5b4b5caa70a58aafce883aebeb2ed0d0f704d85579932c7
-work/restart-boot-on-console.log  389215be4c878913944594717b2ee0f11bff6f1c95d9312bfb63ff6daf489761
-work/restart-boot-on-resume.log  71a2ceb09911edb76dd5ef202288552cd4a43535b1d9e22913de96842583e707
-work/restart-boot-on-sector0.bin  b433d6dd2e4bdcefbbc6ea9aad766bfef686540a63684c594245237b2753d55a
-work/restart-recipe-persist-console.log  db09bb3bb8b5cc6a36b53d659fe370e7d93265d8734ef7b56ddc9a91ce9d1f75
-work/restart-native-first-live-steady.log  208ab6b5cbd3a5be92c6cab9652b6d1e2bb339b1f5573bf5d12c8bf7c488cb3d
-work/restart-live-lifecycle.log  14f1467f20974fb5ffa4fa11c5000e1bb4836282e907b6c22a6adfd617e2c6ca
-work/restart-cold-autoboot-passive.log  4c395d29bce86a1297be8726ac66f7d786cffa549a991e8180e9f846f0a3827a
-work/restart-release2-SHA256SUMS  1212ef039401e8663fbc7b1ddd58f578072d01983133859cd01a3c61ea277440
-work/restart-nas-recording-after-reboot.json  de56acfc24ab1be85e9b1daf0bdfa3ed277f91574c3171858e207cd8b21fd0be
+work/archive/restart/restart-baseline-console.log  b16d8bcc9803753bd5b4b5caa70a58aafce883aebeb2ed0d0f704d85579932c7
+work/archive/restart/restart-boot-on-console.log  389215be4c878913944594717b2ee0f11bff6f1c95d9312bfb63ff6daf489761
+work/archive/restart/restart-boot-on-resume.log  71a2ceb09911edb76dd5ef202288552cd4a43535b1d9e22913de96842583e707
+work/archive/restart/restart-boot-on-sector0.bin  b433d6dd2e4bdcefbbc6ea9aad766bfef686540a63684c594245237b2753d55a
+work/archive/restart/restart-recipe-persist-console.log  db09bb3bb8b5cc6a36b53d659fe370e7d93265d8734ef7b56ddc9a91ce9d1f75
+work/archive/restart/restart-native-first-live-steady.log  208ab6b5cbd3a5be92c6cab9652b6d1e2bb339b1f5573bf5d12c8bf7c488cb3d
+work/archive/restart/restart-live-lifecycle.log  14f1467f20974fb5ffa4fa11c5000e1bb4836282e907b6c22a6adfd617e2c6ca
+work/archive/restart/restart-cold-autoboot-passive.log  4c395d29bce86a1297be8726ac66f7d786cffa549a991e8180e9f846f0a3827a
+work/archive/restart/restart-release2-SHA256SUMS  1212ef039401e8663fbc7b1ddd58f578072d01983133859cd01a3c61ea277440
+work/archive/restart/restart-nas-recording-after-reboot.json  de56acfc24ab1be85e9b1daf0bdfa3ed277f91574c3171858e207cd8b21fd0be
 ```
 
-`work/restart-cold-autoboot-console.log` は 0 バイトである。過程記録から参照されているため保持した。内容は無く、参照先の存在確認に使う。
+`work/archive/restart/restart-cold-autoboot-console.log` は 0 バイトである。過程記録から参照されているため保持した。内容は無く、参照先の存在確認に使う。
 
 ## 映像と TS の実測
 
@@ -54,10 +54,10 @@ work/ramboot/usb-before-ramboot.img.gz  ef38a9b41d570ba8c8a436816c316e1950d22586
 ## 3代目の起動ログ
 
 ```text
-work/unit3-boot-01.log  234eb1ee6b0613d2942c08092c7ec82abbbbbe5de955082c078147160cd38318
+work/archive/unit3/unit3-boot-01.log  234eb1ee6b0613d2942c08092c7ec82abbbbbe5de955082c078147160cd38318
 ```
 
-`work/unit3-boot-gxl2.log` と `work/unit3-uboot5.log` は解析用の生ログである。ハッシュは未採取である。3代目の結論は `docs/unit3-status.md` に要約した。
+`work/archive/unit3/unit3-boot-gxl2.log` と `work/archive/unit3/unit3-uboot5.log` は解析用の生ログである。ハッシュは未採取である。3代目の結論は `docs/unit3-status.md` に要約した。
 
 ## 整理で削除したファイル
 
