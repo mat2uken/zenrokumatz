@@ -14,7 +14,31 @@
     "path": "/Users/kenichim/Desktop/work/dtv_android",
     "head": "04514515d5a05f92effc321742aae71944882c25",
     "dirty": false,
-    "usage": "design reference for capture layout and build flags; CM canonical source under experiments/cm-generic; working tree committed on 2026-11-23"
+    "usage": "design reference for capture layout and build flags; CM canonical source under experiments/cm-generic; working tree committed on 2026-11-23; lightweight snapshot in vendor/dtv-android"
+  },
+  "dtv_android_snapshot": {
+    "head": "04514515d5a05f92effc321742aae71944882c25",
+    "snapshot": "vendor/dtv-android",
+    "paths": [
+      "README.md",
+      "scripts/stb/capture-agent.sh",
+      "scripts/deploy-cm-features.sh",
+      "scripts/build_stb_arm.sh",
+      "scripts/build_pix_ts_arm.sh",
+      "tools/dt295_profiles.py",
+      "tools/pix-dt295.conf.example",
+      "c_src/",
+      "app/build.gradle",
+      "app/src/main/java/com/example/dtvandroid/LiveTsStreamer.java",
+      "app/src/main/java/com/example/dtvandroid/TsDemuxer.java",
+      "docs/dt295-integration.md",
+      "docs/x96-max-streaming-deployment-runbook.md",
+      "docs/smb400-pix-stream-integration.md",
+      "docs/cm-station-logos.md",
+      "experiments/cm-generic/",
+      "nas_src/README.md"
+    ],
+    "usage": "read-only reference for capture layout, build flags and the CM canonical source; the live tree remains at ../dtv_android"
   },
   "torne": {
     "repository": "/Users/kenichim/Desktop/work/pix-smb400/repo",

@@ -46,9 +46,10 @@ NAS には `libcjson-dev` が必要（ヘッダは `/usr/include/cjson/cJSON.h`�
 
 ## 過去の管理から外れたコピー（参照のみ）
 
-- `dtv_android/nas_src/` — 2026-11 中旬の系統。`scripts/deploy-cm-features.sh` は
-  今もここからビルドする。ただし `cm_queue.c` の `features` 引数など、現在の
-  `pix_stream_recorder.c` と組み合わせられない差分がある。統合するときは
-  `nas/src/` を正として差分を取り込むこと。
+- `dtv_android/nas_src/` — 2026-11 中旬の系統。`cm_queue.c` の `features` 引数など、
+  現在の `pix_stream_recorder.c` と組み合わせられない差分がある。参照専用で編集しない。
+  `scripts/deploy-cm-features.sh` は 2026-11-23 に C ソースの取得元を
+  `X96MaxLinuxTSEnc/nas/src/` へ切り替えた。Python モジュールは引き続き
+  `dtv_android/experiments/cm-generic/` を使う。
 - NAS の `/home/ku/pix-stream-20261101/*.c` — 参考のために置かれているだけ。
   編集しない。

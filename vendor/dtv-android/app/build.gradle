@@ -1,0 +1,81 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace = 'com.example.dtvandroid'
+    compileSdk 35
+
+    // androidx pulls kotlin-stdlib 1.8.22 (which absorbed the jdk7/jdk8 classes)
+    // together with kotlinx-coroutines-android 1.6.4 -> kotlin-stdlib-jdk8 1.6.21
+    // (which still ships them). Align the shim artifacts with the resolved
+    // stdlib so D8 sees a single copy of each class.
+    configurations.configureEach {
+        resolutionStrategy {
+            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
+            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
+        }
+    }
+
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+    ndkVersion "27.0.12077973"
+
+    defaultConfig {
+        applicationId "com.example.dtvandroid"
+        minSdk 23          // device: Android 6.0.1 (API 23)
+        targetSdk 23       // keeps install-time permission grants (no runtime dialogs on the STB)
+        versionCode 1
+        versionName "1.0"
+
+        // The STB uses armeabi-v7a, including the encoder Surface bridge.
+        ndk {
+            abiFilters 'armeabi-v7a'
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Sideloaded build: reuse the debug key so `assembleRelease` output
+            // is directly installable on the STB without extra keystore setup.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    /*
+     * Ship the native bridge uncompressed and page aligned so the package
+     * installer never has to extract it. On the PIX-SMB400 the extraction step
+     * inside `pm install` is what wedges: the session is sealed, installd is
+     * asked to unpack lib/armeabi-v7a/*.so and the commit never reports back,
+     * so the shell command waits forever. Loading the library straight from
+     * the APK is supported from API 23 on, which is our minimum anyway.
+     */
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.constraintlayout:constraintlayout:2.2.1'
+
+    // SMB client for NAS upload (kernel has no CIFS support on this device).
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+}

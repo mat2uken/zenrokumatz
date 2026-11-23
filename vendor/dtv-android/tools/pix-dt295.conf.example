@@ -1,0 +1,39 @@
+# Install as /data/local/tmp/pix-dt295.conf after provisioning pix-ts-legacy,
+# stb_streamer and the device's assets under /data/local/tmp/pix-stream.
+PIX_TUNER=dt295
+PIX_CODEC=avc
+PIX_DST_W=1280
+PIX_DST_H=736
+DT295_ASSETS=/data/local/tmp/pix-stream/assets
+DT295_SYSTEM=terrestrial
+DT295_TRANSCODE=1
+
+# Transcode registers. The format is "addr:shift:width:value" (addr and value
+# hex, shift and width decimal); DT295_XREG is applied right after the receive
+# profile, DT295_XREG2 right before the acquisition command, so the mode switch
+# there stays last. Generate them instead of editing by hand:
+#
+#   python3 tools/dt295_profiles.py export avc720p8m
+#   python3 tools/dt295_profiles.py export avc736p8m   # explicit 736 height
+#   python3 tools/dt295_profiles.py validate "$DT295_XREG" "$DT295_XREG2"
+#
+# The values below are the measured 720p8m profile. The encoder emits
+# 1280x736 (macroblock aligned, no SPS cropping) even when 720 is requested.
+DT295_XREG=152c:0:16:500,152e:0:16:2d0,1532:0:16:1f40,1534:0:16:1f40,1536:0:16:1f40,1538:0:16:0,1526:0:8:1f
+DT295_XREG2=101c:8:8:1b,100a:4:4:1
+
+# DT295 health. dt295-state is optional: without it the agent cannot tell a
+# tainted device (state 0x11) from a stalled one, so it keeps retrying.
+# Build it with scripts/build_dt295_state_arm.sh.
+#DT295_STATE_BIN=/data/local/tmp/pix-stream/dt295-state
+# How long a SIGTERM may take to upload the idle image and return the device to
+# state 0x10. A killed capture leaves 0x11 and the next start needs a re-plug.
+#DT295_STOP_WAIT=25
+# Optional recovery action for a tainted device (a switched hub, a smart plug).
+# It runs only after the probe confirms the taint, at most once per interval,
+# and the result is verified by probing again.
+#DT295_RECOVER_CMD=""
+#DT295_RECOVER_EVERY=600
+
+# For satellite reception, set DT295_SYSTEM=bs (or cs) and DT295_CHANNEL=BS1
+# (or CS22). DT295_TSID is optional; omit it to use automatic TSID selection.
