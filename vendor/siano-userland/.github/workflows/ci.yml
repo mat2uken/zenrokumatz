@@ -1,0 +1,320 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-invariants:
+    name: Workflow invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check Alpine build environments
+        run: python3 scripts/check-workflow-invariants.py
+
+  linux-source:
+    name: Linux source tests (glibc)
+    needs: workflow-invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install host libusb
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y cmake build-essential pkg-config libusb-1.0-0-dev
+      - name: Test source build
+        run: |
+          make test
+          make packaging-test
+
+  linux-static-x86_64:
+    name: Linux x86_64 static (Alpine)
+    needs: workflow-invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
+      - name: Build and audit in Alpine
+        run: |
+          docker run --rm \
+            -e GITHUB_SHA \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/src" -w /src alpine:3.22 \
+            sh -euxc '
+              apk add --no-cache gcc g++ cmake make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2 su-exec
+              install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                SOURCE_REF="$GITHUB_SHA" LINUX_ARCH=x86_64 scripts/build-linux-static.sh
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                build/linux-x86_64/siano-ts --help >/dev/null
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make packaging-test
+            '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-linux-x86_64
+          path: build/linux-x86_64
+          if-no-files-found: error
+
+  linux-static-aarch64:
+    name: Linux aarch64 static (Alpine)
+    needs: workflow-invariants
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
+      - name: Build and audit in native arm64 Alpine
+        run: |
+          docker run --rm \
+            -e GITHUB_SHA \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/src" -w /src alpine:3.22 \
+            sh -euxc '
+              apk add --no-cache gcc g++ cmake make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2 su-exec
+              install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                SOURCE_REF="$GITHUB_SHA" LINUX_ARCH=aarch64 scripts/build-linux-static.sh
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                build/linux-aarch64/siano-ts --help >/dev/null
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make packaging-test
+            '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-linux-aarch64
+          path: build/linux-aarch64
+          if-no-files-found: error
+
+  package-linux:
+    name: Assemble final Linux archives
+    needs: [linux-static-x86_64, linux-static-aarch64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install archive audit tools
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y binutils python3
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: bin-linux-*
+          path: dist
+      - name: Fetch pinned package inputs
+        run: |
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/isdbt_rio.inp" \
+            'https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp?id=e981caea6ed33c48d25b7dbf473327dbd01df163'
+          echo '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818  '"$RUNNER_TEMP/isdbt_rio.inp" | sha256sum -c -
+          curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 30 -o "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
+            https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2
+          echo 'fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf  '"$RUNNER_TEMP/libusb-1.0.30.tar.bz2" | sha256sum -c -
+      - name: Assemble final Linux archives
+        run: |
+          set -eu
+          version=$(tr -d '\n' < VERSION)
+          mkdir -p candidate
+          scripts/package-artifact.sh --platform linux-x86_64 --version "$version" \
+            --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-x86_64 \
+            --firmware "$RUNNER_TEMP/isdbt_rio.inp" \
+            --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir candidate
+          scripts/package-artifact.sh --platform linux-aarch64 --version "$version" \
+            --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-aarch64 \
+            --firmware "$RUNNER_TEMP/isdbt_rio.inp" \
+            --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir candidate
+          (cd candidate && sha256sum ./*.tar.gz > SHA256SUMS && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packaged-linux
+          path: candidate
+          if-no-files-found: error
+
+  packaged-runtime-x86_64:
+    name: Final Linux x86_64 archive runtime smoke (Ubuntu glibc and Alpine musl)
+    needs: package-linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: packaged-linux
+          path: candidate
+      - name: Start downloaded final archive on Ubuntu glibc
+        run: scripts/test-packaged-linux.sh --archive "$(find candidate -name '*-linux-x86_64.tar.gz' -type f -print -quit)" --architecture x86_64
+      - name: Start the same downloaded final archive on Alpine musl
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" \
+            alpine:3.22 sh -euxc '
+              apk add --no-cache tar
+              /repo/scripts/test-packaged-linux.sh \
+                --archive "$(find /candidate -name "*-linux-x86_64.tar.gz" -type f -print -quit)" \
+                --architecture x86_64
+            '
+
+  packaged-runtime-aarch64:
+    name: Final Linux aarch64 archive runtime smoke (Ubuntu glibc and Alpine musl)
+    needs: package-linux
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: packaged-linux
+          path: candidate
+      - name: Start downloaded final archive on native arm64 Ubuntu glibc
+        run: scripts/test-packaged-linux.sh --archive "$(find candidate -name '*-linux-aarch64.tar.gz' -type f -print -quit)" --architecture aarch64
+      - name: Start the same downloaded final archive on native arm64 Alpine musl
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" \
+            alpine:3.22 sh -euxc '
+              apk add --no-cache tar
+              /repo/scripts/test-packaged-linux.sh \
+                --archive "$(find /candidate -name "*-linux-aarch64.tar.gz" -type f -print -quit)" \
+                --architecture aarch64
+            '
+
+  windows:
+    name: Windows WinUSB x64
+    needs: workflow-invariants
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: amd64
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
+      - name: Fetch pinned libusb package
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.7z' -OutFile libusb.7z
+          if ((Get-FileHash libusb.7z -Algorithm SHA256).Hash.ToLower() -ne '7fb1dfec805b97983763d7d0ae244320da12add1003d4249c96cc4d586398c79') { throw 'libusb package checksum mismatch' }
+          7z x libusb.7z -olibusb-src
+          New-Item -ItemType Directory -Force -Path libusb\include\libusb-1.0 | Out-Null
+          Copy-Item libusb-src\include\libusb.h libusb\include\libusb-1.0\
+          Copy-Item libusb-src\VS2022\MS64\dll\libusb-1.0.lib libusb\
+          Copy-Item libusb-src\VS2022\MS64\dll\libusb-1.0.dll .
+      - name: Build, prove reproducibility, and run Windows target
+        shell: pwsh
+        run: |
+          nmake /f Makefile.win test
+          if ($LASTEXITCODE -ne 0) { throw 'Windows tests failed' }
+          .\scripts\reproducible-windows-build.ps1
+          .\siano-ts.exe --help | Out-Null
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          python scripts/audit-artifact.py --platform windows-x64 --binary siano-ts.exe --source-ref $env:GITHUB_SHA --evidence-output evidence\binary-audit.json
+          foreach ($program in @('sianod', 'sianoctl')) {
+            & ".\$program.exe" --help | Out-Null
+            python scripts/audit-artifact.py --platform windows-x64 --binary "$program.exe" --source-ref $env:GITHUB_SHA --evidence-output "evidence\$program-binary-audit.json"
+            if ($LASTEXITCODE -ne 0) { throw "audit failed: $program" }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-windows-x64
+          path: |
+            sianod.exe
+            sianoctl.exe
+            siano-ts.exe
+            libusb-1.0.dll
+            evidence/
+          if-no-files-found: error
+
+  macos:
+    name: macOS arm64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
+      - name: Build with static libusb, test, and audit
+        run: |
+          command -v otool
+          command -v lipo
+          command -v nm
+          SOURCE_REF="$GITHUB_SHA" scripts/build-macos-static.sh
+          otool -L build/darwin-arm64/siano-ts
+          PKG_CONFIG="$GITHUB_WORKSPACE/build/darwin-arm64/pkg-config-libusb" make test
+          make packaging-test
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-darwin-arm64
+          path: |
+            build/darwin-arm64/sianod
+            build/darwin-arm64/sianoctl
+            build/darwin-arm64/siano-ts
+            build/darwin-arm64/evidence
+          if-no-files-found: error
+
+  android:
+    name: Android (Termux ${{ matrix.abi }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: aarch64
+            packageable: true
+          - abi: armv7a
+            packageable: true
+          - abi: x86_64
+            packageable: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: nttld/setup-ndk@afb4c9964b521afb97c864b7d40b11e6911bd410 # v1.5.0
+        id: setup-ndk
+        with:
+          ndk-version: r27d
+          add-to-path: false
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
+      - name: Host tools
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y cmake make file binutils curl python3
+      - name: Build and test
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_ABI: ${{ matrix.abi }}
+        run: |
+          ./scripts/build-android.sh
+          scripts/audit-artifact.sh --platform android-${{ matrix.abi }} \
+            --binary build/android-${{ matrix.abi }}/siano-ts --source-ref "$GITHUB_SHA" \
+            --evidence-output build/android-${{ matrix.abi }}/evidence/binary-audit.json
+          for program in sianod sianoctl; do
+            scripts/audit-artifact.sh --platform android-${{ matrix.abi }} \
+              --binary "build/android-${{ matrix.abi }}/$program" --source-ref "$GITHUB_SHA" \
+              --evidence-output "build/android-${{ matrix.abi }}/evidence/$program-binary-audit.json"
+          done
+          make packaging-test
+      - if: matrix.packageable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-android-${{ matrix.abi }}
+          path: build/android-${{ matrix.abi }}
+          if-no-files-found: error

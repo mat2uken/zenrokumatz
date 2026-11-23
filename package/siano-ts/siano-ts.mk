@@ -5,16 +5,16 @@
 ################################################################################
 
 SIANO_TS_VERSION = 505a2f7267ae064ee40c6f3fea6e3ab0e88b70f3
-SIANO_TS_SITE = $(BR2_EXTERNAL_X96MAX_PATH)/work/sources/siano-userland
+SIANO_TS_SITE = $(BR2_EXTERNAL_X96MAX_PATH)/vendor/siano-userland
 SIANO_TS_SITE_METHOD = local
 SIANO_TS_LICENSE = GPL-2.0-or-later
 SIANO_TS_LICENSE_FILES = COPYING
 SIANO_TS_DEPENDENCIES = libusb
-# The vendored snapshot under work/sources/siano-userland carries one local
-# change: TS_QUEUE_SLOTS in siano-device.h is 1024 instead of 256 so the tuner
-# survives the few seconds the downstream transcode needs to start. It is a
-# direct edit of the snapshot, not a patch, because SITE_METHOD=local does not
-# apply package/siano-ts/patches.
+# The snapshot is pinned to commit 505a2f7 in sources.lock.json and carries
+# one local change: TS_QUEUE_SLOTS in siano-device.h is 1024 instead of 256
+# so the tuner survives the few seconds the downstream transcode needs to
+# start. SITE_METHOD=local skips package patches, so the change is kept in
+# the snapshot itself.
 
 SIANO_TS_CFLAGS = $(TARGET_CFLAGS) -std=c11 -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
 

@@ -1,0 +1,156 @@
+# Rebuild and relink
+
+The binary in this archive was built from the source commit recorded in
+`manifest.json`. The corresponding source archive contains that exact Git
+tree under `repository/`, exact pinned Core/P source and license/provenance
+under `third_party/dtv-userland-core/` and `third_party/px4-userland/`,
+the pinned libusb source under `third_party/`, and
+this recipe as `BUILD-RELINK.md`.
+
+The build produces `sianod`, `sianoctl`, and `siano-ts` (with `.exe` on
+Windows). USB/libusb belongs to the daemon. Client binaries are not required
+to embed an unused USB library. All three receive platform and hash audits.
+The Core engine is MIT; Core host adapters and the P facade retain their GPL
+licenses. Consult the bundled license/provenance files; the combined
+application is not MIT-only.
+
+## Linux static binaries
+
+The Linux release binary is built in Alpine with the pinned libusb 1.0.30
+source. libusb is configured with udev disabled, so its Linux netlink backend
+is used. `repository/scripts/build-linux-static.sh` is the exact build script.
+The Alpine `binutils` package supplies the target-native `strip` and `readelf`
+tools required by the release policy:
+
+```sh
+apk add --no-cache gcc g++ cmake make pkgconf musl-dev linux-headers python3 binutils curl tar bzip2
+cd repository
+SOURCE_REF=<source-ref> LINUX_ARCH=x86_64 \
+  DTV_USERLAND_CORE_SOURCE_DIR="$PWD/../third_party/dtv-userland-core" \
+  SIANO_PX4_USERLAND_SOURCE_DIR="$PWD/../third_party/px4-userland" \
+  LIBUSB_SOURCE_ARCHIVE=../third_party/libusb-1.0.30.tar.bz2 \
+  scripts/build-linux-static.sh
+```
+
+Use `LINUX_ARCH=aarch64` for the aarch64 binary. Verify the archive checksum
+before building. The script passes `-static` to the final link and records the
+actual libusb source checksum and build options in
+`build/<target>/evidence/build.properties`. A release build must have no
+`PT_INTERP` and no `DT_NEEDED`; use `repository/scripts/audit-artifact.sh` to
+check the result. After the static-link and source-provenance checks, the
+script applies target-native `strip --strip-unneeded`, audits the result, and
+runs each program's `--help` before packaging.
+
+Linux archives also include the exact musl copyright, GCC GPL and GCC Runtime
+Library Exception under `toolchain/`. The recorded Alpine package owners and
+hashes identify the compiler, libc, libgcc and statically linked libstdc++
+inputs. Use the same Alpine toolchain inputs when comparing rebuilds.
+
+The static Linux executable includes libusb under the LGPL-2.1-or-later. The
+corresponding source archive includes the complete application source, the
+complete pinned libusb source, `libusb/COPYING` in the binary archive, and this
+relink recipe. These materials are provided so libusb can be modified and the
+executable relinked as required by LGPL section 6(a).
+
+## macOS static binary
+
+The macOS arm64 release binary is built on arm64 macOS with the same pinned
+libusb 1.0.30 source, using the darwin (IOKit) backend.
+`repository/scripts/build-macos-static.sh` is the exact build script. It needs
+the Xcode command line tools and no Homebrew packages; the builds run in a
+clean environment so a Homebrew libusb cannot be picked up:
+
+```sh
+cd repository
+SOURCE_REF=<source-ref> \
+  DTV_USERLAND_CORE_SOURCE_DIR="$PWD/../third_party/dtv-userland-core" \
+  SIANO_PX4_USERLAND_SOURCE_DIR="$PWD/../third_party/px4-userland" \
+  LIBUSB_SOURCE_ARCHIVE=../third_party/libusb-1.0.30.tar.bz2 \
+  scripts/build-macos-static.sh
+```
+
+libusb is configured with `--disable-shared --enable-static
+--disable-examples-build --disable-tests-build` and
+`MACOSX_DEPLOYMENT_TARGET=11.0`. The resulting `libusb-1.0.a` is passed
+directly to the final link together with `-framework IOKit -framework
+CoreFoundation -framework Security`, which libusb's darwin backend requires.
+The script then applies Apple `strip -S -x`, runs `siano-ts --help`, and
+audits the result: every image named by the Mach-O dylib load commands (as
+listed by `otool -L`) must be a macOS system library under `/usr/lib/` or
+`/System/Library/Frameworks/`, no libusb dylib may be loaded, and the
+`LC_BUILD_VERSION` minimum must be macOS 11.0. The build options and the
+actual libusb source checksum are recorded in
+`build/darwin-arm64/evidence/build.properties`. To relink with a modified
+libusb, pass the modified source tarball as `LIBUSB_SOURCE_ARCHIVE` together
+with `ALLOW_UNPINNED_LIBUSB=1`.
+
+The static macOS executable includes libusb under the LGPL-2.1-or-later, with
+the same materials as the Linux binaries: the corresponding source archive,
+`libusb/COPYING` in the binary archive, and this relink recipe (LGPL section
+6(a)).
+
+## Clean relink test
+
+Run the following from an Alpine environment. It extracts the corresponding
+source archive, rebuilds the unmodified source, then rebuilds against a
+harmlessly changed libusb source. The test requires the changed marker to be
+present in the resulting executable, so a successful compiler invocation alone
+does not pass the test.
+
+```sh
+repository/scripts/test-static-relink.sh \
+  --source-archive siano-ts-<version>-source.tar.gz \
+  --arch x86_64
+```
+
+The same test runs on arm64 macOS with `--arch arm64`, using
+`build-macos-static.sh` instead of the Alpine build.
+It compares the daemon that actually links libusb; the same build also
+produces the two clients. Core/P inputs come from the source archive, without
+a network fetch.
+
+## Other targets
+
+Windows uses the libusb 1.0.30 WinUSB package identified in `libusb/NOTICE.txt`; the downloaded
+7z is verified during the build and is not embedded in the ZIP.
+`Makefile.win` takes `CORE_SOURCE_DIR` and `PX4_SOURCE_DIR` for the two bundled
+source directories. The reproducibility helper compares two clean builds of
+each of the three programs byte for byte. `windows-baseline.sha256` remains
+historical evidence for the former standalone source graph, not a digest of
+the new C++ graph.
+
+Android uses libusb 1.0.30 statically. The exact source archive is included as
+`libusb/libusb-1.0.30.tar.bz2`; verify it against the SHA256 in
+`DEPENDENCY-NOTICE.txt`, unpack it, and build with:
+
+```sh
+./configure --host=<android-abi>-linux-android --disable-shared --enable-static \
+  --with-pic --disable-udev --disable-examples-build --disable-tests-build
+make
+```
+
+Use the Android NDK API 24 clang target for the archive's ABI, pass the
+resulting `libusb-1.0.a` directly to the final link, and retain `-llog`.
+Use `aarch64` for `android-aarch64` or `x86_64` for `android-x86_64` in the
+`--host` placeholder above (for example, `x86_64-linux-android`). For
+`android-armv7a`, use the NDK target `armv7a-linux-androideabi` instead.
+The exact NDK revision is in `evidence/build.properties` and
+`DEPENDENCY-NOTICE.txt`. The matching NDK `source.properties`, `NOTICE`, and
+`NOTICE.toolchain` are copied byte-for-byte into `evidence/ndk/`. The
+static-link inventory in `evidence/static-link-inventory.tsv` is the expected audit record; an
+unclassified static archive is a release failure.
+The daemon and ctl inventories are respectively
+`evidence/sianod-static-link-inventory.tsv` and
+`evidence/sianoctl-static-link-inventory.tsv`. Project archive members and
+NDK C++ static runtime members are classified separately. The NDK runtime is
+linked statically and its notices remain in `evidence/ndk/`.
+
+The firmware is intentionally not part of a source archive. Obtain the
+separately licensed input from the pinned URL and verify its SHA256 before
+passing it to `--firmware`. The license text and its pinned URL/SHA256 are
+recorded in `LICENCE.siano` and `DEPENDENCY-NOTICE.txt`.
+
+The macOS build script applies Apple `strip -S -x` to all three programs,
+smoke-tests each program's `--help`, and then audits the Mach-O load commands for
+DWARF and local symbols. It does not use `strip -N`, which removes all nlist
+entries and is not required for debug-symbol removal.

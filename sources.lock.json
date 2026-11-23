@@ -1,5 +1,5 @@
 {
-  "date": "2026-11-10",
+  "date": "2026-11-23",
   "buildroot": {
     "version": "2026.08.1",
     "url": "https://buildroot.org/downloads/buildroot-2026.08.1.tar.xz",
@@ -12,9 +12,9 @@
   },
   "dtv_android": {
     "path": "/Users/kenichim/Desktop/work/dtv_android",
-    "head": "4fe3b1358c98d25794175798310e44cc935488f1",
-    "dirty": true,
-    "usage": "capture process layout and build flags; working tree left unchanged"
+    "head": "04514515d5a05f92effc321742aae71944882c25",
+    "dirty": false,
+    "usage": "design reference for capture layout and build flags; CM canonical source under experiments/cm-generic; working tree committed on 2026-11-23"
   },
   "torne": {
     "repository": "/Users/kenichim/Desktop/work/pix-smb400/repo",
@@ -34,6 +34,28 @@
     "snapshot": "vendor/pix-userland",
     "dt295_firmware_sha256": "3cabe15f585a8a7a7d7b9b3db548b677b0732c13926dc3a2b5270acf1bc6ffc8"
   },
+  "cfw": {
+    "repository": "https://github.com/soralis0912/MB8AC031-CFW",
+    "version": "v0.0.1",
+    "commit": "d14dfdd99a16f3c96d901f88055e1f5e7e64ef5f",
+    "license": "MIT",
+    "snapshot": "package/cfw",
+    "note": "Host tools and frc1-dt295.frc. Hashes of the released files are in package/cfw/SHA256SUMS; the tools are vendored so they match the firmware container."
+  },
+  "siano_userland": {
+    "repository": "https://github.com/Khronos31/siano-userland.git",
+    "commit": "505a2f7267ae064ee40c6f3fea6e3ab0e88b70f3",
+    "snapshot": "vendor/siano-userland",
+    "local_change": "siano-device.h: TS_QUEUE_SLOTS 256 -> 1024 for transcode startup",
+    "usage": "package/siano-ts builds from the snapshot with SITE_METHOD=local, so the local change is kept in the snapshot instead of a package patch"
+  },
+  "siano_firmware": {
+    "isdbt_rio.inp": {
+      "path": "board/x96max/overlay/lib/firmware/isdbt_rio.inp",
+      "sha256": "054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818",
+      "source": "download location not recorded; the SHA-256 matches the reference value quoted in docs/usb-host-investigation.md"
+    }
+  },
   "codecs": {
     "repository": "https://github.com/ray38080289/meson-sm1-codecs.git",
     "commit": "eb7a44464af1c7793f793698e309abe4e6ad82da",
@@ -52,12 +74,34 @@
         "source": "https://raw.githubusercontent.com/CoreELEC/media_modules-aml/201519678d35a9d7bf4dde1f3a328aa9d533589b/firmware/h264_enc.bin (entry ga_h264_enc_cabac.bin)",
         "md5": "54dd341ef2d06bdbce243837355e20fc",
         "sha256": "b93018e4e3d04fd9e69eeaaf4a12f868d2c9d1a51a9b8a8b3b409e387d36fe8b"
+      },
+      "meson/vdec/sm1_mpeg12_multi.bin": {
+        "source": "https://github.com/CoreELEC/media_modules-aml",
+        "sha256": "7c5e437d58d35dbf92ea45740c04406faf4f227ac8b38385fae36360d1605113"
+      },
+      "meson/vdec/sm1_hevc_mmu_multi.bin": {
+        "source": "https://github.com/CoreELEC/media_modules-aml",
+        "sha256": "7445147ba943fd9d30d793fbda974acdda4742d465bee06f625ec1033bd018a3"
+      },
+      "meson/vdec/g12a_h264.bin": {
+        "source": "https://gitlab.com/kernel-firmware/linux-firmware",
+        "sha256": "ed2014edb5b759654956b829770181b46efb91c68a2e6c6510c354ffdcbe1a0a"
+      },
+      "meson/vdec/sm1_vp9_mmu.bin": {
+        "source": "https://gitlab.com/kernel-firmware/linux-firmware",
+        "sha256": "a999eac69ec6d87785951b11eb53bc2c8e5fc3e464a356411cb2f646c68e2b1a"
+      },
+      "meson/venc/monet.bin": {
+        "source": "https://github.com/starfive-tech/soft_3rdpart",
+        "sha256": "d1adb38a81e6331208317a069e0682f5b0d0510fe5fbc6882519e185bf07aedd",
+        "license_file": "board/x96max/overlay/lib/firmware/meson/venc/LICENSE.monet.txt"
       }
     },
     "snapshot": "vendor/meson-sm1-codecs",
     "g12a_changes": [
       "vdec/: kernel patch board/x96max/patches/linux/0001-vdec-meson-sm1-codecs.patch (queue start gate, cmd_stop drain, bytesperline 64, canvas_height_align 32)",
-      "venc-h264/: get_cpu_type() returns G12A, DT lookup amlogic,g12a-vdec, v4l2_m2m_buf_copy_metadata() third argument for 6.18.62"
+      "venc-h264/: get_cpu_type() returns G12A, DT lookup tries amlogic,sm1-vdec then amlogic,g12a-vdec, v4l2_m2m_buf_copy_metadata() third argument for 6.18.62",
+      "venc-h264/ changes are applied at build time by package/meson-venc/patches/0001-0019 through POST_RSYNC_HOOKS; the vendor snapshot stays at the upstream commit"
     ]
   }
 }
