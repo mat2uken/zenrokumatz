@@ -148,15 +148,40 @@ def decide_stalled(now, node, state, timeout, cooldown, min_fragments=1):
     return 'reboot'
 
 
-def ssh(host, command, timeout=SSH_TIMEOUT):
-    """Run one command on a Buildroot box. Never raises on a dead host."""
+# A reflashed appliance presents a new ssh host key, and accept-new refuses it.
+# That cost ten hours of recording on 2026-11-23: every recovery attempt died at
+# the handshake while the guard reported "no fragments". The boxes are on a
+# private LAN and are reached with a key made for this guard, so the stale entry
+# is dropped and the new key is accepted, loudly.
+SSH_TRUST_CHANGED_KEY = True
+
+
+def _ssh_run(host, command, timeout):
+    return subprocess.run(
+        ['ssh', '-i', SSH_KEY, '-o', 'BatchMode=yes',
+         '-o', f'ConnectTimeout={max(5, timeout // 3)}',
+         '-o', 'StrictHostKeyChecking=accept-new',
+         f'root@{host}', command],
+        capture_output=True, text=True, timeout=timeout)
+
+
+def ssh(host, command, timeout=SSH_TIMEOUT, log=None):
+    """Run one command on a Buildroot box. Never raises on a dead host.
+
+    A changed host key is repaired once: the stale entry is removed and the key
+    the box presents now is accepted, which is what an operator would do by hand.
+    """
     try:
-        return subprocess.run(
-            ['ssh', '-i', SSH_KEY, '-o', 'BatchMode=yes',
-             '-o', f'ConnectTimeout={max(5, timeout // 3)}',
-             '-o', 'StrictHostKeyChecking=accept-new',
-             f'root@{host}', command],
-            capture_output=True, text=True, timeout=timeout)
+        done = _ssh_run(host, command, timeout)
+        if (SSH_TRUST_CHANGED_KEY and done.returncode == 255
+                and 'Host key verification failed' in (done.stdout + done.stderr)):
+            removed = subprocess.run(['ssh-keygen', '-R', host],
+                                     capture_output=True, text=True, timeout=30)
+            if log:
+                log(f'{host}: ssh host key changed, replacing it '
+                    f'({"removed" if removed.returncode == 0 else "not removed"})')
+            done = _ssh_run(host, command, timeout)
+        return done
     except (OSError, subprocess.TimeoutExpired):
         return None
 
@@ -210,7 +235,7 @@ def restart_stream(host, log=print):
     endpoint is served by the streamer alone and answers while the media path
     is dead, so only a moving fragment counter proves the capture is back.
     """
-    restarted = ssh(host, f'{STREAM_INIT} restart')
+    restarted = ssh(host, f'{STREAM_INIT} restart', log=log)
     if restarted is None:
         log(f'{host}: ssh unreachable')
         return False
@@ -220,12 +245,19 @@ def restart_stream(host, log=print):
         return True
     # restart is stop then start: a stop that failed leaves the start undone,
     # so ask for it once before reporting the box as needing a physical check.
-    started = ssh(host, f'{STREAM_INIT} start')
+    started = ssh(host, f'{STREAM_INIT} start', log=log)
     started_text = '' if started is None else (started.stdout or '') + (started.stderr or '')
     if started is not None and started.returncode == 0 and wait_for_fragments(host):
         log(f'{host}: capture started over ssh')
         return True
     detail = (text.strip() or started_text.strip())[:140]
+    # A box that was reflashed gets a new ssh host key, and every recovery then
+    # fails before reaching the service. Say so, because the fix is an operator
+    # action (drop the stale key) and the generic message hides it.
+    if 'Host key verification failed' in (text + started_text):
+        log(f'{host}: ssh host key still rejected after a replacement attempt;'
+            f' check {host} by hand')
+        return False
     log(f'{host}: no fragments after the restart: {detail}')
     return False
 
