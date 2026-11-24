@@ -42,9 +42,22 @@ siano-ts ... | torne-b25 ... | eit_watch --state /dev/shm/pix/program.txt \
 pix-dt295-logo --cdt --out /tmp/logos --wait 600 < ch17.ts
 ```
 
-## 週 1 回の自動取得（BS/CS はチューナーが要る）
+## 自動取得（BS/CS はチューナーが要る）
 
-`scheduled` に任せる。`S98pix-logo` が常駐し、既定では**月曜 04:00 (JST)** に
+### 取得経路は 2 つある
+
+| 機体の `PIX_TUNER` | 取得方法 |
+| --- | --- |
+| `dt295`（純正ファーム） | `pix-ts-legacy` がチューナー内で複合して TS を出す |
+| `dt295-cfw` | `pix-cfw-grab tune BS15/0x40f1` で選局し、生 TS をそのまま解析する |
+
+CFW 経路は 2026-11-23 に足した。`tune` は選局結果を標準出力へ書く。
+パイプへ流す前に捨てること（混ざると TS の 188 バイト同期がずれ、
+パーサは PAT を 1 つも読めなくなる）。
+
+### 週 1 回の自動取得
+
+`S98pix-logo` が常駐し、既定では**月曜 04:00 (JST)** に
 `pix-logo-fetch --force` を 1 回だけ実行する。
 
 - 設定は `/etc/default/pix-stream-linux` の `PIX_LOGO_WEEKLY*`
@@ -54,6 +67,21 @@ pix-dt295-logo --cdt --out /tmp/logos --wait 600 < ch17.ts
 - 取得は最大 `PIX_LOGO_WEEKLY_WAIT`（既定 900 秒）待つ。終われば待たずに戻る。
 - テレビ静岡のように録画が地上波の個体では `pix-logo-fetch` が前提違いで
   すぐ終わる（ログに残るだけ）。
+
+### 毎晩の再試行（2026-11-24 追加）
+
+929 はカルーセルを宣言するが、モジュールを送っていない時間帯がある。2026-11-23 は
+1200 秒の取得を 2 回行っても DII が 1 つも届かず、20 分の窓では捕まえられなかった。
+送信再開を待つため、NAS 側で毎日 04:10 に再試行する。
+
+| 項目 | 内容 |
+| --- | --- |
+| スクリプト | `scripts/logo-retry.sh`（NAS では `/home/ku/pix-cm/logo-retry.sh`） |
+| タイマー | `logo-retry.timer`（毎日 04:10、`Persistent=true`） |
+| 動作 | PNG が 1 枚でもあれば何もしない。無ければ `--wait 1800` で取得 |
+| 上限 | 連続 14 回で停止し、人の判断を待つ |
+
+深夜枠なので、失敗しても録画への影響は 30 分程度に収まる。
 
 ## 使い方
 
