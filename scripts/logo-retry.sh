@@ -26,9 +26,12 @@ if [ "$count" -gt 0 ]; then
     exit 0
 fi
 
-echo "$(date '+%F %T') fetching BS-15 logos (up to 30 min of recording paused)"
-$SSH 'pix-logo-fetch --force --wait 1800' 2>&1 | tail -4
+echo "$(date '+%F %T') fetching BS-15 logos (up to 60 min of recording paused)"
+# Keep the parser's verdict: "logo modules X/Y in N carousel(s)" separates an
+# empty carousel (Y=0, nothing is being transmitted) from a partial one (X<Y).
+output=$($SSH 'pix-logo-fetch --force --wait 3600' 2>&1)
 status=$?
+echo "$output" | grep -E "logo_end|no complete logo data|restarting the pipeline" | tail -3
 after=$($SSH 'ls /var/lib/pix/logos/*.png 2>/dev/null | wc -l' 2>/dev/null || echo 0)
 echo "$(date '+%F %T') exit=$status png_after=$after"
 if [ "${after:-0}" -gt 0 ]; then
