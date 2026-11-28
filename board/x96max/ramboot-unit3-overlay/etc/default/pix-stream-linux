@@ -48,3 +48,7 @@ PIX_FEATURE_MAX_MB=384
 PIX_FEATURE_STEP=3
 PIX_FEATURE_FAILURES=3
 PIX_LOGO_DIR=/var/lib/pix/logos
+
+# SBS1 の TS には 1セグの番組（36240）が同居する。落としておかないと
+# 符号化が到着順で 320x180 の 1セグを掴む（2026-11-28 に発生）。
+PIX_DROP_PROGRAM=36240

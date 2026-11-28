@@ -50,6 +50,9 @@ exec >>/tmp/pix-simple.log 2>&1
 # /etc/default/pix-stream-linux when the unit really receives BS/CS.
 : "${PIX_SAT_SLOT:=}"
 : "${PIX_PIDS:=}"
+# 別番組（1セグなど）の番組 ID。並べた番組を落としてから符号化へ渡す。
+# 空なら何もしない（従来どおり全て通す）。
+: "${PIX_DROP_PROGRAM:=}"
 : "${PIX_LOGO_DIR:=/var/lib/pix/logos}"
 
 log() { echo "$(date +%H:%M:%S) simple: $*"; }
@@ -269,6 +272,24 @@ encode_with_features() {
         2>/tmp/pix-ff1.log
 }
 
+drop_programs() {
+    # 別番組（1セグ）を落とす。
+    #
+    # TS に別番組が同居すると、下流の -map 0:v:0 が到着順でそちらを掴む。2026-11-28
+    # に SBS が 320x180（1セグ）で録れていたのはこれが原因で、再起動で戻るのは
+    # その回だけだった。番組を落として単一番組にしてから符号化へ渡す。
+    # 復号前は音声のパラメータが読めず mux できないので、必ず復号器の後ろに置く。
+    if [ -z "${PIX_DROP_PROGRAM:-}" ]; then
+        exec cat
+    fi
+    map=""
+    for id in $PIX_DROP_PROGRAM; do map="$map -map -0:p:$id"; done
+    # shellcheck disable=SC2086
+    exec ffmpeg -hide_banner -nostdin -v error -nostats \
+        -probesize 2000000 -analyzeduration 3000000 -f mpegts -i pipe:0 \
+        -map 0:v -map 0:a $map -c copy -f mpegts pipe:1 2>/tmp/pix-ff0.log
+}
+
 fragment() {
     # 音声はそのまま写す。AACを符号化し直すと実時間を割り込む（実測0.96x）。
     # 写すだけなら1.19x出るので、こちらを既定にする。
@@ -319,7 +340,7 @@ run_direct() {
         2>/tmp/pix-ts.log \
       | eit_watch --state /dev/shm/pix/program.txt --logo-dir "$PIX_LOGO_DIR" \
             2>/tmp/pix-eit.log \
-      | encode | fragment | streamer
+      | drop_programs | encode | fragment | streamer
 }
 
 # 復号器を挟むときは、出力の詰まりでカードのやり取りが止まるため、
@@ -377,7 +398,7 @@ run_buffered() {
         2>>/tmp/pix-ring.log \
       | eit_watch --state /dev/shm/pix/program.txt --logo-dir "$PIX_LOGO_DIR" \
             2>>/tmp/pix-eit.log \
-      | encode | fragment | streamer &
+      | drop_programs | encode | fragment | streamer &
     reader=$!
     while :; do
         state=$(awk '{print $3}' "/proc/$producer/stat" 2>/dev/null)
